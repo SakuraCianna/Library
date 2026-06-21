@@ -249,7 +249,7 @@
 
 .tabs {
   display: flex;
-  gap: 10px;
+  gap: 22px;
   border-bottom: 1px solid var(--color-border-soft);
   padding: 10px 18px 0;
 }
@@ -624,6 +624,7 @@
   }
 
   .tabs {
+    gap: 16px;
     overflow-x: auto;
   }
 

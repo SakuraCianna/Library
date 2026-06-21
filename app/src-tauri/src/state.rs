@@ -5,8 +5,7 @@ use std::sync::Mutex;
 use crate::error::AppError;
 use crate::models::{
     can_request_session_permission, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
-    KnowledgeSpace, PendingAction, PermissionMode, ScanSummary, TableInsightPreview,
-    WorkbenchSnapshot,
+    KnowledgeSpace, PermissionMode, ScanSummary, TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::scanner::scan_folder;
 use crate::storage::sqlite::SqliteStore;
@@ -263,15 +262,7 @@ fn build_snapshot(
                 "请点击新建选择一个真实文件夹。".to_string()
             },
         }],
-        pending_action: if has_files {
-            None
-        } else {
-            Some(PendingAction {
-                id: "action-scan-folder".to_string(),
-                label: "待批准操作：扫描当前文件夹并写入本地索引。".to_string(),
-                requires_approval: true,
-            })
-        },
+        pending_action: None,
     }
 }
 
@@ -308,6 +299,7 @@ mod tests {
         assert!(snapshot.files.is_empty());
         assert_eq!(snapshot.active_space_id, "");
         assert_eq!(snapshot.session_permission, PermissionMode::Readonly);
+        assert!(snapshot.pending_action.is_none());
     }
 
     #[test]
@@ -326,6 +318,7 @@ mod tests {
 
         assert_eq!(created.spaces.len(), 1);
         assert!(created.files.is_empty());
+        assert!(created.pending_action.is_none());
 
         let scanned = state
             .scan_knowledge_space(created.active_space_id)
