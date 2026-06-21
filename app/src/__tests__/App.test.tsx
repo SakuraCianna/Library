@@ -36,6 +36,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "未选择文件夹" })).toBeInTheDocument();
     expect(screen.getByText("请先添加一个真实文件夹")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /面试/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("待批准操作")).not.toBeInTheDocument();
   });
 
   it("shows folder default permission controls and rounded selects", async () => {
