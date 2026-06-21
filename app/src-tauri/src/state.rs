@@ -1,8 +1,10 @@
 use std::sync::Mutex;
 
+use crate::error::AppError;
 use crate::models::{
-    ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview, KnowledgeFile, KnowledgeSpace,
-    ParseStatus, PendingAction, PermissionMode, TableInsightPreview, WorkbenchSnapshot,
+    can_temporarily_escalate, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
+    KnowledgeFile, KnowledgeSpace, ParseStatus, PendingAction, PermissionMode, TableInsightPreview,
+    WorkbenchSnapshot,
 };
 
 pub struct AppState {
@@ -107,10 +109,104 @@ impl AppState {
             .clone()
     }
 
-    pub fn set_session_permission(&self, permission: PermissionMode) {
-        self.snapshot
+    pub fn request_session_permission(
+        &self,
+        requested: PermissionMode,
+    ) -> Result<WorkbenchSnapshot, AppError> {
+        let mut snapshot = self
+            .snapshot
             .lock()
-            .expect("workbench snapshot mutex poisoned")
-            .session_permission = permission;
+            .expect("workbench snapshot mutex poisoned");
+        let default_permission = snapshot
+            .spaces
+            .iter()
+            .find(|space| space.id == snapshot.active_space_id)
+            .map(|space| space.default_permission.clone())
+            .ok_or_else(|| AppError::Storage("找不到当前知识库".to_string()))?;
+
+        if !can_temporarily_escalate(&default_permission, &requested) {
+            return Err(AppError::PermissionDenied(
+                "当前文件夹默认权限不允许这样临时升权".to_string(),
+            ));
+        }
+
+        snapshot.session_permission = requested;
+        Ok(snapshot.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppState;
+    use crate::models::PermissionMode;
+
+    #[test]
+    fn allowed_session_permission_request_updates_returned_and_stored_snapshot() {
+        let state = AppState::new_with_mock_data();
+        {
+            let mut snapshot = state
+                .snapshot
+                .lock()
+                .expect("workbench snapshot mutex poisoned");
+            snapshot.active_space_id = "space-springboot".to_string();
+            snapshot.session_permission = PermissionMode::Readonly;
+        }
+
+        let updated = state
+            .request_session_permission(PermissionMode::Approval)
+            .expect("readonly folder should allow approval session permission");
+
+        assert_eq!(updated.session_permission, PermissionMode::Approval);
+        assert_eq!(
+            state.snapshot().session_permission,
+            PermissionMode::Approval
+        );
+    }
+
+    #[test]
+    fn readonly_folder_rejects_full_permission_without_mutating_session_permission() {
+        let state = AppState::new_with_mock_data();
+        {
+            let mut snapshot = state
+                .snapshot
+                .lock()
+                .expect("workbench snapshot mutex poisoned");
+            snapshot.active_space_id = "space-springboot".to_string();
+            snapshot.session_permission = PermissionMode::Approval;
+        }
+
+        let error = state
+            .request_session_permission(PermissionMode::Full)
+            .expect_err("readonly folder should reject full session permission");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("权限不足") || message.contains("不允许"),
+            "unexpected permission denied message: {message}"
+        );
+        assert_eq!(
+            state.snapshot().session_permission,
+            PermissionMode::Approval
+        );
+    }
+
+    #[test]
+    fn missing_active_space_returns_storage_error_with_chinese_message() {
+        let state = AppState::new_with_mock_data();
+        {
+            let mut snapshot = state
+                .snapshot
+                .lock()
+                .expect("workbench snapshot mutex poisoned");
+            snapshot.active_space_id = "space-missing".to_string();
+        }
+
+        let error = state
+            .request_session_permission(PermissionMode::Approval)
+            .expect_err("missing active space should return storage error");
+
+        let message = error.to_string();
+        assert!(message.contains("本地存储错误"));
+        assert!(message.contains("找不到当前知识库"));
     }
 }
