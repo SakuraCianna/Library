@@ -8,6 +8,25 @@ pub enum PermissionMode {
     Full,
 }
 
+impl PermissionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Readonly => "readonly",
+            Self::Approval => "approval",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "readonly" => Some(Self::Readonly),
+            "approval" => Some(Self::Approval),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatScope {
@@ -23,6 +42,36 @@ pub enum ParseStatus {
     Changed,
     Queued,
     Failed,
+}
+
+impl ParseStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Indexed => "indexed",
+            Self::Changed => "changed",
+            Self::Queued => "queued",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "indexed" => Some(Self::Indexed),
+            "changed" => Some(Self::Changed),
+            "queued" => Some(Self::Queued),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Indexed => "已索引",
+            Self::Changed => "已变更",
+            Self::Queued => "待解析",
+            Self::Failed => "扫描失败",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,40 +156,79 @@ pub struct PermissionRequest {
     pub requested: PermissionMode,
 }
 
-pub fn can_temporarily_escalate(
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateKnowledgeSpaceRequest {
+    pub name: String,
+    pub root_path: String,
+    pub default_permission: PermissionMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanKnowledgeSpaceRequest {
+    pub space_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultPermissionRequest {
+    pub space_id: String,
+    pub permission: PermissionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedFile {
+    pub relative_path: String,
+    pub extension: String,
+    pub size_bytes: i64,
+    pub modified_at: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanSummary {
+    pub added_count: u32,
+    pub changed_count: u32,
+    pub deleted_count: u32,
+    pub failed_count: u32,
+}
+
+pub fn can_request_session_permission(
     folder_default: &PermissionMode,
     requested: &PermissionMode,
 ) -> bool {
-    matches!(
-        (folder_default, requested),
-        (PermissionMode::Readonly, PermissionMode::Approval)
-            | (PermissionMode::Approval, PermissionMode::Approval)
-            | (PermissionMode::Full, PermissionMode::Approval)
-            | (PermissionMode::Full, PermissionMode::Full)
-    )
+    match folder_default {
+        PermissionMode::Readonly => matches!(requested, PermissionMode::Readonly),
+        PermissionMode::Approval => matches!(
+            requested,
+            PermissionMode::Readonly | PermissionMode::Approval
+        ),
+        PermissionMode::Full => true,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{can_temporarily_escalate, PermissionMode};
+    use super::{can_request_session_permission, PermissionMode};
 
     #[test]
-    fn permission_escalation_matrix_matches_domain_boundary() {
+    fn permission_session_matrix_matches_domain_boundary() {
         let cases = [
-            (PermissionMode::Readonly, PermissionMode::Readonly, false),
-            (PermissionMode::Readonly, PermissionMode::Approval, true),
+            (PermissionMode::Readonly, PermissionMode::Readonly, true),
+            (PermissionMode::Readonly, PermissionMode::Approval, false),
             (PermissionMode::Readonly, PermissionMode::Full, false),
-            (PermissionMode::Approval, PermissionMode::Readonly, false),
+            (PermissionMode::Approval, PermissionMode::Readonly, true),
             (PermissionMode::Approval, PermissionMode::Approval, true),
             (PermissionMode::Approval, PermissionMode::Full, false),
-            (PermissionMode::Full, PermissionMode::Readonly, false),
+            (PermissionMode::Full, PermissionMode::Readonly, true),
             (PermissionMode::Full, PermissionMode::Approval, true),
             (PermissionMode::Full, PermissionMode::Full, true),
         ];
 
         for (folder_default, requested, expected) in cases {
             assert_eq!(
-                can_temporarily_escalate(&folder_default, &requested),
+                can_request_session_permission(&folder_default, &requested),
                 expected,
                 "folder_default={folder_default:?}, requested={requested:?}"
             );

@@ -1,212 +1,385 @@
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::error::AppError;
 use crate::models::{
-    can_temporarily_escalate, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
-    KnowledgeFile, KnowledgeSpace, ParseStatus, PendingAction, PermissionMode, TableInsightPreview,
+    can_request_session_permission, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
+    KnowledgeSpace, PendingAction, PermissionMode, ScanSummary, TableInsightPreview,
     WorkbenchSnapshot,
 };
+use crate::scanner::scan_folder;
+use crate::storage::sqlite::SqliteStore;
 
 pub struct AppState {
-    snapshot: Mutex<WorkbenchSnapshot>,
+    store: Mutex<SqliteStore>,
+    active_space_id: Mutex<Option<String>>,
+    active_scope: Mutex<ChatScope>,
+    session_permission: Mutex<PermissionMode>,
 }
 
 impl AppState {
-    pub fn new_with_mock_data() -> Self {
+    pub fn open(app_data_dir: PathBuf) -> Result<Self, AppError> {
+        fs::create_dir_all(&app_data_dir)
+            .map_err(|error| AppError::Filesystem(format!("无法创建应用数据目录：{}", error)))?;
+        let db_path = app_data_dir.join("library.sqlite3");
+        let store = SqliteStore::open(&db_path)
+            .map_err(|error| AppError::Storage(format!("无法打开本地数据库：{error}")))?;
+
+        Ok(Self::new(store))
+    }
+
+    pub fn new(store: SqliteStore) -> Self {
         Self {
-            snapshot: Mutex::new(WorkbenchSnapshot {
-                active_space_id: "space-interview".to_string(),
-                active_scope: ChatScope::CurrentFolder,
-                session_permission: PermissionMode::Approval,
-                spaces: vec![
-                    KnowledgeSpace {
-                        id: "space-interview".to_string(),
-                        name: "面试".to_string(),
-                        path: "D:\\知识库\\面试".to_string(),
-                        default_permission: PermissionMode::Approval,
-                        changed_file_count: 2,
-                        ocr_queue_count: 1,
-                    },
-                    KnowledgeSpace {
-                        id: "space-springboot".to_string(),
-                        name: "SpringBoot".to_string(),
-                        path: "D:\\知识库\\SpringBoot".to_string(),
-                        default_permission: PermissionMode::Readonly,
-                        changed_file_count: 0,
-                        ocr_queue_count: 0,
-                    },
-                    KnowledgeSpace {
-                        id: "space-work".to_string(),
-                        name: "工作项目A".to_string(),
-                        path: "D:\\知识库\\工作项目A".to_string(),
-                        default_permission: PermissionMode::Readonly,
-                        changed_file_count: 1,
-                        ocr_queue_count: 0,
-                    },
-                ],
-                files: vec![
-                    KnowledgeFile {
-                        id: "file-java-docx".to_string(),
-                        name: "Java面试八股.docx".to_string(),
-                        extension: ".docx".to_string(),
-                        status: ParseStatus::Indexed,
-                        status_label: "已索引".to_string(),
-                    },
-                    KnowledgeFile {
-                        id: "file-redis-pdf".to_string(),
-                        name: "Redis缓存.pdf".to_string(),
-                        extension: ".pdf".to_string(),
-                        status: ParseStatus::Changed,
-                        status_label: "已变更".to_string(),
-                    },
-                    KnowledgeFile {
-                        id: "file-interview-xlsx".to_string(),
-                        name: "面试题.xlsx".to_string(),
-                        extension: ".xlsx".to_string(),
-                        status: ParseStatus::Indexed,
-                        status_label: "表格模型就绪".to_string(),
-                    },
-                ],
-                block_preview: KnowledgeBlockPreview {
-                    id: "block-redis-cache-penetration".to_string(),
-                    title: "知识块预览".to_string(),
-                    excerpt: "Redis 缓存穿透：请求查询不存在的数据，缓存和数据库都无法命中，导致请求直接打到数据库。"
-                        .to_string(),
-                    source_file_name: "Redis缓存.pdf".to_string(),
-                },
-                table_preview: TableInsightPreview {
-                    id: "table-interview-question-bank".to_string(),
-                    title: "表格理解".to_string(),
-                    description: "识别工作表、表头、字段含义、单位和可问答指标，不做复杂报表仪表盘。"
-                        .to_string(),
-                },
-                messages: vec![
-                    ChatMessage {
-                        id: "msg-user-1".to_string(),
-                        role: ChatRole::User,
-                        content: "问：Redis 缓存穿透怎么回答面试？".to_string(),
-                    },
-                    ChatMessage {
-                        id: "msg-assistant-1".to_string(),
-                        role: ChatRole::Assistant,
-                        content: "可以从定义、风险、解决方案和追问点四段回答。我会引用 3 个来源块。"
-                            .to_string(),
-                    },
-                ],
-                pending_action: Some(PendingAction {
-                    id: "action-flash-card-draft".to_string(),
-                    label: "待批准操作：生成复习卡草稿，批准后保存。".to_string(),
-                    requires_approval: true,
-                }),
-            }),
+            store: Mutex::new(store),
+            active_space_id: Mutex::new(None),
+            active_scope: Mutex::new(ChatScope::CurrentFolder),
+            session_permission: Mutex::new(PermissionMode::Readonly),
         }
     }
 
-    pub fn snapshot(&self) -> WorkbenchSnapshot {
-        self.snapshot
+    pub fn snapshot(&self) -> Result<WorkbenchSnapshot, AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        let spaces = store
+            .list_knowledge_spaces()
+            .map_err(|error| AppError::Storage(error.to_string()))?;
+        let active_space_id = self.resolve_active_space_id(&spaces);
+        let active_space = spaces
+            .iter()
+            .find(|space| space.id == active_space_id)
+            .cloned();
+        let files = match active_space.as_ref() {
+            Some(space) => store
+                .list_files(&space.id)
+                .map_err(|error| AppError::Storage(error.to_string()))?,
+            None => Vec::new(),
+        };
+
+        let session_permission = self.resolve_session_permission(active_space.as_ref());
+        Ok(build_snapshot(
+            spaces,
+            active_space_id,
+            self.active_scope
+                .lock()
+                .expect("active scope mutex poisoned")
+                .clone(),
+            session_permission,
+            files,
+        ))
+    }
+
+    pub fn create_knowledge_space(
+        &self,
+        name: String,
+        root_path: String,
+        default_permission: PermissionMode,
+    ) -> Result<WorkbenchSnapshot, AppError> {
+        let root = PathBuf::from(root_path.trim());
+        validate_folder_path(&root)?;
+
+        let root_path = root
+            .canonicalize()
+            .map_err(|error| AppError::Filesystem(format!("无法规范化文件夹路径：{error}")))?
+            .to_string_lossy()
+            .to_string();
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        let space_id = store
+            .create_knowledge_space(name.trim(), &root_path, default_permission.clone())
+            .map_err(|error| AppError::Storage(format!("无法创建知识库：{error}")))?;
+
+        *self
+            .active_space_id
             .lock()
-            .expect("workbench snapshot mutex poisoned")
-            .clone()
+            .expect("active space mutex poisoned") = Some(space_id);
+        *self
+            .session_permission
+            .lock()
+            .expect("session permission mutex poisoned") = default_permission;
+        drop(store);
+
+        self.snapshot()
+    }
+
+    pub fn scan_knowledge_space(&self, space_id: String) -> Result<WorkbenchSnapshot, AppError> {
+        let root_path = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .get_space_root(&space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到要扫描的知识库".to_string()))?
+                .root_path
+        };
+        let scanned_files = scan_folder(Path::new(&root_path)).map_err(|error| {
+            AppError::Filesystem(format!("无法扫描文件夹 {root_path}：{error}"))
+        })?;
+
+        let mut store = self.store.lock().expect("sqlite store mutex poisoned");
+        let _summary: ScanSummary = store
+            .apply_scan_results(&space_id, &scanned_files)
+            .map_err(|error| AppError::Storage(format!("无法保存扫描结果：{error}")))?;
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
+        drop(store);
+
+        self.snapshot()
+    }
+
+    pub fn update_default_permission(
+        &self,
+        space_id: String,
+        permission: PermissionMode,
+    ) -> Result<WorkbenchSnapshot, AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        let updated = store
+            .update_knowledge_space_permission(&space_id, permission.clone())
+            .map_err(|error| AppError::Storage(format!("无法更新默认权限：{error}")))?;
+        if !updated {
+            return Err(AppError::Storage("找不到要更新的知识库".to_string()));
+        }
+
+        let mut session_permission = self
+            .session_permission
+            .lock()
+            .expect("session permission mutex poisoned");
+        if !can_request_session_permission(&permission, &session_permission) {
+            *session_permission = permission;
+        }
+        drop(session_permission);
+        drop(store);
+
+        self.snapshot()
     }
 
     pub fn request_session_permission(
         &self,
         requested: PermissionMode,
     ) -> Result<WorkbenchSnapshot, AppError> {
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .expect("workbench snapshot mutex poisoned");
-        let default_permission = snapshot
+        let snapshot = self.snapshot()?;
+        let active_space = snapshot
             .spaces
             .iter()
             .find(|space| space.id == snapshot.active_space_id)
-            .map(|space| space.default_permission.clone())
             .ok_or_else(|| AppError::Storage("找不到当前知识库".to_string()))?;
 
-        if !can_temporarily_escalate(&default_permission, &requested) {
+        if !can_request_session_permission(&active_space.default_permission, &requested) {
             return Err(AppError::PermissionDenied(
                 "当前文件夹默认权限不允许这样临时升权".to_string(),
             ));
         }
 
-        snapshot.session_permission = requested;
-        Ok(snapshot.clone())
+        *self
+            .session_permission
+            .lock()
+            .expect("session permission mutex poisoned") = requested;
+        self.snapshot()
     }
+
+    fn resolve_active_space_id(&self, spaces: &[KnowledgeSpace]) -> String {
+        let mut active_space_id = self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned");
+        let current = active_space_id
+            .as_ref()
+            .filter(|id| spaces.iter().any(|space| space.id == **id))
+            .cloned();
+
+        if let Some(space_id) = current {
+            return space_id;
+        }
+
+        let fallback = spaces.first().map(|space| space.id.clone());
+        *active_space_id = fallback.clone();
+        fallback.unwrap_or_default()
+    }
+
+    fn resolve_session_permission(&self, active_space: Option<&KnowledgeSpace>) -> PermissionMode {
+        let mut session_permission = self
+            .session_permission
+            .lock()
+            .expect("session permission mutex poisoned");
+        let Some(space) = active_space else {
+            *session_permission = PermissionMode::Readonly;
+            return PermissionMode::Readonly;
+        };
+
+        if !can_request_session_permission(&space.default_permission, &session_permission) {
+            *session_permission = space.default_permission.clone();
+        }
+
+        session_permission.clone()
+    }
+}
+
+fn build_snapshot(
+    spaces: Vec<KnowledgeSpace>,
+    active_space_id: String,
+    active_scope: ChatScope,
+    session_permission: PermissionMode,
+    files: Vec<crate::models::KnowledgeFile>,
+) -> WorkbenchSnapshot {
+    let has_spaces = !spaces.is_empty();
+    let has_files = !files.is_empty();
+    let first_file_name = files
+        .first()
+        .map(|file| file.name.clone())
+        .unwrap_or_else(|| "暂无来源文件".to_string());
+
+    WorkbenchSnapshot {
+        spaces,
+        active_space_id,
+        active_scope,
+        session_permission,
+        files,
+        block_preview: KnowledgeBlockPreview {
+            id: "block-empty".to_string(),
+            title: if has_files {
+                "知识块等待解析".to_string()
+            } else {
+                "暂无知识块".to_string()
+            },
+            excerpt: if has_files {
+                "文件元数据已进入本地数据库，后续解析阶段会生成可检索的知识块。".to_string()
+            } else if has_spaces {
+                "点击扫描后，支持的文件会先进入本地元数据索引。".to_string()
+            } else {
+                "请先添加一个真实文件夹作为知识库。".to_string()
+            },
+            source_file_name: first_file_name,
+        },
+        table_preview: TableInsightPreview {
+            id: "table-empty".to_string(),
+            title: "表格理解等待接入".to_string(),
+            description: "本阶段先完成文件扫描入库，表格结构理解将在后续解析阶段接入。".to_string(),
+        },
+        messages: vec![ChatMessage {
+            id: "msg-system-ready".to_string(),
+            role: ChatRole::System,
+            content: if has_spaces {
+                "当前已使用本地 SQLite 读取真实知识库状态。".to_string()
+            } else {
+                "请点击新建选择一个真实文件夹。".to_string()
+            },
+        }],
+        pending_action: if has_files {
+            None
+        } else {
+            Some(PendingAction {
+                id: "action-scan-folder".to_string(),
+                label: "待批准操作：扫描当前文件夹并写入本地索引。".to_string(),
+                requires_approval: true,
+            })
+        },
+    }
+}
+
+fn validate_folder_path(path: &Path) -> Result<(), AppError> {
+    if path.as_os_str().is_empty() {
+        return Err(AppError::Filesystem("请选择有效文件夹".to_string()));
+    }
+
+    if !path.exists() {
+        return Err(AppError::Filesystem("文件夹不存在".to_string()));
+    }
+
+    if !path.is_dir() {
+        return Err(AppError::Filesystem("请选择文件夹而不是文件".to_string()));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::AppState;
     use crate::models::PermissionMode;
+    use crate::storage::sqlite::SqliteStore;
 
     #[test]
-    fn allowed_session_permission_request_updates_returned_and_stored_snapshot() {
-        let state = AppState::new_with_mock_data();
-        {
-            let mut snapshot = state
-                .snapshot
-                .lock()
-                .expect("workbench snapshot mutex poisoned");
-            snapshot.active_space_id = "space-springboot".to_string();
-            snapshot.session_permission = PermissionMode::Readonly;
-        }
+    fn snapshot_starts_empty_without_mock_spaces() {
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let snapshot = state.snapshot().expect("snapshot builds");
+
+        assert!(snapshot.spaces.is_empty());
+        assert!(snapshot.files.is_empty());
+        assert_eq!(snapshot.active_space_id, "");
+        assert_eq!(snapshot.session_permission, PermissionMode::Readonly);
+    }
+
+    #[test]
+    fn creates_scans_and_updates_real_space_state() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(temp_dir.path().join("README.md"), "hello").expect("write md");
+        fs::write(temp_dir.path().join("image.png"), "skip").expect("write unsupported");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "测试知识库".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        assert_eq!(created.spaces.len(), 1);
+        assert!(created.files.is_empty());
+
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+
+        assert_eq!(scanned.files.len(), 1);
+        assert_eq!(scanned.files[0].name, "README.md");
+        assert_eq!(scanned.files[0].status_label, "待解析");
+    }
+
+    #[test]
+    fn canonicalizes_folder_path_before_insert() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        state
+            .create_knowledge_space(
+                "测试知识库".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let duplicate = state.create_knowledge_space(
+            "重复知识库".to_string(),
+            temp_dir.path().join(".").to_string_lossy().to_string(),
+            PermissionMode::Approval,
+        );
+
+        assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn default_permission_change_can_limit_session_permission() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "完全访问空间".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Full,
+            )
+            .expect("space created");
+        state
+            .request_session_permission(PermissionMode::Full)
+            .expect("full session allowed");
 
         let updated = state
-            .request_session_permission(PermissionMode::Approval)
-            .expect("readonly folder should allow approval session permission");
+            .update_default_permission(created.active_space_id, PermissionMode::Readonly)
+            .expect("permission updated");
 
-        assert_eq!(updated.session_permission, PermissionMode::Approval);
         assert_eq!(
-            state.snapshot().session_permission,
-            PermissionMode::Approval
+            updated.spaces[0].default_permission,
+            PermissionMode::Readonly
         );
-    }
-
-    #[test]
-    fn readonly_folder_rejects_full_permission_without_mutating_session_permission() {
-        let state = AppState::new_with_mock_data();
-        {
-            let mut snapshot = state
-                .snapshot
-                .lock()
-                .expect("workbench snapshot mutex poisoned");
-            snapshot.active_space_id = "space-springboot".to_string();
-            snapshot.session_permission = PermissionMode::Approval;
-        }
-
-        let error = state
-            .request_session_permission(PermissionMode::Full)
-            .expect_err("readonly folder should reject full session permission");
-
-        let message = error.to_string();
-        assert!(
-            message.contains("权限不足") || message.contains("不允许"),
-            "unexpected permission denied message: {message}"
-        );
-        assert_eq!(
-            state.snapshot().session_permission,
-            PermissionMode::Approval
-        );
-    }
-
-    #[test]
-    fn missing_active_space_returns_storage_error_with_chinese_message() {
-        let state = AppState::new_with_mock_data();
-        {
-            let mut snapshot = state
-                .snapshot
-                .lock()
-                .expect("workbench snapshot mutex poisoned");
-            snapshot.active_space_id = "space-missing".to_string();
-        }
-
-        let error = state
-            .request_session_permission(PermissionMode::Approval)
-            .expect_err("missing active space should return storage error");
-
-        let message = error.to_string();
-        assert!(message.contains("本地存储错误"));
-        assert!(message.contains("找不到当前知识库"));
+        assert_eq!(updated.session_permission, PermissionMode::Readonly);
     }
 }

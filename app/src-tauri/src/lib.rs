@@ -1,20 +1,30 @@
 mod commands;
 mod error;
 mod models;
+mod scanner;
 mod state;
 pub mod storage;
 pub mod vector;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::new_with_mock_data())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            app.manage(AppState::open(app_data_dir)?);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_workbench_snapshot,
-            commands::set_session_permission
+            commands::set_session_permission,
+            commands::create_knowledge_space,
+            commands::scan_knowledge_space,
+            commands::set_default_permission
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

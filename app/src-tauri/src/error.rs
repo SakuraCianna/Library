@@ -5,6 +5,8 @@ use thiserror::Error;
 pub enum AppError {
     #[error("权限不足：{0}")]
     PermissionDenied(String),
+    #[error("文件系统错误：{0}")]
+    Filesystem(String),
     #[error("本地存储错误：{0}")]
     Storage(String),
 }

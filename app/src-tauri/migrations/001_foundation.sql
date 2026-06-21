@@ -16,8 +16,10 @@ CREATE TABLE IF NOT EXISTS files (
   relative_path TEXT NOT NULL COLLATE NOCASE,
   extension TEXT NOT NULL,
   content_hash TEXT,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
   modified_at TEXT,
   parse_status TEXT NOT NULL CHECK (parse_status IN ('indexed', 'changed', 'queued', 'failed')),
+  last_scanned_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   deleted_at TEXT
@@ -58,6 +60,10 @@ WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS files_active_relative_path_idx
 ON files(space_id, relative_path COLLATE NOCASE)
 WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS files_space_id_idx ON files(space_id);
+CREATE INDEX IF NOT EXISTS files_parse_status_idx ON files(parse_status);
+CREATE INDEX IF NOT EXISTS files_deleted_at_idx ON files(deleted_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_blocks_fts USING fts5(
   title,
@@ -105,6 +111,22 @@ CREATE TABLE IF NOT EXISTS parse_jobs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS scan_runs (
+  id TEXT NOT NULL PRIMARY KEY,
+  space_id TEXT NOT NULL REFERENCES knowledge_spaces(id),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+  added_count INTEGER NOT NULL DEFAULT 0,
+  changed_count INTEGER NOT NULL DEFAULT 0,
+  deleted_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS scan_runs_space_started_idx
+ON scan_runs(space_id, started_at);
 
 CREATE TABLE IF NOT EXISTS trash_entries (
   id TEXT NOT NULL PRIMARY KEY,

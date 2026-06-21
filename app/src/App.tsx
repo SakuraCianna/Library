@@ -1,3 +1,15 @@
+import bookmarkPlusIcon from "@iconify-icons/lucide/bookmark-plus";
+import checkIcon from "@iconify-icons/lucide/check";
+import chevronDownIcon from "@iconify-icons/lucide/chevron-down";
+import eyeIcon from "@iconify-icons/lucide/eye";
+import folderPlusIcon from "@iconify-icons/lucide/folder-plus";
+import refreshCwIcon from "@iconify-icons/lucide/refresh-cw";
+import sendIcon from "@iconify-icons/lucide/send";
+import settingsIcon from "@iconify-icons/lucide/settings";
+import xIcon from "@iconify-icons/lucide/x";
+import { Icon } from "@iconify/react";
+import { useState } from "react";
+
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
 import type {
   ChatMessage,
@@ -21,6 +33,7 @@ const scopeLabel: Record<ChatScope, string> = {
 
 const tabs = ["总览", "文件", "知识块", "表格", "回收站"];
 const scopes = Object.keys(scopeLabel) as ChatScope[];
+const permissionOptions = Object.keys(permissionLabel) as PermissionMode[];
 
 function fileStatusClass(file: KnowledgeFile) {
   if (file.status === "changed") return styles.statusChanged;
@@ -36,18 +49,39 @@ function messageClass(message: ChatMessage) {
 }
 
 export default function App() {
-  const { snapshot, error } = useWorkbenchSnapshot();
+  const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
+    useState(false);
+  const {
+    snapshot,
+    error,
+    loading,
+    createSpaceFromFolder,
+    scanActiveSpace,
+    setFolderDefaultPermission,
+    setSessionPermission,
+  } = useWorkbenchSnapshot();
   const activeSpace =
     snapshot.spaces.find((space) => space.id === snapshot.activeSpaceId) ??
-    snapshot.spaces[0];
+    snapshot.spaces[0] ??
+    null;
+  const hasActiveSpace = activeSpace !== null;
+  const defaultPermission = activeSpace?.defaultPermission ?? "readonly";
+  const changedFileCount = activeSpace?.changedFileCount ?? 0;
+  const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
 
   return (
     <div className={styles.shell}>
       <aside className={styles.sidebar} aria-label="知识库导航">
         <div className={styles.sidebarHeader}>
           <h1 className={styles.title}>知识库</h1>
-          <button className={styles.ghostButton} type="button">
-            新建
+          <button
+            className={styles.ghostButton}
+            disabled={loading}
+            onClick={() => void createSpaceFromFolder("approval")}
+            type="button"
+          >
+            <Icon aria-hidden icon={folderPlusIcon} />
+            <span>新建</span>
           </button>
         </div>
 
@@ -61,36 +95,96 @@ export default function App() {
         <section className={styles.spaceSection}>
           <div className={styles.sectionLabel}>文件夹列表</div>
           <nav className={styles.spaceList} aria-label="文件夹列表">
-            {snapshot.spaces.map((space) => (
-              <button
-                className={`${styles.spaceItem} ${
-                  space.id === activeSpace.id ? styles.spaceItemActive : ""
-                }`}
-                key={space.id}
-                type="button"
-              >
-                <span className={styles.spaceName}>{space.name}</span>
-                <span className={styles.spacePath}>{space.path}</span>
-                <span className={styles.spaceMeta}>
-                  变更 {space.changedFileCount} · OCR 队列 {space.ocrQueueCount}
-                </span>
-              </button>
-            ))}
+            {snapshot.spaces.length > 0 ? (
+              snapshot.spaces.map((space) => (
+                <button
+                  className={`${styles.spaceItem} ${
+                    space.id === activeSpace?.id ? styles.spaceItemActive : ""
+                  }`}
+                  key={space.id}
+                  type="button"
+                >
+                  <span className={styles.spaceName}>{space.name}</span>
+                  <span className={styles.spacePath}>{space.path}</span>
+                  <span className={styles.spaceMeta}>
+                    变更 {space.changedFileCount} · OCR 队列 {space.ocrQueueCount}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <div className={styles.emptyState}>暂无知识库文件夹</div>
+            )}
           </nav>
         </section>
 
         <section className={styles.defaultPermission} aria-label="默认权限">
-          <span>默认权限</span>
-          <strong>{permissionLabel[activeSpace.defaultPermission]}</strong>
+          <div className={styles.defaultPermissionHeader}>
+            <span>默认权限</span>
+            <button
+              aria-label="打开默认权限设置"
+              className={styles.iconButton}
+              disabled={!hasActiveSpace}
+              aria-expanded={showDefaultPermissionHelp}
+              onClick={() =>
+                setShowDefaultPermissionHelp((currentValue) => !currentValue)
+              }
+              title="默认权限设置"
+              type="button"
+            >
+              <Icon aria-hidden icon={settingsIcon} />
+            </button>
+          </div>
+          <select
+            aria-label="切换文件夹默认权限"
+            className={styles.defaultPermissionSelect}
+            disabled={!hasActiveSpace}
+            value={defaultPermission}
+            onChange={(event) =>
+              void setFolderDefaultPermission(event.target.value as PermissionMode)
+            }
+          >
+            {permissionOptions.map((permission) => (
+              <option key={permission} value={permission}>
+                {permissionLabel[permission]}
+              </option>
+            ))}
+          </select>
+          {showDefaultPermissionHelp ? (
+            <div className={styles.permissionHelp}>
+              <strong>默认权限</strong>
+              <p>
+                默认权限是这个文件夹长期保存的 Agent 操作边界；右侧会话权限只影响当前聊天。
+              </p>
+              <button
+                className={styles.helpToggle}
+                onClick={() => setShowDefaultPermissionHelp(false)}
+                type="button"
+              >
+                <span>收起说明</span>
+                <Icon aria-hidden icon={chevronDownIcon} />
+              </button>
+            </div>
+          ) : null}
         </section>
       </aside>
 
       <main className={styles.main}>
         <header className={styles.folderHeader}>
           <div className={styles.folderTitleRow}>
-            <h2 className={styles.folderName}>{activeSpace.name}</h2>
-            <span className={styles.folderPath}>{activeSpace.path}</span>
+            <h2 className={styles.folderName}>{activeSpace?.name ?? "未选择文件夹"}</h2>
+            <span className={styles.folderPath}>
+              {activeSpace?.path ?? "请先添加一个真实文件夹"}
+            </span>
           </div>
+          <button
+            className={styles.plainButton}
+            disabled={!hasActiveSpace || loading}
+            onClick={() => void scanActiveSpace()}
+            type="button"
+          >
+            <Icon aria-hidden icon={refreshCwIcon} />
+            <span>扫描</span>
+          </button>
         </header>
 
         <nav className={styles.tabs} aria-label="内容标签">
@@ -110,31 +204,39 @@ export default function App() {
           <div className={styles.leftContent}>
             <div className={styles.statusLine}>
               <span>已索引 {snapshot.files.length} 个文件</span>
-              <span>已变更 {activeSpace.changedFileCount} 个文件</span>
-              <span>OCR 队列 {activeSpace.ocrQueueCount} 个</span>
+              <span>已变更 {changedFileCount} 个文件</span>
+              <span>OCR 队列 {ocrQueueCount} 个</span>
+              {loading ? <span>处理中</span> : null}
               {error ? <span>{error}</span> : null}
             </div>
 
             <article className={`${styles.panel} ${styles.panelPadded}`}>
               <div className={styles.panelKicker}>文件夹总览 README.md</div>
-              <h3 className={styles.panelTitle}>面试知识库总览</h3>
+              <h3 className={styles.panelTitle}>
+                {activeSpace ? `${activeSpace.name} 知识库总览` : "等待添加知识库"}
+              </h3>
               <p className={styles.panelText}>
-                这里汇总当前文件夹的重点文档、最近变更和可问答内容。后续解析完成后，README
-                会用于承接人工整理和自动生成的知识结构。
+                {activeSpace
+                  ? "当前阶段从真实文件夹读取文件元数据，扫描完成后会进入本地 SQLite 索引。"
+                  : "添加文件夹后，这里会显示当前知识库的文件状态和后续解析结果。"}
               </p>
             </article>
 
             <section className={styles.panel} aria-label="文件列表">
               <div className={styles.fileHeader}>文件列表</div>
-              {snapshot.files.map((file) => (
-                <div className={styles.fileRow} key={file.id}>
-                  <div>
-                    <strong>{file.name}</strong>
-                    <span>{file.extension}</span>
+              {snapshot.files.length > 0 ? (
+                snapshot.files.map((file) => (
+                  <div className={styles.fileRow} key={file.id}>
+                    <div>
+                      <strong>{file.name}</strong>
+                      <span>{file.extension}</span>
+                    </div>
+                    <span className={fileStatusClass(file)}>{file.statusLabel}</span>
                   </div>
-                  <span className={fileStatusClass(file)}>{file.statusLabel}</span>
-                </div>
-              ))}
+                ))
+              ) : (
+                <div className={styles.emptyState}>暂无已扫描文件</div>
+              )}
             </section>
           </div>
 
@@ -151,10 +253,12 @@ export default function App() {
               </p>
               <div className={styles.buttonRow}>
                 <button className={styles.plainButton} type="button">
-                  查看来源
+                  <Icon aria-hidden icon={eyeIcon} />
+                  <span>查看来源</span>
                 </button>
                 <button className={styles.plainButton} type="button">
-                  加入复习
+                  <Icon aria-hidden icon={bookmarkPlusIcon} />
+                  <span>加入复习</span>
                 </button>
               </div>
             </article>
@@ -181,7 +285,24 @@ export default function App() {
         <header className={styles.agentTop}>
           <div className={styles.agentHeader}>
             <h2 className={styles.agentTitle}>智能助手</h2>
-            <span>会话权限：{permissionLabel[snapshot.sessionPermission]}</span>
+            <label className={styles.permissionPicker}>
+              <span>会话权限</span>
+              <select
+                aria-label="切换会话权限"
+                className={styles.permissionSelect}
+                disabled={!hasActiveSpace}
+                value={snapshot.sessionPermission}
+                onChange={(event) =>
+                  void setSessionPermission(event.target.value as PermissionMode)
+                }
+              >
+                {permissionOptions.map((permission) => (
+                  <option key={permission} value={permission}>
+                    {permissionLabel[permission]}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className={styles.scopeLabel}>范围切换</div>
           <div className={styles.scopeGroup} aria-label="范围切换">
@@ -193,6 +314,7 @@ export default function App() {
                     ? styles.scopeActive
                     : styles.scope
                 }
+                disabled={!hasActiveSpace}
                 key={scope}
                 type="button"
               >
@@ -214,26 +336,31 @@ export default function App() {
               <span>{snapshot.pendingAction.label}</span>
               <div className={styles.buttonRow}>
                 <button className={styles.plainButton} type="button">
-                  批准
+                  <Icon aria-hidden icon={checkIcon} />
+                  <span>批准</span>
                 </button>
                 <button className={styles.plainButton} type="button">
-                  拒绝
+                  <Icon aria-hidden icon={xIcon} />
+                  <span>拒绝</span>
                 </button>
               </div>
             </article>
           ) : null}
         </section>
 
-        <form className={styles.composer}>
-          <textarea
-            aria-label="向智能助手提问"
-            className={styles.composerBox}
-            placeholder="询问当前文件夹"
-            rows={3}
-          />
-          <button className={styles.sendButton} type="button">
-            发送
-          </button>
+        <form aria-label="智能助手输入区" className={styles.composer}>
+          <div className={styles.composerInput}>
+            <textarea
+              aria-label="向智能助手提问"
+              className={styles.composerBox}
+              placeholder={hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"}
+              rows={3}
+            />
+            <button className={styles.sendButton} disabled={!hasActiveSpace} type="button">
+              <Icon aria-hidden icon={sendIcon} />
+              <span>发送</span>
+            </button>
+          </div>
         </form>
       </aside>
     </div>
