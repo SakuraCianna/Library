@@ -1,7 +1,16 @@
-# Tauri + React + Typescript
+# 个人知识库桌面应用
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+这是个人知识库桌面应用的第一阶段工程骨架，用于搭建桌面端基础开发环境。
 
-## Recommended IDE Setup
+## 本地开发命令
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+```powershell
+npm install
+npm run build
+npm run tauri dev
+```
+
+```powershell
+Set-Location .\src-tauri
+cargo test
+```
