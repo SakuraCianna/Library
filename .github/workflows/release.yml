@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  windows-bundle:
+    name: Windows bundle
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Protocol Buffers compiler
+        run: |
+          choco install protoc -y --no-progress
+          $protocPath = (Get-Command protoc).Source
+          "PROTOC=$protocPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          protoc --version
+
+      - name: Setup Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt
+          rustc --version
+          cargo --version
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/src-tauri/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build Tauri Windows bundle
+        working-directory: app
+        run: npm run tauri build
+
+      - name: Upload Windows bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: library-windows-bundle
+          path: app/src-tauri/target/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-tag-draft:
+    name: Publish tag draft
+    runs-on: windows-latest
+    needs: windows-bundle
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows bundle artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: library-windows-bundle
+          path: release-assets
+
+      - name: Create draft GitHub Release for tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $bundleRoot = "release-assets"
+          $assets = Get-ChildItem -Path $bundleRoot -Recurse -File | Select-Object -ExpandProperty FullName
+          if (-not $assets) {
+            throw "没有找到可发布的 Tauri 构建产物"
+          }
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --title "个人知识库 $tag" --notes "Windows 桌面端自动构建产物。当前未接入代码签名，正式分发前请先验证安装包。" --draft
+          }
+          gh release upload $tag $assets --repo $env:GITHUB_REPOSITORY --clobber
