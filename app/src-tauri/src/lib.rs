@@ -3,6 +3,7 @@ mod error;
 mod models;
 mod state;
 pub mod storage;
+pub mod vector;
 
 use state::AppState;
 
