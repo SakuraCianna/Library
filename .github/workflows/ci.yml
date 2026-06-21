@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+      - "codex/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  verify:
+    name: Windows verify
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Protocol Buffers compiler
+        run: |
+          choco install protoc -y --no-progress
+          $protocPath = (Get-Command protoc).Source
+          "PROTOC=$protocPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          protoc --version
+
+      - name: Setup Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt
+          rustc --version
+          cargo --version
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: app
+        run: npm test
+
+      - name: Build frontend
+        working-directory: app
+        run: npm run build
+
+      - name: Check Rust formatting
+        working-directory: app/src-tauri
+        run: cargo fmt -- --check
+
+      - name: Run Rust tests
+        working-directory: app/src-tauri
+        run: cargo test
+
+      - name: Check Rust workspace
+        working-directory: app/src-tauri
+        run: cargo check
