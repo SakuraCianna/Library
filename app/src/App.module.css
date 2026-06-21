@@ -1,9 +1,9 @@
 .shell {
   display: grid;
-  grid-template-columns: 268px minmax(560px, 1fr) 356px;
-  min-width: var(--workbench-min-width);
-  min-height: 100dvh;
+  grid-template-columns: minmax(220px, 268px) minmax(0, 1fr) minmax(300px, 356px);
+  height: 100dvh;
   background: var(--color-bg);
+  overflow: hidden;
 }
 
 .sidebar {
@@ -33,6 +33,7 @@
 }
 
 .ghostButton,
+.iconButton,
 .plainButton,
 .scope,
 .scopeActive,
@@ -44,8 +45,30 @@
 }
 
 .ghostButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 4px 9px;
   font-size: 12px;
+}
+
+.ghostButton:disabled,
+.iconButton:disabled,
+.plainButton:disabled,
+.scope:disabled,
+.scopeActive:disabled,
+.sendButton:disabled,
+.defaultPermissionSelect:disabled,
+.permissionSelect:disabled {
+  opacity: 0.55;
+}
+
+.iconButton {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
 }
 
 .searchBox {
@@ -121,11 +144,66 @@
   font-size: 12px;
 }
 
-.defaultPermission strong {
-  display: block;
-  margin-top: var(--space-1);
+.defaultPermissionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.defaultPermissionSelect,
+.permissionSelect {
+  border: 1px solid #c8d1df;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
   color: var(--color-text);
+  outline: none;
+}
+
+.defaultPermissionSelect {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: 7px 28px 7px 9px;
   font-size: 13px;
+}
+
+.permissionHelp {
+  display: grid;
+  gap: 6px;
+  margin-top: var(--space-2);
+  border: 1px solid #d8e1ee;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  padding: 9px;
+  color: #465163;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.permissionHelp strong,
+.permissionHelp p {
+  margin: 0;
+}
+
+.helpToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  width: fit-content;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-accent);
+  font-size: 12px;
+}
+
+.emptyState {
+  border: 1px dashed #cbd5e1;
+  border-radius: var(--radius-control);
+  padding: 10px;
+  color: var(--color-muted);
+  font-size: 12px;
 }
 
 .main {
@@ -138,6 +216,8 @@
 .folderHeader {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   min-width: 0;
   border-bottom: 1px solid var(--color-border-soft);
   padding: 12px 18px;
@@ -316,6 +396,10 @@
 
 .plainButton,
 .sendButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   padding: 6px 9px;
   font-size: 12px;
 }
@@ -352,6 +436,22 @@
 
 .agentHeader span {
   color: var(--color-muted);
+  font-size: 12px;
+}
+
+.permissionPicker {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.permissionSelect {
+  max-width: 116px;
+  min-width: 92px;
+  padding: 5px 24px 5px 8px;
   font-size: 12px;
 }
 
@@ -427,26 +527,122 @@
 }
 
 .composer {
-  display: grid;
-  gap: var(--space-2);
   border-top: 1px solid var(--color-border);
   padding: var(--space-3);
 }
 
+.composerInput {
+  position: relative;
+}
+
 .composerBox {
+  display: block;
   width: 100%;
+  min-height: 96px;
   resize: none;
   border: 1px solid #cfd7e5;
   border-radius: var(--radius-panel);
   background: var(--color-surface);
-  padding: 10px;
+  padding: 10px 78px 42px 10px;
   color: var(--color-text);
   font-size: 13px;
+  line-height: 1.5;
   outline: none;
 }
 
 .sendButton {
-  justify-self: end;
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
   background: var(--color-accent);
   color: #ffffff;
+}
+
+@media (max-width: 1180px) {
+  .shell {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(340px, 42vh);
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .agent {
+    grid-column: 1 / -1;
+    min-height: 340px;
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
+  }
+
+  .main {
+    min-height: 640px;
+  }
+
+  .contentGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    display: block;
+  }
+
+  .sidebar,
+  .main,
+  .agent {
+    border-right: 0;
+    border-left: 0;
+  }
+
+  .sidebar {
+    gap: var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .defaultPermission {
+    margin-top: 0;
+  }
+
+  .folderHeader,
+  .tabs,
+  .contentGrid,
+  .agentTop,
+  .messages,
+  .composer {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .folderTitleRow,
+  .agentHeader {
+    flex-wrap: wrap;
+  }
+
+  .folderPath {
+    flex-basis: 100%;
+  }
+
+  .tabs {
+    overflow-x: auto;
+  }
+
+  .contentGrid {
+    gap: var(--space-3);
+  }
+
+  .tablePreview {
+    grid-template-columns: 1fr;
+  }
+
+  .messageUser,
+  .messageAssistant,
+  .messageSystem,
+  .pendingAction {
+    max-width: 100%;
+  }
+
+  .messages {
+    max-height: 420px;
+  }
 }

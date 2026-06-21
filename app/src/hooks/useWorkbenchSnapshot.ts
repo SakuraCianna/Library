@@ -1,8 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { mockWorkbench } from "../data/mockWorkbench";
-import { getWorkbenchSnapshot } from "../lib/tauriClient";
-import type { WorkbenchSnapshot } from "../types/workbench";
+import { emptyWorkbench } from "../data/emptyWorkbench";
+import {
+  createKnowledgeSpace,
+  getWorkbenchSnapshot,
+  requestSessionPermission,
+  scanKnowledgeSpace,
+  selectKnowledgeFolder,
+  setDefaultPermission,
+} from "../lib/tauriClient";
+import type { PermissionMode, WorkbenchSnapshot } from "../types/workbench";
 
 interface WorkbenchSnapshotState {
   snapshot: WorkbenchSnapshot;
@@ -10,14 +17,154 @@ interface WorkbenchSnapshotState {
   error: string | null;
 }
 
-const fallbackError = "状态读取失败，正在显示本地示例";
+interface WorkbenchSnapshotResult extends WorkbenchSnapshotState {
+  createSpaceFromFolder: (permission: PermissionMode) => Promise<void>;
+  scanActiveSpace: () => Promise<void>;
+  setFolderDefaultPermission: (permission: PermissionMode) => Promise<void>;
+  setSessionPermission: (permission: PermissionMode) => Promise<void>;
+}
 
-export function useWorkbenchSnapshot(): WorkbenchSnapshotState {
+const fallbackError = "状态读取失败，请检查本地数据库或稍后重试";
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = String((error as { message?: unknown }).message ?? "").trim();
+    return message || fallback;
+  }
+
+  return fallback;
+}
+
+export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
   const [state, setState] = useState<WorkbenchSnapshotState>({
-    snapshot: mockWorkbench,
+    snapshot: emptyWorkbench,
     loading: true,
     error: null,
   });
+
+  const commitSnapshot = useCallback((snapshot: WorkbenchSnapshot) => {
+    setState({
+      snapshot,
+      loading: false,
+      error: null,
+    });
+  }, []);
+
+  const setSessionPermission = useCallback(async (permission: PermissionMode) => {
+    try {
+      const snapshot = await requestSessionPermission(permission);
+      setState((current) => ({
+        snapshot: {
+          ...current.snapshot,
+          ...snapshot,
+          spaces:
+            snapshot.spaces.length > 0 ? snapshot.spaces : current.snapshot.spaces,
+          activeSpaceId: snapshot.activeSpaceId || current.snapshot.activeSpaceId,
+          files: snapshot.files.length > 0 ? snapshot.files : current.snapshot.files,
+          sessionPermission: permission,
+        },
+        loading: false,
+        error: null,
+      }));
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, "权限切换失败，已保留当前权限"),
+      }));
+    }
+  }, [commitSnapshot]);
+
+  const createSpaceFromFolder = useCallback(
+    async (permission: PermissionMode) => {
+      const rootPath = await selectKnowledgeFolder();
+      if (!rootPath) {
+        return;
+      }
+
+      setState((current) => ({ ...current, loading: true, error: null }));
+      try {
+        const snapshot = await createKnowledgeSpace(rootPath, permission);
+        commitSnapshot(snapshot);
+      } catch (error) {
+        setState((current) => ({
+          ...current,
+          loading: false,
+          error: getErrorMessage(error, "创建知识库失败"),
+        }));
+      }
+    },
+    [commitSnapshot],
+  );
+
+  const scanActiveSpace = useCallback(async () => {
+    const spaceId = state.snapshot.activeSpaceId;
+    if (!spaceId) {
+      setState((current) => ({
+        ...current,
+        error: "请先添加一个知识库文件夹",
+      }));
+      return;
+    }
+
+    setState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const snapshot = await scanKnowledgeSpace(spaceId);
+      commitSnapshot(snapshot);
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, "扫描文件夹失败"),
+      }));
+    }
+  }, [commitSnapshot, state.snapshot.activeSpaceId]);
+
+  const setFolderDefaultPermission = useCallback(
+    async (permission: PermissionMode) => {
+      const spaceId = state.snapshot.activeSpaceId;
+      if (!spaceId) {
+        setState((current) => ({
+          ...current,
+          error: "请先添加一个知识库文件夹",
+        }));
+        return;
+      }
+
+      try {
+        const snapshot = await setDefaultPermission(spaceId, permission);
+        setState((current) => {
+          const nextSpaces =
+            snapshot.spaces.length > 0
+              ? snapshot.spaces
+              : current.snapshot.spaces.map((space) =>
+                  space.id === spaceId
+                    ? { ...space, defaultPermission: permission }
+                    : space,
+                );
+
+          return {
+            snapshot: {
+              ...current.snapshot,
+              ...snapshot,
+              spaces: nextSpaces,
+              activeSpaceId: snapshot.activeSpaceId || current.snapshot.activeSpaceId,
+              files: snapshot.files.length > 0 ? snapshot.files : current.snapshot.files,
+            },
+            loading: false,
+            error: null,
+          };
+        });
+      } catch (error) {
+        setState((current) => ({
+          ...current,
+          loading: false,
+          error: getErrorMessage(error, "默认权限更新失败"),
+        }));
+      }
+    },
+    [commitSnapshot, state.snapshot.activeSpaceId],
+  );
 
   useEffect(() => {
     let active = true;
@@ -25,13 +172,13 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotState {
     getWorkbenchSnapshot()
       .then((snapshot) => {
         if (active) {
-          setState({ snapshot, loading: false, error: null });
+          commitSnapshot(snapshot);
         }
       })
       .catch(() => {
         if (active) {
           setState({
-            snapshot: mockWorkbench,
+            snapshot: emptyWorkbench,
             loading: false,
             error: fallbackError,
           });
@@ -41,7 +188,13 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotState {
     return () => {
       active = false;
     };
-  }, []);
+  }, [commitSnapshot]);
 
-  return state;
+  return {
+    ...state,
+    createSpaceFromFolder,
+    scanActiveSpace,
+    setFolderDefaultPermission,
+    setSessionPermission,
+  };
 }

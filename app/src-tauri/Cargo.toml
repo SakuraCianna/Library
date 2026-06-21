@@ -33,6 +33,7 @@ arrow-array = "58.3.0"
 arrow-schema = "58.3.0"
 futures = "0.3.32"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tauri-plugin-dialog = "2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

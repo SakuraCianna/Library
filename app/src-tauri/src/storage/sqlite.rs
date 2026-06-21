@@ -4,6 +4,10 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::models::{
+    KnowledgeFile, KnowledgeSpace, ParseStatus, PermissionMode, ScanSummary, ScannedFile,
+};
+
 const FOUNDATION_SCHEMA: &str = include_str!("../../migrations/001_foundation.sql");
 const FOUNDATION_TABLES: [&str; 6] = [
     "knowledge_spaces",
@@ -13,6 +17,11 @@ const FOUNDATION_TABLES: [&str; 6] = [
     "parse_jobs",
     "trash_entries",
 ];
+
+pub struct SpaceRoot {
+    pub id: String,
+    pub root_path: String,
+}
 
 pub struct SqliteStore {
     connection: Connection,
@@ -38,23 +47,141 @@ impl SqliteStore {
             self.rebuild_legacy_foundation_schema()?;
         }
 
-        self.connection.execute_batch(FOUNDATION_SCHEMA)
+        self.connection.execute_batch(FOUNDATION_SCHEMA)?;
+        self.ensure_folder_scan_schema()
+    }
+
+    fn ensure_folder_scan_schema(&self) -> rusqlite::Result<()> {
+        if !self.column_exists("files", "size_bytes")? {
+            self.connection.execute_batch(
+                "ALTER TABLE files ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
+        if !self.column_exists("files", "last_scanned_at")? {
+            self.connection
+                .execute_batch("ALTER TABLE files ADD COLUMN last_scanned_at TEXT;")?;
+        }
+
+        Ok(())
     }
 
     pub fn create_knowledge_space(
         &self,
         name: &str,
         root_path: &str,
-        default_permission: &str,
+        default_permission: PermissionMode,
     ) -> rusqlite::Result<String> {
         let id = Uuid::new_v4().to_string();
         let now = OffsetDateTime::now_utc().to_string();
         self.connection.execute(
             "INSERT INTO knowledge_spaces (id, name, root_path, default_permission, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-            params![id, name, root_path, default_permission, now],
+            params![id, name, root_path, default_permission.as_str(), now],
         )?;
         Ok(id)
+    }
+
+    pub fn list_knowledge_spaces(&self) -> rusqlite::Result<Vec<KnowledgeSpace>> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+                space.id,
+                space.name,
+                space.root_path,
+                space.default_permission,
+                COALESCE(changed.changed_count, 0) AS changed_count,
+                COALESCE(queued.queued_count, 0) AS queued_count
+             FROM knowledge_spaces space
+             LEFT JOIN (
+                SELECT space_id, COUNT(*) AS changed_count
+                FROM files
+                WHERE deleted_at IS NULL AND parse_status = 'changed'
+                GROUP BY space_id
+             ) changed ON changed.space_id = space.id
+             LEFT JOIN (
+                SELECT space_id, COUNT(*) AS queued_count
+                FROM files
+                WHERE deleted_at IS NULL AND parse_status = 'queued'
+                GROUP BY space_id
+             ) queued ON queued.space_id = space.id
+             WHERE space.deleted_at IS NULL
+             ORDER BY space.updated_at DESC, space.name COLLATE NOCASE",
+        )?;
+
+        let spaces = statement
+            .query_map([], |row| {
+                let permission: String = row.get(3)?;
+                Ok(KnowledgeSpace {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    path: row.get(2)?,
+                    default_permission: PermissionMode::from_db(&permission)
+                        .unwrap_or(PermissionMode::Readonly),
+                    changed_file_count: row.get(4)?,
+                    ocr_queue_count: row.get(5)?,
+                })
+            })?
+            .collect();
+
+        spaces
+    }
+
+    pub fn get_space_root(&self, space_id: &str) -> rusqlite::Result<Option<SpaceRoot>> {
+        self.connection
+            .query_row(
+                "SELECT id, root_path FROM knowledge_spaces WHERE id = ?1 AND deleted_at IS NULL",
+                [space_id],
+                |row| {
+                    Ok(SpaceRoot {
+                        id: row.get(0)?,
+                        root_path: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn update_knowledge_space_permission(
+        &self,
+        space_id: &str,
+        permission: PermissionMode,
+    ) -> rusqlite::Result<bool> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let updated = self.connection.execute(
+            "UPDATE knowledge_spaces
+             SET default_permission = ?1, updated_at = ?2
+             WHERE id = ?3 AND deleted_at IS NULL",
+            params![permission.as_str(), now, space_id],
+        )?;
+
+        Ok(updated > 0)
+    }
+
+    pub fn list_files(&self, space_id: &str) -> rusqlite::Result<Vec<KnowledgeFile>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, relative_path, extension, parse_status
+             FROM files
+             WHERE space_id = ?1 AND deleted_at IS NULL
+             ORDER BY relative_path COLLATE NOCASE",
+        )?;
+
+        let files = statement
+            .query_map([space_id], |row| {
+                let relative_path: String = row.get(1)?;
+                let status_value: String = row.get(3)?;
+                let status = ParseStatus::from_db(&status_value).unwrap_or(ParseStatus::Failed);
+
+                Ok(KnowledgeFile {
+                    id: row.get(0)?,
+                    name: display_file_name(&relative_path),
+                    extension: display_extension(row.get::<_, String>(2)?),
+                    status_label: status.label().to_string(),
+                    status,
+                })
+            })?
+            .collect();
+
+        files
     }
 
     pub fn count_knowledge_spaces(&self) -> rusqlite::Result<u32> {
@@ -63,6 +190,140 @@ impl SqliteStore {
             [],
             |row| row.get::<_, u32>(0),
         )
+    }
+
+    pub fn apply_scan_results(
+        &mut self,
+        space_id: &str,
+        scanned_files: &[ScannedFile],
+    ) -> rusqlite::Result<ScanSummary> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let scan_run_id = Uuid::new_v4().to_string();
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "INSERT INTO scan_runs (id, space_id, started_at, status)
+             VALUES (?1, ?2, ?3, 'running')",
+            params![scan_run_id, space_id, now],
+        )?;
+
+        let existing_files = load_existing_files(&tx, space_id)?;
+        let mut seen_keys = Vec::with_capacity(scanned_files.len());
+        let mut summary = ScanSummary::default();
+
+        for scanned_file in scanned_files {
+            let key = normalize_lookup_key(&scanned_file.relative_path);
+            seen_keys.push(key.clone());
+
+            match existing_files.iter().find(|file| file.lookup_key == key) {
+                Some(existing) if existing.deleted_at.is_none() => {
+                    let changed = existing.content_hash.as_deref()
+                        != Some(scanned_file.content_hash.as_str())
+                        || existing.modified_at.as_deref()
+                            != Some(scanned_file.modified_at.as_str())
+                        || existing.size_bytes != scanned_file.size_bytes;
+                    let status = if changed {
+                        summary.changed_count += 1;
+                        ParseStatus::Changed
+                    } else {
+                        existing.parse_status.clone()
+                    };
+
+                    tx.execute(
+                        "UPDATE files
+                         SET extension = ?1, content_hash = ?2, size_bytes = ?3,
+                             modified_at = ?4, parse_status = ?5, last_scanned_at = ?6,
+                             updated_at = ?6, deleted_at = NULL
+                         WHERE id = ?7",
+                        params![
+                            scanned_file.extension,
+                            scanned_file.content_hash,
+                            scanned_file.size_bytes,
+                            scanned_file.modified_at,
+                            status.as_str(),
+                            now,
+                            existing.id
+                        ],
+                    )?;
+                }
+                Some(existing) => {
+                    summary.added_count += 1;
+                    tx.execute(
+                        "UPDATE files
+                         SET relative_path = ?1, extension = ?2, content_hash = ?3,
+                             size_bytes = ?4, modified_at = ?5, parse_status = ?6,
+                             last_scanned_at = ?7, updated_at = ?7, deleted_at = NULL
+                         WHERE id = ?8",
+                        params![
+                            scanned_file.relative_path,
+                            scanned_file.extension,
+                            scanned_file.content_hash,
+                            scanned_file.size_bytes,
+                            scanned_file.modified_at,
+                            ParseStatus::Queued.as_str(),
+                            now,
+                            existing.id
+                        ],
+                    )?;
+                }
+                None => {
+                    summary.added_count += 1;
+                    tx.execute(
+                        "INSERT INTO files (
+                            id, space_id, relative_path, extension, content_hash, size_bytes,
+                            modified_at, parse_status, last_scanned_at, created_at, updated_at
+                         )
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9)",
+                        params![
+                            Uuid::new_v4().to_string(),
+                            space_id,
+                            scanned_file.relative_path,
+                            scanned_file.extension,
+                            scanned_file.content_hash,
+                            scanned_file.size_bytes,
+                            scanned_file.modified_at,
+                            ParseStatus::Queued.as_str(),
+                            now
+                        ],
+                    )?;
+                }
+            }
+        }
+
+        for existing in existing_files
+            .iter()
+            .filter(|file| file.deleted_at.is_none() && !seen_keys.contains(&file.lookup_key))
+        {
+            summary.deleted_count += 1;
+            tx.execute(
+                "UPDATE files
+                 SET deleted_at = ?1, updated_at = ?1
+                 WHERE id = ?2",
+                params![now, existing.id],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE scan_runs
+             SET finished_at = ?1, status = 'succeeded', added_count = ?2,
+                 changed_count = ?3, deleted_count = ?4, failed_count = ?5,
+                 message = ?6
+             WHERE id = ?7",
+            params![
+                now,
+                summary.added_count,
+                summary.changed_count,
+                summary.deleted_count,
+                summary.failed_count,
+                format!(
+                    "新增 {} 个，变更 {} 个，删除 {} 个",
+                    summary.added_count, summary.changed_count, summary.deleted_count
+                ),
+                scan_run_id
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(summary)
     }
 
     fn foundation_schema_needs_rebuild(&self) -> rusqlite::Result<bool> {
@@ -226,9 +487,71 @@ fn copy_legacy_tables(tx: &Transaction<'_>, table_names: &[&str]) -> rusqlite::R
     Ok(())
 }
 
+#[derive(Debug)]
+struct ExistingFile {
+    id: String,
+    lookup_key: String,
+    content_hash: Option<String>,
+    modified_at: Option<String>,
+    size_bytes: i64,
+    parse_status: ParseStatus,
+    deleted_at: Option<String>,
+}
+
+fn load_existing_files(
+    tx: &Transaction<'_>,
+    space_id: &str,
+) -> rusqlite::Result<Vec<ExistingFile>> {
+    let mut statement = tx.prepare(
+        "SELECT id, relative_path, content_hash, modified_at, size_bytes, parse_status, deleted_at
+         FROM files
+         WHERE space_id = ?1",
+    )?;
+
+    let files = statement
+        .query_map([space_id], |row| {
+            let relative_path: String = row.get(1)?;
+            let parse_status: String = row.get(5)?;
+            Ok(ExistingFile {
+                id: row.get(0)?,
+                lookup_key: normalize_lookup_key(&relative_path),
+                content_hash: row.get(2)?,
+                modified_at: row.get(3)?,
+                size_bytes: row.get(4)?,
+                parse_status: ParseStatus::from_db(&parse_status).unwrap_or(ParseStatus::Failed),
+                deleted_at: row.get(6)?,
+            })
+        })?
+        .collect();
+
+    files
+}
+
+fn normalize_lookup_key(relative_path: &str) -> String {
+    relative_path.replace('/', "\\").to_lowercase()
+}
+
+fn display_file_name(relative_path: &str) -> String {
+    relative_path
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(relative_path)
+        .to_string()
+}
+
+fn display_extension(extension: String) -> String {
+    if extension.starts_with('.') {
+        extension
+    } else {
+        format!(".{extension}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
+    use crate::models::{PermissionMode, ScannedFile};
     use rusqlite::{params, Connection};
 
     const TEST_TIME: &str = "2026-06-21T00:00:00Z";
@@ -287,7 +610,7 @@ mod tests {
     fn creates_knowledge_space_in_local_sqlite() {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
         let id = store
-            .create_knowledge_space("面试", "D:\\知识库\\面试", "approval")
+            .create_knowledge_space("面试", "D:\\知识库\\面试", PermissionMode::Approval)
             .expect("space is inserted");
 
         assert!(!id.is_empty());
@@ -298,10 +621,11 @@ mod tests {
     fn rejects_case_only_duplicate_root_paths() {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
         store
-            .create_knowledge_space("面试", "D:\\知识库\\面试", "approval")
+            .create_knowledge_space("面试", "D:\\知识库\\面试", PermissionMode::Approval)
             .expect("space is inserted");
 
-        let duplicate = store.create_knowledge_space("面试副本", "d:\\知识库\\面试", "approval");
+        let duplicate =
+            store.create_knowledge_space("面试副本", "d:\\知识库\\面试", PermissionMode::Approval);
 
         assert!(duplicate.is_err());
         assert_eq!(store.count_knowledge_spaces().unwrap(), 1);
@@ -311,7 +635,7 @@ mod tests {
     fn soft_deleted_knowledge_space_allows_recreating_root_path() {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
         let deleted_id = store
-            .create_knowledge_space("面试", "D:\\知识库\\面试", "approval")
+            .create_knowledge_space("面试", "D:\\知识库\\面试", PermissionMode::Approval)
             .expect("space is inserted");
         store
             .connection
@@ -322,7 +646,7 @@ mod tests {
             .expect("space is soft deleted");
 
         let recreated_id = store
-            .create_knowledge_space("面试新空间", "d:\\知识库\\面试", "approval")
+            .create_knowledge_space("面试新空间", "d:\\知识库\\面试", PermissionMode::Approval)
             .expect("soft-deleted root path can be reused");
 
         assert_ne!(deleted_id, recreated_id);
@@ -333,7 +657,7 @@ mod tests {
     fn rejects_case_only_duplicate_file_paths() {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
         let space_id = store
-            .create_knowledge_space("面试", "D:\\知识库\\文件", "approval")
+            .create_knowledge_space("面试", "D:\\知识库\\文件", PermissionMode::Approval)
             .expect("space is inserted");
 
         insert_file(&store, "file-1", &space_id, "README.md", "indexed").expect("file is inserted");
@@ -346,7 +670,7 @@ mod tests {
     fn soft_deleted_file_allows_reinserting_relative_path() {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
         let space_id = store
-            .create_knowledge_space("面试", "D:\\知识库\\文件", "approval")
+            .create_knowledge_space("面试", "D:\\知识库\\文件", PermissionMode::Approval)
             .expect("space is inserted");
 
         insert_file(&store, "file-1", &space_id, "README.md", "indexed").expect("file is inserted");
@@ -360,6 +684,44 @@ mod tests {
 
         insert_file(&store, "file-2", &space_id, "readme.md", "queued")
             .expect("soft-deleted relative path can be reused");
+    }
+
+    #[test]
+    fn scan_results_upsert_changed_files_and_soft_delete_missing_files() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("面试", "D:\\知识库\\扫描", PermissionMode::Approval)
+            .expect("space is inserted");
+
+        let first_scan = vec![
+            scanned_file("README.md", "md", 10, "hash-a"),
+            scanned_file("资料\\Redis.pdf", "pdf", 20, "hash-b"),
+        ];
+        let first_summary = store
+            .apply_scan_results(&space_id, &first_scan)
+            .expect("first scan applies");
+
+        assert_eq!(first_summary.added_count, 2);
+        assert_eq!(store.list_files(&space_id).unwrap().len(), 2);
+
+        let second_scan = vec![
+            scanned_file("README.md", "md", 11, "hash-a2"),
+            scanned_file("面试题.xlsx", "xlsx", 30, "hash-c"),
+        ];
+        let second_summary = store
+            .apply_scan_results(&space_id, &second_scan)
+            .expect("second scan applies");
+        let files = store.list_files(&space_id).expect("files list");
+
+        assert_eq!(second_summary.added_count, 1);
+        assert_eq!(second_summary.changed_count, 1);
+        assert_eq!(second_summary.deleted_count, 1);
+        assert_eq!(files.len(), 2);
+        assert!(files
+            .iter()
+            .any(|file| file.name == "README.md"
+                && file.status == crate::models::ParseStatus::Changed));
+        assert!(files.iter().all(|file| file.name != "Redis.pdf"));
     }
 
     #[test]
@@ -380,7 +742,7 @@ mod tests {
     fn indexes_chinese_knowledge_blocks_with_stable_fts_rowid() {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
         let space_id = store
-            .create_knowledge_space("面试", "D:\\知识库\\Redis", "approval")
+            .create_knowledge_space("面试", "D:\\知识库\\Redis", PermissionMode::Approval)
             .expect("space is inserted");
 
         insert_knowledge_block(&store, &space_id).expect("block is inserted");
@@ -408,7 +770,7 @@ mod tests {
     fn documents_trigram_short_chinese_query_behavior() {
         let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
         let space_id = store
-            .create_knowledge_space("面试", "D:\\知识库\\短词", "approval")
+            .create_knowledge_space("面试", "D:\\知识库\\短词", PermissionMode::Approval)
             .expect("space is inserted");
         insert_knowledge_block(&store, &space_id).expect("block is inserted");
 
@@ -483,7 +845,7 @@ mod tests {
             )
             .expect("legacy space is soft deleted");
         store
-            .create_knowledge_space("新空间", "d:\\知识库\\旧", "approval")
+            .create_knowledge_space("新空间", "d:\\知识库\\旧", PermissionMode::Approval)
             .expect("rebuilt schema allows reused root path");
         store
             .connection
@@ -571,5 +933,20 @@ mod tests {
                 TEST_TIME
             ],
         )
+    }
+
+    fn scanned_file(
+        relative_path: &str,
+        extension: &str,
+        size_bytes: i64,
+        content_hash: &str,
+    ) -> ScannedFile {
+        ScannedFile {
+            relative_path: relative_path.to_string(),
+            extension: extension.to_string(),
+            size_bytes,
+            modified_at: TEST_TIME.to_string(),
+            content_hash: content_hash.to_string(),
+        }
     }
 }

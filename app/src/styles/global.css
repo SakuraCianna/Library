@@ -8,7 +8,7 @@ html,
 body,
 #root {
   margin: 0;
-  min-width: var(--workbench-min-width);
+  width: 100%;
   min-height: 100dvh;
   font-family: var(--font-ui);
   color: var(--color-text);
@@ -21,6 +21,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
