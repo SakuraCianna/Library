@@ -2,7 +2,7 @@ mod commands;
 mod error;
 mod models;
 mod state;
-mod storage;
+pub mod storage;
 
 use state::AppState;
 
