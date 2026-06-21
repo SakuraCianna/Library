@@ -1,4 +1,4 @@
-import { mockWorkbench } from "./data/mockWorkbench";
+import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
 import type {
   ChatMessage,
   ChatScope,
@@ -36,7 +36,7 @@ function messageClass(message: ChatMessage) {
 }
 
 export default function App() {
-  const snapshot = mockWorkbench;
+  const { snapshot, error } = useWorkbenchSnapshot();
   const activeSpace =
     snapshot.spaces.find((space) => space.id === snapshot.activeSpaceId) ??
     snapshot.spaces[0];
@@ -112,6 +112,7 @@ export default function App() {
               <span>已索引 {snapshot.files.length} 个文件</span>
               <span>已变更 {activeSpace.changedFileCount} 个文件</span>
               <span>OCR 队列 {activeSpace.ocrQueueCount} 个</span>
+              {error ? <span>{error}</span> : null}
             </div>
 
             <article className={`${styles.panel} ${styles.panelPadded}`}>
