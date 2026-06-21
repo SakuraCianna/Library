@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
 import { mockWorkbench } from "../data/mockWorkbench";
 import type { WorkbenchSnapshot } from "../types/workbench";
@@ -9,7 +9,7 @@ type TauriWorkbenchSnapshot = Pick<
 >;
 
 function isTauriRuntime() {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return isTauri();
 }
 
 function mergeWorkbenchSnapshot(

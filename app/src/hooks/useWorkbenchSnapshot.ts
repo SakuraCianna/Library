@@ -12,18 +12,6 @@ interface WorkbenchSnapshotState {
 
 const fallbackError = "状态读取失败，正在显示本地示例";
 
-function formatSnapshotError(error: unknown) {
-  if (error instanceof Error && error.message) {
-    return `${fallbackError}：${error.message}`;
-  }
-
-  if (typeof error === "string" && error) {
-    return `${fallbackError}：${error}`;
-  }
-
-  return fallbackError;
-}
-
 export function useWorkbenchSnapshot(): WorkbenchSnapshotState {
   const [state, setState] = useState<WorkbenchSnapshotState>({
     snapshot: mockWorkbench,
@@ -40,12 +28,12 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotState {
           setState({ snapshot, loading: false, error: null });
         }
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (active) {
           setState({
             snapshot: mockWorkbench,
             loading: false,
-            error: formatSnapshotError(error),
+            error: fallbackError,
           });
         }
       });
