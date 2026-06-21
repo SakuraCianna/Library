@@ -38,12 +38,11 @@ describe("useWorkbenchSnapshot", () => {
     clearMocks();
     Reflect.deleteProperty(globalThis, "isTauri");
     vi.doUnmock("../lib/tauriClient");
+    vi.doUnmock("react");
     vi.resetModules();
   });
 
   it("在浏览器环境返回本地示例并结束 loading", async () => {
-    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
-
     const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
 
     render(
@@ -96,6 +95,31 @@ describe("useWorkbenchSnapshot", () => {
     );
   });
 
+  it("读取失败时不会显示原始字符串错误", async () => {
+    vi.doMock("../lib/tauriClient", () => ({
+      getWorkbenchSnapshot: vi.fn(async () => {
+        throw "D:\\知识库\\敏感文件夹\\index.db";
+      }),
+    }));
+
+    const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
+
+    render(
+      React.createElement(SnapshotProbe, {
+        useSnapshot: useWorkbenchSnapshot,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading")).toHaveTextContent("false");
+    });
+
+    expect(screen.getByTestId("error")).toHaveTextContent(
+      "状态读取失败，正在显示本地示例",
+    );
+    expect(screen.getByTestId("error")).not.toHaveTextContent("敏感文件夹");
+  });
+
   it("在 Tauri 环境合并命令返回的工作台状态", async () => {
     Object.defineProperty(globalThis, "isTauri", {
       configurable: true,
@@ -135,6 +159,9 @@ describe("useWorkbenchSnapshot", () => {
 
   it("组件卸载后不会继续更新状态", async () => {
     let resolveSnapshot: (snapshot: typeof mockWorkbench) => void = () => {};
+    const setState = vi.fn();
+    let cleanupEffect: (() => void) | undefined;
+
     vi.doMock("../lib/tauriClient", () => ({
       getWorkbenchSnapshot: vi.fn(
         () =>
@@ -143,20 +170,33 @@ describe("useWorkbenchSnapshot", () => {
           }),
       ),
     }));
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("react", async () => {
+      const actual = await vi.importActual<typeof import("react")>("react");
+
+      return {
+        ...actual,
+        useEffect: vi.fn((effect: () => void | (() => void)) => {
+          const cleanupEffectCandidate = effect();
+
+          if (typeof cleanupEffectCandidate === "function") {
+            cleanupEffect = cleanupEffectCandidate;
+          }
+        }),
+        useState: vi.fn(() => [
+          { snapshot: mockWorkbench, loading: true, error: null },
+          setState,
+        ]),
+      };
+    });
 
     const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
-    const { unmount } = render(
-      React.createElement(SnapshotProbe, {
-        useSnapshot: useWorkbenchSnapshot,
-      }),
-    );
+    useWorkbenchSnapshot();
 
-    unmount();
+    expect(cleanupEffect).toBeDefined();
+    cleanupEffect?.();
     resolveSnapshot(mockWorkbench);
     await Promise.resolve();
 
-    expect(consoleError).not.toHaveBeenCalled();
-    consoleError.mockRestore();
+    expect(setState).not.toHaveBeenCalled();
   });
 });
