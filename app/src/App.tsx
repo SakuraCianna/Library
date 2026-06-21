@@ -20,6 +20,7 @@ const scopeLabel: Record<ChatScope, string> = {
 };
 
 const tabs = ["总览", "文件", "知识块", "表格", "回收站"];
+const scopes = Object.keys(scopeLabel) as ChatScope[];
 
 function fileStatusClass(file: KnowledgeFile) {
   if (file.status === "changed") return styles.statusChanged;
@@ -95,6 +96,7 @@ export default function App() {
         <nav className={styles.tabs} aria-label="内容标签">
           {tabs.map((tab, index) => (
             <button
+              aria-current={index === 0 ? "page" : undefined}
               className={index === 0 ? styles.tabActive : styles.tab}
               key={tab}
               type="button"
@@ -182,8 +184,9 @@ export default function App() {
           </div>
           <div className={styles.scopeLabel}>范围切换</div>
           <div className={styles.scopeGroup} aria-label="范围切换">
-            {Object.entries(scopeLabel).map(([scope, label]) => (
+            {scopes.map((scope) => (
               <button
+                aria-pressed={snapshot.activeScope === scope}
                 className={
                   snapshot.activeScope === scope
                     ? styles.scopeActive
@@ -192,7 +195,7 @@ export default function App() {
                 key={scope}
                 type="button"
               >
-                {label}
+                {scopeLabel[scope]}
               </button>
             ))}
           </div>

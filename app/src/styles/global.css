@@ -8,7 +8,7 @@ html,
 body,
 #root {
   margin: 0;
-  min-width: 1024px;
+  min-width: var(--workbench-min-width);
   min-height: 100dvh;
   font-family: var(--font-ui);
   color: var(--color-text);
@@ -16,7 +16,7 @@ body,
 }
 
 body {
-  overflow: hidden;
+  overflow: auto;
 }
 
 button,
