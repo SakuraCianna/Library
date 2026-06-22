@@ -256,6 +256,59 @@ pub struct BackupExportResult {
     pub parse_job_count: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightSpaceBackupRestoreRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSpaceBackupRequest {
+    pub path: String,
+    pub confirm_overwrite: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestorePreflight {
+    pub path: String,
+    pub file_name: String,
+    pub format: String,
+    pub schema_version: u32,
+    pub exported_at: String,
+    pub space_id: String,
+    pub space_name: String,
+    pub root_path: String,
+    pub default_permission: PermissionMode,
+    pub file_count: u32,
+    pub knowledge_block_count: u32,
+    pub parse_job_count: u32,
+    pub trash_entry_count: u32,
+    pub will_overwrite: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreResult {
+    pub path: String,
+    pub file_name: String,
+    pub format: String,
+    pub schema_version: u32,
+    pub exported_at: String,
+    pub space_id: String,
+    pub space_name: String,
+    pub root_path: String,
+    pub default_permission: PermissionMode,
+    pub file_count: u32,
+    pub knowledge_block_count: u32,
+    pub parse_job_count: u32,
+    pub trash_entry_count: u32,
+    pub will_overwrite: bool,
+    pub restored_at: String,
+    pub overwritten: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupExport {

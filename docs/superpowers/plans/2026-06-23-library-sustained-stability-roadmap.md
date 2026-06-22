@@ -174,16 +174,19 @@ Set-Location E:\CodeHome\Library
 - Modify: `app/src-tauri/src/state.rs`
 - Modify: `app/src-tauri/src/commands.rs`
 - Modify: `app/src-tauri/src/lib.rs`
+- Modify: `app/src/types/workbench.ts`
 - Modify: `app/src/lib/tauriClient.ts`
+- Modify: `app/src/lib/tauriClient.test.ts`
+- Modify: `app/src/hooks/useWorkbenchSnapshot.ts`
 - Modify: `app/src/App.tsx`
 - Modify: `app/src/App.module.css`
 - Modify: `app/src/__tests__/App.test.tsx`
 - Modify: `README.md`
 
-- [ ] Add a restore preflight that validates archive structure before touching existing data.
-- [ ] Require explicit user confirmation for restore actions because they can overwrite local app state.
-- [ ] Add tests for restore preflight rejection, restore path traversal rejection, and incompatible export versions.
-- [ ] Run the full verification gate.
+- [x] Add a restore preflight that validates archive structure before touching existing data.
+- [x] Require explicit user confirmation for restore actions because they can overwrite local app state.
+- [x] Add tests for restore preflight rejection, restore path traversal rejection, and incompatible export versions.
+- [x] Run the full verification gate.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 6: Agent Answer Reliability And Source Controls
@@ -225,4 +228,4 @@ Set-Location E:\CodeHome\Library
 
 ## Next Immediate Target
 
-Start Module 5: Backup Restore Foundation. The durable target is a guarded local restore path with preflight validation before touching existing data, explicit user confirmation for overwrite-capable actions, and tests for archive rejection, path traversal rejection, and incompatible export versions.
+After Module 5 is delivered and merged, start Module 6: Agent Answer Reliability And Source Controls. The durable target is source-grounded answers with clearer evidence ranking across text, table, and OCR sources, plus tests that prevent no-evidence answers from sounding more certain than the local index supports.

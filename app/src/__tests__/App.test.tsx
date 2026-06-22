@@ -13,6 +13,8 @@ import App from "../App";
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import type {
   BackupExportResult,
+  BackupRestorePreflight,
+  BackupRestoreResult,
   OcrEnvironmentReport,
   ParseJobSummary,
   WorkbenchSnapshot,
@@ -93,6 +95,29 @@ const backupExportResult: BackupExportResult = {
   fileCount: 2,
   knowledgeBlockCount: 1,
   parseJobCount: 0,
+};
+
+const backupRestorePreflight: BackupRestorePreflight = {
+  path: "E:\\Library\\backups\\library-backup.json",
+  fileName: "library-backup.json",
+  format: "library.backup.v1",
+  schemaVersion: 1,
+  exportedAt: "2026-06-23T00:00:00Z",
+  spaceId: "backup-space",
+  spaceName: "备份空间",
+  rootPath: "D:\\知识库\\备份空间",
+  defaultPermission: "approval",
+  fileCount: 2,
+  knowledgeBlockCount: 1,
+  parseJobCount: 0,
+  trashEntryCount: 0,
+  willOverwrite: true,
+};
+
+const backupRestoreResult: BackupRestoreResult = {
+  ...backupRestorePreflight,
+  restoredAt: "2026-06-23T00:10:00Z",
+  overwritten: true,
 };
 
 const answeredSnapshot: WorkbenchSnapshot = {
@@ -371,6 +396,65 @@ describe("App", () => {
         request: {
           spaceId: "space-real",
           fileName: null,
+        },
+      },
+    });
+  });
+
+  it("preflights and confirms restoring a local backup from the folder toolbar", async () => {
+    const invocations: Array<{ cmd: string; args?: unknown }> = [];
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd, args) => {
+      invocations.push({ cmd, args });
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "plugin:dialog|open") {
+        return "E:\\Library\\backups\\library-backup.json";
+      }
+      if (cmd === "preflight_space_backup_restore") {
+        return backupRestorePreflight;
+      }
+      if (cmd === "restore_space_backup") {
+        return backupRestoreResult;
+      }
+      return snapshotWithSpace;
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "真实知识库" });
+    fireEvent.click(screen.getByRole("button", { name: "恢复备份" }));
+
+    expect(
+      await screen.findByText(/备份可恢复 library-backup\.json/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/备份空间 · 2 个文件 · 1 个知识块/)).toBeInTheDocument();
+    expect(invocations.some((call) => call.cmd === "restore_space_backup")).toBe(
+      false,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "确认恢复" }));
+
+    expect(
+      await screen.findByText(/备份已恢复 library-backup\.json/),
+    ).toBeInTheDocument();
+    expect(invocations).toContainEqual({
+      cmd: "preflight_space_backup_restore",
+      args: {
+        request: {
+          path: "E:\\Library\\backups\\library-backup.json",
+        },
+      },
+    });
+    expect(invocations).toContainEqual({
+      cmd: "restore_space_backup",
+      args: {
+        request: {
+          path: "E:\\Library\\backups\\library-backup.json",
+          confirmOverwrite: true,
         },
       },
     });

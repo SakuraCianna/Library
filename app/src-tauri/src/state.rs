@@ -8,10 +8,11 @@ use time::OffsetDateTime;
 
 use crate::error::AppError;
 use crate::models::{
-    can_request_session_permission, BackupExportResult, ChatMessage, ChatMessageSource, ChatRole,
-    ChatScope, KnowledgeBlockContext, KnowledgeBlockPreview, KnowledgeBlockSearchHit,
-    KnowledgeSpace, OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode,
-    ScanSummary, ScannedFile, TableInsightPreview, WorkbenchSnapshot,
+    can_request_session_permission, BackupExport, BackupExportResult, BackupRestorePreflight,
+    BackupRestoreResult, ChatMessage, ChatMessageSource, ChatRole, ChatScope,
+    KnowledgeBlockContext, KnowledgeBlockPreview, KnowledgeBlockSearchHit, KnowledgeSpace,
+    OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode, ScanSummary,
+    ScannedFile, TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
 use crate::parser::parse_file_with_sidecar;
@@ -1185,6 +1186,84 @@ impl AppState {
         })
     }
 
+    pub fn preflight_space_backup_restore(
+        &self,
+        path: String,
+    ) -> Result<BackupRestorePreflight, AppError> {
+        let (backup, backup_path) = read_backup_restore_file(&path)?;
+        validate_backup_restore_payload(&backup)?;
+        let will_overwrite = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            ensure_backup_root_path_available(&store, &backup)?;
+            store
+                .has_knowledge_space(&backup.space.id)
+                .map_err(|error| AppError::Storage(format!("无法检查备份覆盖状态：{error}")))?
+        };
+
+        Ok(build_backup_restore_preflight(
+            &backup,
+            &backup_path,
+            will_overwrite,
+        ))
+    }
+
+    pub fn restore_space_backup(
+        &self,
+        path: String,
+        confirm_overwrite: bool,
+    ) -> Result<BackupRestoreResult, AppError> {
+        if !confirm_overwrite {
+            return Err(AppError::PermissionDenied(
+                "恢复备份需要确认，因为会覆盖本地应用状态".to_string(),
+            ));
+        }
+
+        let (backup, backup_path) = read_backup_restore_file(&path)?;
+        validate_backup_restore_payload(&backup)?;
+        let preflight = {
+            let mut store = self.store.lock().expect("sqlite store mutex poisoned");
+            ensure_backup_root_path_available(&store, &backup)?;
+            let will_overwrite = store
+                .has_knowledge_space(&backup.space.id)
+                .map_err(|error| AppError::Storage(format!("无法检查备份覆盖状态：{error}")))?;
+            let preflight = build_backup_restore_preflight(&backup, &backup_path, will_overwrite);
+            store
+                .restore_space_backup(&backup)
+                .map_err(|error| AppError::Storage(format!("无法恢复备份：{error}")))?;
+            preflight
+        };
+
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(backup.workspace.active_space_id.clone());
+        *self
+            .session_permission
+            .lock()
+            .expect("session permission mutex poisoned") =
+            backup.workspace.default_permission.clone();
+        self.push_system_message(format!("备份已恢复：{}。", preflight.file_name));
+
+        Ok(BackupRestoreResult {
+            path: preflight.path,
+            file_name: preflight.file_name,
+            format: preflight.format,
+            schema_version: preflight.schema_version,
+            exported_at: preflight.exported_at,
+            space_id: preflight.space_id,
+            space_name: preflight.space_name,
+            root_path: preflight.root_path,
+            default_permission: preflight.default_permission,
+            file_count: preflight.file_count,
+            knowledge_block_count: preflight.knowledge_block_count,
+            parse_job_count: preflight.parse_job_count,
+            trash_entry_count: preflight.trash_entry_count,
+            will_overwrite: preflight.will_overwrite,
+            restored_at: OffsetDateTime::now_utc().to_string(),
+            overwritten: preflight.will_overwrite,
+        })
+    }
+
     pub fn request_session_permission(
         &self,
         requested: PermissionMode,
@@ -1349,6 +1428,264 @@ fn build_snapshot(
             messages
         },
         pending_action: None,
+    }
+}
+
+const SUPPORTED_BACKUP_FORMAT: &str = "library.backup.v1";
+const SUPPORTED_BACKUP_SCHEMA_VERSION: u32 = 1;
+
+fn read_backup_restore_file(path: &str) -> Result<(BackupExport, PathBuf), AppError> {
+    let trimmed_path = path.trim();
+    if trimmed_path.is_empty() {
+        return Err(AppError::Filesystem("请选择有效备份文件".to_string()));
+    }
+
+    let backup_path = PathBuf::from(trimmed_path);
+    validate_backup_file_path(&backup_path)?;
+    let body = fs::read_to_string(&backup_path)
+        .map_err(|error| AppError::Filesystem(format!("无法读取备份文件：{error}")))?;
+    let backup = serde_json::from_str::<BackupExport>(&body)
+        .map_err(|error| AppError::Storage(format!("无法解析备份 JSON：{error}")))?;
+
+    Ok((backup, backup_path))
+}
+
+fn validate_backup_file_path(path: &Path) -> Result<(), AppError> {
+    if !path.exists() {
+        return Err(AppError::Filesystem("备份文件不存在".to_string()));
+    }
+
+    if !path.is_file() {
+        return Err(AppError::Filesystem(
+            "请选择备份文件而不是文件夹".to_string(),
+        ));
+    }
+
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("json") {
+        return Err(AppError::PermissionDenied(
+            "备份文件必须使用 .json 后缀".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_backup_restore_payload(backup: &BackupExport) -> Result<(), AppError> {
+    if backup.format != SUPPORTED_BACKUP_FORMAT
+        || backup.schema_version != SUPPORTED_BACKUP_SCHEMA_VERSION
+    {
+        return Err(AppError::Storage(format!(
+            "不支持的备份版本：{} v{}",
+            backup.format, backup.schema_version
+        )));
+    }
+
+    validate_required_backup_field(&backup.space.id, "space.id")?;
+    validate_required_backup_field(&backup.space.name, "space.name")?;
+    validate_required_backup_field(&backup.space.root_path, "space.rootPath")?;
+    if backup.workspace.active_space_id != backup.space.id {
+        return Err(AppError::Storage(
+            "备份结构不完整：workspace.activeSpaceId 与 space.id 不一致".to_string(),
+        ));
+    }
+
+    let mut file_ids = HashSet::new();
+    for file in &backup.files {
+        validate_required_backup_field(&file.id, "file.id")?;
+        validate_backup_relative_locator(&file.relative_path)?;
+        validate_backup_parse_status(&file.parse_status)?;
+        if !file_ids.insert(file.id.as_str()) {
+            return Err(AppError::Storage(
+                "备份结构不完整：文件 ID 重复".to_string(),
+            ));
+        }
+    }
+
+    let mut note_ids = HashSet::new();
+    for note in &backup.markdown_notes {
+        validate_required_backup_field(&note.id, "markdownNote.id")?;
+        validate_backup_relative_locator(&note.relative_path)?;
+        if let Some(file_id) = &note.file_id {
+            validate_backup_reference(&file_ids, file_id, "markdownNote.fileId")?;
+        }
+        if !note_ids.insert(note.id.as_str()) {
+            return Err(AppError::Storage(
+                "备份结构不完整：Markdown 笔记 ID 重复".to_string(),
+            ));
+        }
+    }
+
+    let mut block_ids = HashSet::new();
+    for block in &backup.knowledge_blocks {
+        validate_required_backup_field(&block.id, "knowledgeBlock.id")?;
+        validate_backup_relative_locator(&block.source_locator)?;
+        if let Some(file_id) = &block.file_id {
+            validate_backup_reference(&file_ids, file_id, "knowledgeBlock.fileId")?;
+        }
+        if let Some(note_id) = &block.note_id {
+            validate_backup_reference(&note_ids, note_id, "knowledgeBlock.noteId")?;
+        }
+        if !matches!(
+            block.source_kind.as_str(),
+            "original_file" | "markdown_note" | "table"
+        ) {
+            return Err(AppError::Storage(
+                "备份结构不完整：知识块来源类型无效".to_string(),
+            ));
+        }
+        if !block_ids.insert(block.id.as_str()) {
+            return Err(AppError::Storage(
+                "备份结构不完整：知识块 ID 重复".to_string(),
+            ));
+        }
+    }
+
+    let mut job_ids = HashSet::new();
+    for job in &backup.parse_jobs {
+        validate_required_backup_field(&job.id, "parseJob.id")?;
+        validate_backup_job_status(&job.status)?;
+        if let Some(file_id) = &job.file_id {
+            validate_backup_reference(&file_ids, file_id, "parseJob.fileId")?;
+        }
+        if !job_ids.insert(job.id.as_str()) {
+            return Err(AppError::Storage(
+                "备份结构不完整：解析任务 ID 重复".to_string(),
+            ));
+        }
+    }
+
+    let mut trash_ids = HashSet::new();
+    for entry in &backup.trash_entries {
+        validate_required_backup_field(&entry.id, "trashEntry.id")?;
+        validate_backup_relative_locator(&entry.original_locator)?;
+        match entry.entity_kind.as_str() {
+            "file" => {
+                validate_backup_reference(&file_ids, &entry.entity_id, "trashEntry.entityId")?
+            }
+            "markdown_note" => {
+                validate_backup_reference(&note_ids, &entry.entity_id, "trashEntry.entityId")?
+            }
+            "knowledge_block" => {
+                validate_backup_reference(&block_ids, &entry.entity_id, "trashEntry.entityId")?
+            }
+            _ => {
+                return Err(AppError::Storage(
+                    "备份结构不完整：回收站实体类型无效".to_string(),
+                ));
+            }
+        }
+        if !trash_ids.insert(entry.id.as_str()) {
+            return Err(AppError::Storage(
+                "备份结构不完整：回收站记录 ID 重复".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_backup_root_path_available(
+    store: &SqliteStore,
+    backup: &BackupExport,
+) -> Result<(), AppError> {
+    let existing_space_id = store
+        .active_space_id_for_root_path(&backup.space.root_path)
+        .map_err(|error| AppError::Storage(format!("无法检查备份根路径冲突：{error}")))?;
+
+    if existing_space_id
+        .as_deref()
+        .is_some_and(|space_id| space_id != backup.space.id)
+    {
+        return Err(AppError::Storage(
+            "备份根路径已被其他知识库使用，无法恢复".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_required_backup_field(value: &str, field_name: &str) -> Result<(), AppError> {
+    if value.trim().is_empty() {
+        return Err(AppError::Storage(format!(
+            "备份结构不完整：{field_name} 不能为空"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_backup_reference(
+    ids: &HashSet<&str>,
+    referenced_id: &str,
+    field_name: &str,
+) -> Result<(), AppError> {
+    if !ids.contains(referenced_id) {
+        return Err(AppError::Storage(format!(
+            "备份结构不完整：{field_name} 引用了不存在的对象"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_backup_relative_locator(locator: &str) -> Result<(), AppError> {
+    source_locator_to_relative_path(locator)
+        .map_err(|_| AppError::PermissionDenied("备份内容包含越界路径，已拒绝恢复".to_string()))?;
+
+    Ok(())
+}
+
+fn validate_backup_parse_status(status: &str) -> Result<(), AppError> {
+    if !matches!(status, "indexed" | "changed" | "queued" | "failed") {
+        return Err(AppError::Storage(
+            "备份结构不完整：文件解析状态无效".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_backup_job_status(status: &str) -> Result<(), AppError> {
+    if !matches!(
+        status,
+        "queued" | "running" | "succeeded" | "failed" | "cancelled"
+    ) {
+        return Err(AppError::Storage(
+            "备份结构不完整：解析任务状态无效".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn build_backup_restore_preflight(
+    backup: &BackupExport,
+    path: &Path,
+    will_overwrite: bool,
+) -> BackupRestorePreflight {
+    BackupRestorePreflight {
+        path: path.to_string_lossy().to_string(),
+        file_name: path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .unwrap_or("backup.json")
+            .to_string(),
+        format: backup.format.clone(),
+        schema_version: backup.schema_version,
+        exported_at: backup.exported_at.clone(),
+        space_id: backup.space.id.clone(),
+        space_name: backup.space.name.clone(),
+        root_path: backup.space.root_path.clone(),
+        default_permission: backup.space.default_permission.clone(),
+        file_count: backup.files.len() as u32,
+        knowledge_block_count: backup.knowledge_blocks.len() as u32,
+        parse_job_count: backup.parse_jobs.len() as u32,
+        trash_entry_count: backup.trash_entries.len() as u32,
+        will_overwrite,
     }
 }
 
@@ -1542,6 +1879,7 @@ fn is_ocr_supported_extension(extension: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
     use std::{env, fs};
 
@@ -1731,6 +2069,336 @@ mod tests {
             result,
             Err(crate::error::AppError::Storage(message)) if message.contains("找不到要导出的知识库")
         ));
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_reads_summary_without_touching_state() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        write_backup_fixture(app_data_dir.path(), "library-backup.json");
+
+        let preflight = state
+            .preflight_space_backup_restore(
+                app_data_dir
+                    .path()
+                    .join("backups")
+                    .join("library-backup.json")
+                    .to_string_lossy()
+                    .to_string(),
+            )
+            .expect("restore preflight succeeds");
+        let snapshot = state.snapshot().expect("snapshot builds");
+
+        assert_eq!(preflight.file_name, "library-backup.json");
+        assert_eq!(preflight.space_id, "backup-space");
+        assert_eq!(preflight.space_name, "备份空间");
+        assert_eq!(preflight.file_count, 1);
+        assert_eq!(preflight.knowledge_block_count, 1);
+        assert!(!preflight.will_overwrite);
+        assert!(snapshot.spaces.is_empty());
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_path_traversal_inside_backup() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["files"][0]["relativePath"] = serde_json::Value::String("..\\secret.md".to_string());
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::PermissionDenied(message))
+                if message.contains("备份内容包含越界路径")
+        ));
+        assert!(state.snapshot().expect("snapshot builds").spaces.is_empty());
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_incompatible_version() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["schemaVersion"] = serde_json::Value::from(999);
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message))
+                if message.contains("不支持的备份版本")
+        ));
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_invalid_parse_status() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["files"][0]["parseStatus"] = serde_json::Value::String("done".to_string());
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message))
+                if message.contains("文件解析状态无效")
+        ));
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_missing_backup_reference() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["knowledgeBlocks"][0]["fileId"] =
+            serde_json::Value::String("missing-file".to_string());
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message))
+                if message.contains("引用了不存在的对象")
+        ));
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_invalid_parse_job_status() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["parseJobs"] = serde_json::json!([
+            {
+                "id": "job-invalid",
+                "fileId": "file-redis",
+                "jobType": "document",
+                "status": "done",
+                "errorMessage": null,
+                "startedAt": null,
+                "finishedAt": null,
+                "progressCurrent": 0,
+                "progressTotal": 0,
+                "phase": "等待执行",
+                "createdAt": "2026-06-23T00:00:00Z",
+                "updatedAt": "2026-06-23T00:00:00Z"
+            }
+        ]);
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message))
+                if message.contains("解析任务状态无效")
+        ));
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_duplicate_parse_jobs() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["parseJobs"] = serde_json::json!([
+            {
+                "id": "job-duplicate",
+                "fileId": "file-redis",
+                "jobType": "document",
+                "status": "queued",
+                "errorMessage": null,
+                "startedAt": null,
+                "finishedAt": null,
+                "progressCurrent": 0,
+                "progressTotal": 0,
+                "phase": "等待执行",
+                "createdAt": "2026-06-23T00:00:00Z",
+                "updatedAt": "2026-06-23T00:00:00Z"
+            },
+            {
+                "id": "job-duplicate",
+                "fileId": "file-redis",
+                "jobType": "document",
+                "status": "queued",
+                "errorMessage": null,
+                "startedAt": null,
+                "finishedAt": null,
+                "progressCurrent": 0,
+                "progressTotal": 0,
+                "phase": "等待执行",
+                "createdAt": "2026-06-23T00:00:00Z",
+                "updatedAt": "2026-06-23T00:00:00Z"
+            }
+        ]);
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message))
+                if message.contains("解析任务 ID 重复")
+        ));
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_duplicate_trash_entries() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["trashEntries"] = serde_json::json!([
+            {
+                "id": "trash-duplicate",
+                "entityKind": "file",
+                "entityId": "file-redis",
+                "displayName": "Redis面试.md",
+                "originalLocator": "Redis面试.md",
+                "deletedAt": "2026-06-23T00:00:00Z",
+                "restoredAt": null
+            },
+            {
+                "id": "trash-duplicate",
+                "entityKind": "file",
+                "entityId": "file-redis",
+                "displayName": "Redis面试副本.md",
+                "originalLocator": "Redis面试.md",
+                "deletedAt": "2026-06-23T00:00:00Z",
+                "restoredAt": null
+            }
+        ]);
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message))
+                if message.contains("回收站记录 ID 重复")
+        ));
+    }
+
+    #[test]
+    fn restore_space_backup_preflight_rejects_root_path_conflict() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let store = SqliteStore::open_in_memory().expect("sqlite opens");
+        store
+            .create_knowledge_space("已有空间", "D:\\知识库\\备份空间", PermissionMode::Approval)
+            .expect("conflicting space is inserted");
+        let state = AppState::new_with_app_data_dir(store, app_data_dir.path().to_path_buf());
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message))
+                if message.contains("备份根路径已被其他知识库使用")
+        ));
+    }
+
+    #[test]
+    fn restore_space_backup_requires_explicit_confirmation_before_writing() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+
+        let result = state.restore_space_backup(backup_path.to_string_lossy().to_string(), false);
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::PermissionDenied(message))
+                if message.contains("需要确认")
+        ));
+        assert!(state.snapshot().expect("snapshot builds").spaces.is_empty());
     }
 
     #[test]
@@ -2813,6 +3481,67 @@ mod tests {
                 fs::write(path.join(file_name), "model").expect("model file");
             }
         }
+    }
+
+    fn write_backup_fixture(app_data_dir: &Path, file_name: &str) -> PathBuf {
+        let backup_dir = app_data_dir.join("backups");
+        fs::create_dir_all(&backup_dir).expect("backup dir");
+        let backup_path = backup_dir.join(file_name);
+        fs::write(
+            &backup_path,
+            r#"{
+  "format": "library.backup.v1",
+  "schemaVersion": 1,
+  "exportedAt": "2026-06-23T00:00:00Z",
+  "space": {
+    "id": "backup-space",
+    "name": "备份空间",
+    "rootPath": "D:\\知识库\\备份空间",
+    "defaultPermission": "approval",
+    "createdAt": "2026-06-22T00:00:00Z",
+    "updatedAt": "2026-06-23T00:00:00Z"
+  },
+  "workspace": {
+    "activeSpaceId": "backup-space",
+    "defaultPermission": "approval"
+  },
+  "files": [
+    {
+      "id": "file-redis",
+      "relativePath": "Redis面试.md",
+      "extension": "md",
+      "contentHash": "hash-redis",
+      "sizeBytes": 128,
+      "modifiedAt": "2026-06-22T00:00:00Z",
+      "parseStatus": "indexed",
+      "lastScannedAt": "2026-06-23T00:00:00Z",
+      "createdAt": "2026-06-22T00:00:00Z",
+      "updatedAt": "2026-06-23T00:00:00Z",
+      "deletedAt": null
+    }
+  ],
+  "markdownNotes": [],
+  "knowledgeBlocks": [
+    {
+      "id": "block-redis",
+      "fileId": "file-redis",
+      "noteId": null,
+      "title": "Redis 缓存",
+      "body": "缓存穿透需要空值缓存。",
+      "sourceKind": "original_file",
+      "sourceLocator": "Redis面试.md",
+      "searchable": true,
+      "createdAt": "2026-06-22T00:00:00Z",
+      "updatedAt": "2026-06-23T00:00:00Z",
+      "deletedAt": null
+    }
+  ],
+  "parseJobs": [],
+  "trashEntries": []
+}"#,
+        )
+        .expect("backup fixture");
+        backup_path
     }
 
     fn env_lock() -> &'static Mutex<()> {

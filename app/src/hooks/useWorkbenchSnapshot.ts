@@ -10,14 +10,19 @@ import {
   getWorkbenchSnapshot,
   indexKnowledgeSpace,
   listenWorkbenchUpdates,
+  preflightSpaceBackupRestore,
   requestSessionPermission,
+  restoreSpaceBackup,
   scanKnowledgeSpace,
+  selectBackupFile,
   selectKnowledgeFolder,
   setDefaultPermission,
   startOcrWorker,
 } from "../lib/tauriClient";
 import type {
   BackupExportResult,
+  BackupRestorePreflight,
+  BackupRestoreResult,
   PermissionMode,
   WorkbenchSnapshot,
 } from "../types/workbench";
@@ -25,6 +30,8 @@ import type {
 interface WorkbenchSnapshotState {
   snapshot: WorkbenchSnapshot;
   backupExport: BackupExportResult | null;
+  backupRestorePreflight: BackupRestorePreflight | null;
+  backupRestoreResult: BackupRestoreResult | null;
   loading: boolean;
   error: string | null;
 }
@@ -35,9 +42,11 @@ interface WorkbenchSnapshotResult extends WorkbenchSnapshotState {
   createSpaceFromFolder: (permission: PermissionMode) => Promise<void>;
   enqueueOcrJob: (fileId: string) => Promise<void>;
   exportActiveSpaceBackup: () => Promise<void>;
+  confirmBackupRestore: () => Promise<void>;
   indexActiveSpace: () => Promise<void>;
   refreshSnapshot: (options?: { silent?: boolean }) => Promise<void>;
   scanActiveSpace: () => Promise<void>;
+  selectBackupForRestore: () => Promise<void>;
   setFolderDefaultPermission: (permission: PermissionMode) => Promise<void>;
   setSessionPermission: (permission: PermissionMode) => Promise<void>;
   startOcrWorker: () => Promise<void>;
@@ -61,6 +70,8 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
   const [state, setState] = useState<WorkbenchSnapshotState>({
     snapshot: emptyWorkbench,
     backupExport: null,
+    backupRestorePreflight: null,
+    backupRestoreResult: null,
     loading: true,
     error: null,
   });
@@ -130,6 +141,8 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
             sessionPermission: permission,
           },
           backupExport: current.backupExport,
+          backupRestorePreflight: current.backupRestorePreflight,
+          backupRestoreResult: current.backupRestoreResult,
           loading: false,
           error: null,
         }));
@@ -311,6 +324,8 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
       setState((current) => ({
         ...current,
         backupExport,
+        backupRestorePreflight: null,
+        backupRestoreResult: null,
         loading: false,
         error: null,
       }));
@@ -322,6 +337,87 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
       }));
     }
   }, [state.snapshot.activeSpaceId]);
+
+  const selectBackupForRestore = useCallback(async () => {
+    setState((current) => ({
+      ...current,
+      backupRestorePreflight: null,
+      backupRestoreResult: null,
+      error: null,
+    }));
+
+    let backupPath: string | null;
+    try {
+      backupPath = await selectBackupFile();
+    } catch (error) {
+      const message = getErrorMessage(error, "选择备份文件失败");
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error:
+          message === "选择备份文件失败"
+            ? message
+            : `选择备份文件失败：${message}`,
+      }));
+      return;
+    }
+
+    if (!backupPath) {
+      return;
+    }
+
+    setState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const backupRestorePreflight =
+        await preflightSpaceBackupRestore(backupPath);
+      setState((current) => ({
+        ...current,
+        backupExport: null,
+        backupRestorePreflight,
+        backupRestoreResult: null,
+        loading: false,
+        error: null,
+      }));
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, "恢复备份预检失败"),
+      }));
+    }
+  }, []);
+
+  const confirmBackupRestore = useCallback(async () => {
+    const preflight = state.backupRestorePreflight;
+    if (!preflight) {
+      setState((current) => ({
+        ...current,
+        error: "请先选择并预检备份文件",
+      }));
+      return;
+    }
+
+    setState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const backupRestoreResult = await restoreSpaceBackup(preflight.path, true);
+      const snapshot = await getWorkbenchSnapshot();
+      setState((current) => ({
+        ...current,
+        snapshot,
+        backupExport: null,
+        backupRestorePreflight: null,
+        backupRestoreResult,
+        loading: false,
+        error: null,
+      }));
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, "恢复备份失败"),
+      }));
+    }
+  }, [state.backupRestorePreflight]);
 
   const askAgentQuestion = useCallback(
     async (question: string) => {
@@ -390,6 +486,8 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
                   : current.snapshot.files,
             },
             backupExport: current.backupExport,
+            backupRestorePreflight: current.backupRestorePreflight,
+            backupRestoreResult: current.backupRestoreResult,
             loading: false,
             error: null,
           };
@@ -419,6 +517,8 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
           setState({
             snapshot: emptyWorkbench,
             backupExport: null,
+            backupRestorePreflight: null,
+            backupRestoreResult: null,
             loading: false,
             error: fallbackError,
           });
@@ -502,12 +602,14 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     ...state,
     askAgentQuestion,
     cancelJob,
+    confirmBackupRestore,
     createSpaceFromFolder,
     enqueueOcrJob,
     exportActiveSpaceBackup,
     indexActiveSpace,
     refreshSnapshot,
     scanActiveSpace,
+    selectBackupForRestore,
     setFolderDefaultPermission,
     setSessionPermission,
     startOcrWorker: startOcrWorkerForActiveSpace,

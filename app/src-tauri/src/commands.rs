@@ -3,11 +3,13 @@ use tauri::{path::BaseDirectory, Manager, State};
 use crate::error::ErrorResponse;
 use crate::events::emit_workbench_updated;
 use crate::models::{
-    AskAgentRequest, BackupExportResult, CancelParseJobRequest, CreateKnowledgeSpaceRequest,
-    DefaultPermissionRequest, EnqueueOcrJobRequest, ExportSpaceBackupRequest,
-    IndexKnowledgeSpaceRequest, KnowledgeBlockContext, KnowledgeBlockContextRequest,
-    OcrEnvironmentReport, OpenSourceFileRequest, PermissionRequest, RuntimeStatus,
-    ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
+    AskAgentRequest, BackupExportResult, BackupRestorePreflight, BackupRestoreResult,
+    CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
+    EnqueueOcrJobRequest, ExportSpaceBackupRequest, IndexKnowledgeSpaceRequest,
+    KnowledgeBlockContext, KnowledgeBlockContextRequest, OcrEnvironmentReport,
+    OpenSourceFileRequest, PermissionRequest, PreflightSpaceBackupRestoreRequest,
+    RestoreSpaceBackupRequest, RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest,
+    WorkbenchSnapshot,
 };
 use crate::state::AppState;
 use tauri_plugin_opener::OpenerExt;
@@ -202,6 +204,28 @@ pub fn export_space_backup(
 ) -> Result<BackupExportResult, ErrorResponse> {
     state
         .export_space_backup(request.space_id, request.file_name)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn preflight_space_backup_restore(
+    state: State<'_, AppState>,
+    request: PreflightSpaceBackupRestoreRequest,
+) -> Result<BackupRestorePreflight, ErrorResponse> {
+    state
+        .preflight_space_backup_restore(request.path)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn restore_space_backup(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: RestoreSpaceBackupRequest,
+) -> Result<BackupRestoreResult, ErrorResponse> {
+    state
+        .restore_space_backup(request.path, request.confirm_overwrite)
+        .inspect(|result| emit_workbench_updated(&app, Some(&result.space_id), "backup-restored"))
         .map_err(Into::into)
 }
 
