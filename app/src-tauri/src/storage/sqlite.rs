@@ -28,6 +28,13 @@ pub struct SqliteStore {
     connection: Connection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OcrJobWriteOutcome {
+    Updated,
+    Cancelled,
+    NotRunning,
+}
+
 impl SqliteStore {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
@@ -62,6 +69,33 @@ impl SqliteStore {
         if !self.column_exists("files", "last_scanned_at")? {
             self.connection
                 .execute_batch("ALTER TABLE files ADD COLUMN last_scanned_at TEXT;")?;
+        }
+
+        for (column_name, column_sql) in [
+            (
+                "started_at",
+                "ALTER TABLE parse_jobs ADD COLUMN started_at TEXT;",
+            ),
+            (
+                "finished_at",
+                "ALTER TABLE parse_jobs ADD COLUMN finished_at TEXT;",
+            ),
+            (
+                "progress_current",
+                "ALTER TABLE parse_jobs ADD COLUMN progress_current INTEGER NOT NULL DEFAULT 0;",
+            ),
+            (
+                "progress_total",
+                "ALTER TABLE parse_jobs ADD COLUMN progress_total INTEGER NOT NULL DEFAULT 0;",
+            ),
+            (
+                "phase",
+                "ALTER TABLE parse_jobs ADD COLUMN phase TEXT NOT NULL DEFAULT '等待执行';",
+            ),
+        ] {
+            if !self.column_exists("parse_jobs", column_name)? {
+                self.connection.execute_batch(column_sql)?;
+            }
         }
 
         Ok(())
@@ -241,50 +275,75 @@ impl SqliteStore {
     ) -> rusqlite::Result<()> {
         let now = OffsetDateTime::now_utc().to_string();
         let tx = self.connection.transaction()?;
-
-        tx.execute(
-            "UPDATE knowledge_blocks
-             SET searchable = 0, deleted_at = ?1, updated_at = ?1
-             WHERE space_id = ?2 AND file_id = ?3 AND deleted_at IS NULL",
-            params![now, space_id, file_id],
-        )?;
-
-        tx.execute(
-            "INSERT INTO knowledge_blocks (
-                id, space_id, file_id, title, body, source_kind, source_locator,
-                searchable, created_at, updated_at
-             )
-             VALUES (?1, ?2, ?3, ?4, ?5, 'original_file', ?6, 1, ?7, ?7)",
-            params![
-                Uuid::new_v4().to_string(),
-                space_id,
-                file_id,
-                document.title,
-                format!("{}\n\n{}", document.summary, document.body),
-                document.source_locator,
-                now
-            ],
-        )?;
-
-        tx.execute(
-            "UPDATE files
-             SET parse_status = ?1, updated_at = ?2
-             WHERE id = ?3 AND space_id = ?4 AND deleted_at IS NULL",
-            params![ParseStatus::Indexed.as_str(), now, file_id, space_id],
-        )?;
-
+        replace_file_knowledge_block_in_tx(&tx, space_id, file_id, document, &now)?;
         tx.commit()
+    }
+
+    pub fn complete_ocr_job_if_running(
+        &mut self,
+        space_id: &str,
+        file_id: &str,
+        job_id: &str,
+        document: &ParsedDocument,
+    ) -> rusqlite::Result<OcrJobWriteOutcome> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let tx = self.connection.transaction()?;
+        match parse_job_status_in_tx(&tx, job_id)?.as_deref() {
+            Some("running") => {}
+            Some("cancelled") => return Ok(OcrJobWriteOutcome::Cancelled),
+            _ => return Ok(OcrJobWriteOutcome::NotRunning),
+        }
+
+        replace_file_knowledge_block_in_tx(&tx, space_id, file_id, document, &now)?;
+        tx.execute(
+            "UPDATE parse_jobs
+             SET status = 'succeeded',
+                 error_message = NULL,
+                 phase = '已完成',
+                 progress_total = CASE WHEN progress_total > 0 THEN progress_total ELSE 1 END,
+                 progress_current = CASE WHEN progress_total > 0 THEN progress_total ELSE 1 END,
+                 finished_at = ?1,
+                 updated_at = ?1
+             WHERE id = ?2 AND status = 'running'",
+            params![now, job_id],
+        )?;
+        tx.commit()?;
+        Ok(OcrJobWriteOutcome::Updated)
     }
 
     pub fn mark_file_parse_failed(&self, file_id: &str) -> rusqlite::Result<()> {
         let now = OffsetDateTime::now_utc().to_string();
-        self.connection.execute(
-            "UPDATE files
-             SET parse_status = ?1, updated_at = ?2
-             WHERE id = ?3 AND deleted_at IS NULL",
-            params![ParseStatus::Failed.as_str(), now, file_id],
-        )?;
+        mark_file_parse_failed_in_tx(&self.connection, file_id, &now)?;
         Ok(())
+    }
+
+    pub fn fail_ocr_job_if_running(
+        &mut self,
+        file_id: &str,
+        job_id: &str,
+        error_message: &str,
+    ) -> rusqlite::Result<OcrJobWriteOutcome> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let tx = self.connection.transaction()?;
+        match parse_job_status_in_tx(&tx, job_id)?.as_deref() {
+            Some("running") => {}
+            Some("cancelled") => return Ok(OcrJobWriteOutcome::Cancelled),
+            _ => return Ok(OcrJobWriteOutcome::NotRunning),
+        }
+
+        mark_file_parse_failed_in_tx(&tx, file_id, &now)?;
+        tx.execute(
+            "UPDATE parse_jobs
+             SET status = 'failed',
+                 error_message = ?1,
+                 phase = '失败',
+                 finished_at = ?2,
+                 updated_at = ?2
+             WHERE id = ?3 AND status = 'running'",
+            params![error_message, now, job_id],
+        )?;
+        tx.commit()?;
+        Ok(OcrJobWriteOutcome::Updated)
     }
 
     pub fn latest_knowledge_block(
@@ -371,8 +430,11 @@ impl SqliteStore {
         let id = Uuid::new_v4().to_string();
         let now = OffsetDateTime::now_utc().to_string();
         self.connection.execute(
-            "INSERT INTO parse_jobs (id, space_id, file_id, job_type, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?5)",
+            "INSERT INTO parse_jobs (
+                id, space_id, file_id, job_type, status, phase, progress_current,
+                progress_total, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, 'queued', '等待执行', 0, 1, ?5, ?5)",
             params![id, space_id, file_id, job_type, now],
         )?;
         Ok(id)
@@ -386,7 +448,12 @@ impl SqliteStore {
                 COALESCE(file.relative_path, '未知文件') AS file_name,
                 job.job_type,
                 job.status,
-                job.error_message
+                job.error_message,
+                job.started_at,
+                job.finished_at,
+                job.progress_current,
+                job.progress_total,
+                job.phase
              FROM parse_jobs job
              LEFT JOIN files file ON file.id = job.file_id
              WHERE job.space_id = ?1
@@ -403,6 +470,11 @@ impl SqliteStore {
                     job_type: row.get(3)?,
                     status: row.get(4)?,
                     error_message: row.get(5)?,
+                    started_at: row.get(6)?,
+                    finished_at: row.get(7)?,
+                    progress_current: row.get(8)?,
+                    progress_total: row.get(9)?,
+                    phase: row.get(10)?,
                 })
             })?
             .collect();
@@ -443,8 +515,11 @@ impl SqliteStore {
         let now = OffsetDateTime::now_utc().to_string();
         let updated = self.connection.execute(
             "UPDATE parse_jobs
-             SET status = 'cancelled', updated_at = ?1
-             WHERE id = ?2 AND status = 'queued'",
+             SET status = 'cancelled',
+                 phase = '已取消',
+                 finished_at = ?1,
+                 updated_at = ?1
+             WHERE id = ?2 AND status IN ('queued', 'running')",
             params![now, job_id],
         )?;
 
@@ -455,9 +530,43 @@ impl SqliteStore {
         let now = OffsetDateTime::now_utc().to_string();
         let updated = self.connection.execute(
             "UPDATE parse_jobs
-             SET status = 'running', error_message = NULL, updated_at = ?1
+             SET status = 'running',
+                 error_message = NULL,
+                 started_at = COALESCE(started_at, ?1),
+                 finished_at = NULL,
+                 phase = '正在准备',
+                 progress_current = 0,
+                 progress_total = CASE WHEN progress_total > 0 THEN progress_total ELSE 1 END,
+                 updated_at = ?1
              WHERE id = ?2 AND status = 'queued'",
             params![now, job_id],
+        )?;
+
+        Ok(updated > 0)
+    }
+
+    pub fn update_parse_job_progress(
+        &self,
+        job_id: &str,
+        phase: &str,
+        progress_current: u32,
+        progress_total: u32,
+    ) -> rusqlite::Result<bool> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let updated = self.connection.execute(
+            "UPDATE parse_jobs
+             SET phase = ?1,
+                 progress_current = ?2,
+                 progress_total = ?3,
+                 updated_at = ?4
+             WHERE id = ?5 AND status = 'running'",
+            params![
+                phase,
+                i64::from(progress_current),
+                i64::from(progress_total),
+                now,
+                job_id
+            ],
         )?;
 
         Ok(updated > 0)
@@ -467,7 +576,13 @@ impl SqliteStore {
         let now = OffsetDateTime::now_utc().to_string();
         let updated = self.connection.execute(
             "UPDATE parse_jobs
-             SET status = 'succeeded', error_message = NULL, updated_at = ?1
+             SET status = 'succeeded',
+                 error_message = NULL,
+                 phase = '已完成',
+                 progress_total = CASE WHEN progress_total > 0 THEN progress_total ELSE 1 END,
+                 progress_current = CASE WHEN progress_total > 0 THEN progress_total ELSE 1 END,
+                 finished_at = ?1,
+                 updated_at = ?1
              WHERE id = ?2 AND status = 'running'",
             params![now, job_id],
         )?;
@@ -483,12 +598,26 @@ impl SqliteStore {
         let now = OffsetDateTime::now_utc().to_string();
         let updated = self.connection.execute(
             "UPDATE parse_jobs
-             SET status = 'failed', error_message = ?1, updated_at = ?2
+             SET status = 'failed',
+                 error_message = ?1,
+                 phase = '失败',
+                 finished_at = ?2,
+                 updated_at = ?2
              WHERE id = ?3 AND status = 'running'",
             params![error_message, now, job_id],
         )?;
 
         Ok(updated > 0)
+    }
+
+    pub fn parse_job_status(&self, job_id: &str) -> rusqlite::Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT status FROM parse_jobs WHERE id = ?1",
+                [job_id],
+                |row| row.get(0),
+            )
+            .optional()
     }
 
     pub fn count_knowledge_spaces(&self) -> rusqlite::Result<u32> {
@@ -846,6 +975,70 @@ fn copy_legacy_tables(tx: &Transaction<'_>, table_names: &[&str]) -> rusqlite::R
     }
 
     Ok(())
+}
+
+fn replace_file_knowledge_block_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+    file_id: &str,
+    document: &ParsedDocument,
+    now: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE knowledge_blocks
+         SET searchable = 0, deleted_at = ?1, updated_at = ?1
+         WHERE space_id = ?2 AND file_id = ?3 AND deleted_at IS NULL",
+        params![now, space_id, file_id],
+    )?;
+
+    tx.execute(
+        "INSERT INTO knowledge_blocks (
+            id, space_id, file_id, title, body, source_kind, source_locator,
+            searchable, created_at, updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, 'original_file', ?6, 1, ?7, ?7)",
+        params![
+            Uuid::new_v4().to_string(),
+            space_id,
+            file_id,
+            document.title,
+            format!("{}\n\n{}", document.summary, document.body),
+            document.source_locator,
+            now
+        ],
+    )?;
+
+    tx.execute(
+        "UPDATE files
+         SET parse_status = ?1, updated_at = ?2
+         WHERE id = ?3 AND space_id = ?4 AND deleted_at IS NULL",
+        params![ParseStatus::Indexed.as_str(), now, file_id, space_id],
+    )?;
+
+    Ok(())
+}
+
+fn mark_file_parse_failed_in_tx(
+    connection: &Connection,
+    file_id: &str,
+    now: &str,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "UPDATE files
+         SET parse_status = ?1, updated_at = ?2
+         WHERE id = ?3 AND deleted_at IS NULL",
+        params![ParseStatus::Failed.as_str(), now, file_id],
+    )?;
+    Ok(())
+}
+
+fn parse_job_status_in_tx(tx: &Transaction<'_>, job_id: &str) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT status FROM parse_jobs WHERE id = ?1",
+        [job_id],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 #[derive(Debug)]
@@ -1298,7 +1491,12 @@ mod tests {
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].file_id.as_deref(), Some("file-scan"));
         assert_eq!(jobs[0].status, "queued");
+        assert_eq!(jobs[0].phase, "等待执行");
+        assert_eq!(jobs[0].progress_current, 0);
+        assert_eq!(jobs[0].progress_total, 1);
         assert_eq!(jobs[1].status, "cancelled");
+        assert_eq!(jobs[1].phase, "已取消");
+        assert!(jobs[1].finished_at.is_some());
     }
 
     #[test]
@@ -1320,6 +1518,9 @@ mod tests {
         let started = store
             .mark_parse_job_running(&candidate.job_id)
             .expect("job starts");
+        let progressed = store
+            .update_parse_job_progress(&candidate.job_id, "正在执行本地 OCR", 0, 1)
+            .expect("job progress updates");
         let succeeded = store
             .mark_parse_job_succeeded(&candidate.job_id)
             .expect("job succeeds");
@@ -1329,9 +1530,15 @@ mod tests {
         assert_eq!(candidate.file_id, "file-scan");
         assert_eq!(candidate.relative_path, "scan.pdf");
         assert!(started);
+        assert!(progressed);
         assert!(succeeded);
         assert_eq!(jobs[0].status, "succeeded");
         assert!(jobs[0].error_message.is_none());
+        assert!(jobs[0].started_at.is_some());
+        assert!(jobs[0].finished_at.is_some());
+        assert_eq!(jobs[0].progress_current, 1);
+        assert_eq!(jobs[0].progress_total, 1);
+        assert_eq!(jobs[0].phase, "已完成");
     }
 
     #[test]
@@ -1355,6 +1562,43 @@ mod tests {
         assert!(failed);
         assert_eq!(jobs[0].status, "failed");
         assert_eq!(jobs[0].error_message.as_deref(), Some("OCR_EMPTY_RESULT"));
+        assert!(jobs[0].finished_at.is_some());
+        assert_eq!(jobs[0].phase, "失败");
+    }
+
+    #[test]
+    fn cancels_running_parse_job_without_allowing_success_transition() {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("OCR", "D:\\知识库\\OCR", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-scan", &space_id, "scan.pdf", "queued")
+            .expect("file is inserted");
+        let job_id = store
+            .enqueue_parse_job(&space_id, "file-scan", "ocr")
+            .expect("job enqueued");
+
+        store.mark_parse_job_running(&job_id).expect("job starts");
+        store
+            .update_parse_job_progress(&job_id, "正在执行本地 OCR", 0, 1)
+            .expect("progress updates");
+        let cancelled = store.cancel_parse_job(&job_id).expect("job cancels");
+        let succeeded = store
+            .mark_parse_job_succeeded(&job_id)
+            .expect("cancelled job cannot succeed");
+        let jobs = store.list_parse_jobs(&space_id).expect("jobs list");
+
+        assert!(cancelled);
+        assert!(!succeeded);
+        assert_eq!(jobs[0].status, "cancelled");
+        assert_eq!(jobs[0].phase, "已取消");
+        assert_eq!(
+            store
+                .parse_job_status(&job_id)
+                .expect("status reads")
+                .as_deref(),
+            Some("cancelled")
+        );
     }
 
     #[test]
@@ -1466,6 +1710,53 @@ mod tests {
             .expect("fts is rebuilt for legacy block");
 
         assert_eq!(fts_match, fts_rowid);
+    }
+
+    #[test]
+    fn upgrades_legacy_parse_jobs_without_losing_queue_state() {
+        let connection = Connection::open_in_memory().expect("in-memory sqlite opens");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE parse_jobs (
+                  id TEXT NOT NULL PRIMARY KEY,
+                  space_id TEXT NOT NULL,
+                  file_id TEXT,
+                  job_type TEXT NOT NULL,
+                  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+                  error_message TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+
+                INSERT INTO parse_jobs (
+                  id, space_id, file_id, job_type, status, error_message, created_at, updated_at
+                )
+                VALUES ('legacy-job', 'legacy-space', NULL, 'ocr', 'queued', NULL, '2026-06-21T00:00:00Z', '2026-06-21T00:00:00Z');
+                "#,
+            )
+            .expect("legacy parse job schema applies");
+
+        let mut store = SqliteStore { connection };
+        store
+            .apply_foundation_schema()
+            .expect("legacy parse_jobs schema is upgraded");
+        let jobs = store
+            .list_parse_jobs("legacy-space")
+            .expect("legacy jobs list");
+
+        assert!(store
+            .column_exists("parse_jobs", "started_at")
+            .expect("started_at column check"));
+        assert!(store
+            .column_exists("parse_jobs", "phase")
+            .expect("phase column check"));
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, "legacy-job");
+        assert_eq!(jobs[0].status, "queued");
+        assert_eq!(jobs[0].phase, "等待执行");
+        assert_eq!(jobs[0].progress_current, 0);
+        assert_eq!(jobs[0].progress_total, 0);
     }
 
     fn insert_file(

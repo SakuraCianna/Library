@@ -178,14 +178,14 @@ export async function cancelParseJob(
   });
 }
 
-export async function runNextOcrParseJob(
+export async function startOcrWorker(
   spaceId: string,
 ): Promise<WorkbenchSnapshot> {
   if (!isTauriRuntime()) {
     return emptyWorkbench;
   }
 
-  return invoke<WorkbenchSnapshot>("run_next_ocr_parse_job", {
+  return invoke<WorkbenchSnapshot>("start_ocr_worker", {
     request: { spaceId },
   });
 }

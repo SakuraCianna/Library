@@ -3,8 +3,8 @@ use tauri::{path::BaseDirectory, Manager, State};
 use crate::error::ErrorResponse;
 use crate::models::{
     AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
-    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, PermissionRequest, RunOcrJobRequest,
-    RuntimeStatus, ScanKnowledgeSpaceRequest, WorkbenchSnapshot,
+    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, PermissionRequest, RuntimeStatus,
+    ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
 };
 use crate::state::AppState;
 
@@ -74,19 +74,29 @@ pub fn cancel_parse_job(
 }
 
 #[tauri::command]
-pub fn run_next_ocr_parse_job(
+pub fn start_ocr_worker(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-    request: RunOcrJobRequest,
+    request: StartOcrWorkerRequest,
 ) -> Result<WorkbenchSnapshot, ErrorResponse> {
     let resource_script = app
         .path()
         .resolve("sidecars/ocr/ocr_sidecar.py", BaseDirectory::Resource)
         .ok();
+    let space_id = request.space_id;
+    let should_spawn = state
+        .begin_ocr_worker(space_id.clone())
+        .map_err(ErrorResponse::from)?;
 
-    state
-        .run_next_ocr_parse_job(request.space_id, resource_script)
-        .map_err(Into::into)
+    if should_spawn {
+        let app_for_worker = app.clone();
+        std::thread::spawn(move || {
+            let worker_state = app_for_worker.state::<AppState>();
+            worker_state.run_ocr_worker(space_id, resource_script);
+        });
+    }
+
+    state.snapshot().map_err(Into::into)
 }
 
 #[tauri::command]

@@ -9,10 +9,10 @@ import {
   getWorkbenchSnapshot,
   indexKnowledgeSpace,
   requestSessionPermission,
-  runNextOcrParseJob,
   scanKnowledgeSpace,
   selectKnowledgeFolder,
   setDefaultPermission,
+  startOcrWorker,
 } from "../lib/tauriClient";
 import type { PermissionMode, WorkbenchSnapshot } from "../types/workbench";
 
@@ -28,10 +28,11 @@ interface WorkbenchSnapshotResult extends WorkbenchSnapshotState {
   createSpaceFromFolder: (permission: PermissionMode) => Promise<void>;
   enqueueOcrJob: (fileId: string) => Promise<void>;
   indexActiveSpace: () => Promise<void>;
-  runNextOcrJob: () => Promise<void>;
+  refreshSnapshot: () => Promise<void>;
   scanActiveSpace: () => Promise<void>;
   setFolderDefaultPermission: (permission: PermissionMode) => Promise<void>;
   setSessionPermission: (permission: PermissionMode) => Promise<void>;
+  startOcrWorker: () => Promise<void>;
 }
 
 const fallbackError = "状态读取失败，请检查本地数据库或稍后重试";
@@ -59,6 +60,20 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
       error: null,
     });
   }, []);
+
+  const refreshSnapshot = useCallback(async () => {
+    setState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const snapshot = await getWorkbenchSnapshot();
+      commitSnapshot(snapshot);
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, fallbackError),
+      }));
+    }
+  }, [commitSnapshot]);
 
   const setSessionPermission = useCallback(async (permission: PermissionMode) => {
     try {
@@ -196,7 +211,7 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     [commitSnapshot],
   );
 
-  const runNextOcrJob = useCallback(async () => {
+  const startOcrWorkerForActiveSpace = useCallback(async () => {
     const spaceId = state.snapshot.activeSpaceId;
     if (!spaceId) {
       setState((current) => ({
@@ -208,13 +223,13 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
 
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
-      const snapshot = await runNextOcrParseJob(spaceId);
+      const snapshot = await startOcrWorker(spaceId);
       commitSnapshot(snapshot);
     } catch (error) {
       setState((current) => ({
         ...current,
         loading: false,
-        error: getErrorMessage(error, "OCR 执行失败"),
+        error: getErrorMessage(error, "OCR 后台任务启动失败"),
       }));
     }
   }, [commitSnapshot, state.snapshot.activeSpaceId]);
@@ -327,9 +342,10 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     createSpaceFromFolder,
     enqueueOcrJob,
     indexActiveSpace,
-    runNextOcrJob,
+    refreshSnapshot,
     scanActiveSpace,
     setFolderDefaultPermission,
     setSessionPermission,
+    startOcrWorker: startOcrWorkerForActiveSpace,
   };
 }
