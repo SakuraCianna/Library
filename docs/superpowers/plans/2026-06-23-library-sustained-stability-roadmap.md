@@ -220,12 +220,38 @@ Set-Location E:\CodeHome\Library
 - Inspect: `app/src-tauri/tauri.conf.json`
 
 - [ ] Verify the release workflow still builds on Windows with the current Node, Rust, and `protoc` setup.
-- [ ] Document unsigned build limitations and manual installer smoke-test steps.
-- [ ] Add release artifact naming and retention expectations.
-- [ ] Keep automatic update and code signing as separate modules unless signing material is available.
+- [x] Document unsigned build limitations and manual installer smoke-test steps.
+- [x] Add release artifact naming and retention expectations.
+- [x] Keep automatic update and code signing as separate modules unless signing material is available.
 - [ ] Run the full verification gate and the release workflow dry run when available.
+- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+
+### Module 8: High-Fidelity Document Evidence
+
+**Purpose:** Improve evidence inspection quality before adding deeper reasoning, especially for PDFs, OCR output, and structured tables that need page/section-level context.
+
+**Files:**
+- Modify: `sidecars/parser/parser_sidecar.py`
+- Modify: `sidecars/parser/test_parser_sidecar.py`
+- Modify: `sidecars/ocr/ocr_sidecar.py`
+- Modify: `sidecars/ocr/test_ocr_sidecar.py`
+- Modify: `app/src-tauri/src/parser.rs`
+- Modify: `app/src-tauri/src/ocr.rs`
+- Modify: `app/src-tauri/src/storage/sqlite.rs`
+- Modify: `app/src-tauri/src/state.rs`
+- Modify: `app/src/App.tsx`
+- Modify: `app/src/App.module.css`
+- Modify: `app/src/__tests__/App.test.tsx`
+- Modify: `README.md`
+
+- [ ] Add tests for page/section metadata from parser and OCR sidecars.
+- [ ] Preserve local-only parsing and OCR boundaries; do not add cloud document extraction.
+- [ ] Store bounded evidence metadata without leaking absolute paths or temporary OCR directories.
+- [ ] Show page/section evidence in source detail UI without making the interface feel like a terminal.
+- [ ] Keep complex formula reasoning and cross-sheet reasoning separate unless this module explicitly proves the needed data shape.
+- [ ] Run the full verification gate and OCR environment check.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ## Next Immediate Target
 
-After Module 6 is delivered and merged, start Module 7: Release Readiness. The durable target is predictable Windows release artifacts, documented unsigned-build limitations, and a release workflow that remains aligned with the current Node, Rust, and `protoc` setup.
+After Module 7's release workflow dry run, reviewer, PR, merge, and branch sync are complete, start Module 8: High-Fidelity Document Evidence. The durable target is page/section-level evidence that makes parser and OCR results easier to inspect before deeper PDF layout work or complex table reasoning begins.
