@@ -35,9 +35,13 @@ Windows CPU 环境下 sidecar 会显式关闭 MKL-DNN，并且只从传入的本
 {
   "filePath": "E:\\Knowledge\\scan.pdf",
   "modelDir": "E:\\CodeHome\\Library\\models\\ocr\\pp-ocrv6",
-  "tier": "medium"
+  "tier": "medium",
+  "progress": true,
+  "tempDir": "C:\\Users\\Sakura_Cianna\\AppData\\Local\\Temp\\library-ocr-runs\\run-..."
 }
 ```
+
+默认不传 `progress` 时，stdout 返回单个 JSON 响应，保持脚本级调用兼容。传入 `"progress": true` 时，stdout 使用 NDJSON：先输出 `{"type":"progress",...}` 事件，最后输出 `{"type":"result","response":...}`。PDF 会拆成单页临时文件逐页识别，图片作为一个分段识别；PaddleOCR 日志仍然只写 stderr。`tempDir` 是可选的调用方拥有目录，桌面端由 Rust 在受控临时根目录下创建并在正常结束、取消或超时后清理。
 
 ## 本地 smoke
 
@@ -49,4 +53,4 @@ Windows CPU 环境下 sidecar 会显式关闭 MKL-DNN，并且只从传入的本
 .\scripts\检查OCR环境.ps1 -Tier medium -SmokeFile "E:\Knowledge\scan.png"
 ```
 
-sidecar 的 stdout 必须保持为单个 JSON 响应；PaddleOCR 初始化日志会被重定向到 stderr，避免污染 Rust 主进程解析。
+sidecar 的 stdout 必须保持为 JSON 数据：默认是单个 JSON 响应，启用 `progress` 后是逐行 JSON 事件；PaddleOCR 初始化日志会被重定向到 stderr，避免污染 Rust 主进程解析。

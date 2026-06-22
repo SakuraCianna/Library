@@ -685,12 +685,13 @@ impl AppState {
         loop {
             let outcome = self.run_one_ocr_parse_job_with_runner_notifying(
                 &space_id,
-                |candidate, request| {
+                |candidate, request, on_progress| {
                     let job_id = candidate.job_id.clone();
-                    crate::ocr::run_ocr_sidecar_cancellable(
+                    crate::ocr::run_ocr_sidecar_cancellable_with_progress(
                         request,
                         resource_script_path.as_deref(),
                         || self.is_parse_job_cancelled(&job_id).unwrap_or(false),
+                        on_progress,
                     )
                 },
                 &mut notify,
@@ -725,7 +726,11 @@ impl AppState {
         runner: F,
     ) -> Result<OcrJobOutcome, AppError>
     where
-        F: FnOnce(&ParseJobCandidate, &OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
+        F: FnOnce(
+            &ParseJobCandidate,
+            &OcrSidecarRequest,
+            &mut dyn FnMut(crate::ocr::OcrProgressUpdate),
+        ) -> Result<OcrSidecarResult, AppError>,
     {
         let outcome = self.run_one_ocr_parse_job_with_runner(&space_id, runner)?;
         *self
@@ -742,7 +747,11 @@ impl AppState {
         runner: F,
     ) -> Result<OcrJobOutcome, AppError>
     where
-        F: FnOnce(&ParseJobCandidate, &OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
+        F: FnOnce(
+            &ParseJobCandidate,
+            &OcrSidecarRequest,
+            &mut dyn FnMut(crate::ocr::OcrProgressUpdate),
+        ) -> Result<OcrSidecarResult, AppError>,
     {
         self.run_one_ocr_parse_job_with_runner_notifying(space_id, runner, |_| {})
     }
@@ -754,7 +763,11 @@ impl AppState {
         mut notify: N,
     ) -> Result<OcrJobOutcome, AppError>
     where
-        F: FnOnce(&ParseJobCandidate, &OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
+        F: FnOnce(
+            &ParseJobCandidate,
+            &OcrSidecarRequest,
+            &mut dyn FnMut(crate::ocr::OcrProgressUpdate),
+        ) -> Result<OcrSidecarResult, AppError>,
         N: FnMut(&str),
     {
         let (root_path, candidate) = {
@@ -789,7 +802,20 @@ impl AppState {
             validate_ocr_inputs(&input_path, &config.model_dir, &config.tier)?;
             self.update_parse_progress(&candidate.job_id, "正在执行本地 OCR", 0, 1)?;
             notify("ocr-progress");
-            let ocr_result = runner(&candidate, &request)?;
+            let mut on_progress = |progress: crate::ocr::OcrProgressUpdate| {
+                if self
+                    .update_parse_progress(
+                        &candidate.job_id,
+                        &progress.phase,
+                        progress.current,
+                        progress.total,
+                    )
+                    .is_ok()
+                {
+                    notify("ocr-progress");
+                }
+            };
+            let ocr_result = runner(&candidate, &request, &mut on_progress)?;
             self.update_parse_progress(&candidate.job_id, "正在写入索引", 1, 1)?;
             notify("ocr-progress");
             build_ocr_document(&candidate.relative_path, &ocr_result)
@@ -1751,17 +1777,20 @@ mod tests {
             .expect("ocr job queued");
 
         state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_candidate, _request| {
-                Ok(OcrSidecarResult {
-                    text: "扫描版 PDF 的本地 OCR 文本".to_string(),
-                    page_count: 1,
-                    pages: vec![OcrPageResult {
-                        page_index: 0,
+            .run_next_ocr_parse_job_with_runner(
+                scanned.active_space_id,
+                |_candidate, _request, _progress| {
+                    Ok(OcrSidecarResult {
                         text: "扫描版 PDF 的本地 OCR 文本".to_string(),
-                        confidence: Some(0.93),
-                    }],
-                })
-            })
+                        page_count: 1,
+                        pages: vec![OcrPageResult {
+                            page_index: 0,
+                            text: "扫描版 PDF 的本地 OCR 文本".to_string(),
+                            confidence: Some(0.93),
+                        }],
+                    })
+                },
+            )
             .expect("ocr job runs");
         let snapshot = state.snapshot().expect("snapshot builds");
 
@@ -1806,18 +1835,21 @@ mod tests {
             .expect("ocr job queued");
 
         state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_candidate, request| {
-                assert!(request.file_path.ends_with("scan.png"));
-                Ok(OcrSidecarResult {
-                    text: "截图里的本地 OCR 文本".to_string(),
-                    page_count: 1,
-                    pages: vec![OcrPageResult {
-                        page_index: 0,
+            .run_next_ocr_parse_job_with_runner(
+                scanned.active_space_id,
+                |_candidate, request, _progress| {
+                    assert!(request.file_path.ends_with("scan.png"));
+                    Ok(OcrSidecarResult {
                         text: "截图里的本地 OCR 文本".to_string(),
-                        confidence: Some(0.91),
-                    }],
-                })
-            })
+                        page_count: 1,
+                        pages: vec![OcrPageResult {
+                            page_index: 0,
+                            text: "截图里的本地 OCR 文本".to_string(),
+                            confidence: Some(0.91),
+                        }],
+                    })
+                },
+            )
             .expect("image ocr job runs");
         let snapshot = state.snapshot().expect("snapshot builds");
 
@@ -1832,6 +1864,69 @@ mod tests {
             .block_preview
             .excerpt
             .contains("截图里的本地 OCR 文本"));
+    }
+
+    #[test]
+    fn ocr_runner_progress_updates_parse_job_phase() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("scan.pdf"), "pdf").expect("write pdf");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let model_dir = app_data_dir
+            .path()
+            .join("models")
+            .join("ocr")
+            .join("pp-ocrv6");
+        create_test_ocr_model(&model_dir);
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+        state
+            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .expect("ocr job queued");
+
+        state
+            .run_next_ocr_parse_job_with_runner(
+                scanned.active_space_id,
+                |_candidate, request, progress| {
+                    assert!(request.progress);
+                    progress(crate::ocr::OcrProgressUpdate {
+                        phase: "已识别第 1/2 页".to_string(),
+                        current: 1,
+                        total: 2,
+                    });
+                    let snapshot = state.snapshot().expect("snapshot builds during progress");
+                    let ocr_job = snapshot
+                        .parse_jobs
+                        .iter()
+                        .find(|job| job.job_type == "ocr")
+                        .expect("ocr job exists");
+                    assert_eq!(ocr_job.phase, "已识别第 1/2 页");
+                    assert_eq!(ocr_job.progress_current, 1);
+                    assert_eq!(ocr_job.progress_total, 2);
+
+                    Ok(OcrSidecarResult {
+                        text: "分段进度后的 OCR 文本".to_string(),
+                        page_count: 2,
+                        pages: vec![OcrPageResult {
+                            page_index: 0,
+                            text: "分段进度后的 OCR 文本".to_string(),
+                            confidence: Some(0.93),
+                        }],
+                    })
+                },
+            )
+            .expect("ocr job runs");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1866,17 +1961,20 @@ mod tests {
             .expect("ocr job queued");
         let space_id = scanned.active_space_id.clone();
         state
-            .run_next_ocr_parse_job_with_runner(space_id.clone(), |_candidate, _request| {
-                Ok(OcrSidecarResult {
-                    text: "扫描版 PDF 的本地 OCR 文本".to_string(),
-                    page_count: 1,
-                    pages: vec![OcrPageResult {
-                        page_index: 0,
+            .run_next_ocr_parse_job_with_runner(
+                space_id.clone(),
+                |_candidate, _request, _progress| {
+                    Ok(OcrSidecarResult {
                         text: "扫描版 PDF 的本地 OCR 文本".to_string(),
-                        confidence: Some(0.93),
-                    }],
-                })
-            })
+                        page_count: 1,
+                        pages: vec![OcrPageResult {
+                            page_index: 0,
+                            text: "扫描版 PDF 的本地 OCR 文本".to_string(),
+                            confidence: Some(0.93),
+                        }],
+                    })
+                },
+            )
             .expect("ocr job runs");
         let indexed = state.snapshot().expect("snapshot builds");
 
@@ -1920,11 +2018,14 @@ mod tests {
             .expect("ocr job queued");
 
         state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_candidate, _request| {
-                Err(crate::error::AppError::Filesystem(
-                    "OCR_EMPTY_RESULT".to_string(),
-                ))
-            })
+            .run_next_ocr_parse_job_with_runner(
+                scanned.active_space_id,
+                |_candidate, _request, _progress| {
+                    Err(crate::error::AppError::Filesystem(
+                        "OCR_EMPTY_RESULT".to_string(),
+                    ))
+                },
+            )
             .expect("failure is recorded in snapshot");
         let snapshot = state.snapshot().expect("snapshot builds");
 
@@ -1971,20 +2072,23 @@ mod tests {
             .expect("ocr job queued");
 
         state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |candidate, _request| {
-                state
-                    .cancel_parse_job(candidate.job_id.clone())
-                    .expect("running job cancels");
-                Ok(OcrSidecarResult {
-                    text: "这段取消后的 OCR 文本不应入库".to_string(),
-                    page_count: 1,
-                    pages: vec![OcrPageResult {
-                        page_index: 0,
+            .run_next_ocr_parse_job_with_runner(
+                scanned.active_space_id,
+                |candidate, _request, _progress| {
+                    state
+                        .cancel_parse_job(candidate.job_id.clone())
+                        .expect("running job cancels");
+                    Ok(OcrSidecarResult {
                         text: "这段取消后的 OCR 文本不应入库".to_string(),
-                        confidence: Some(0.91),
-                    }],
-                })
-            })
+                        page_count: 1,
+                        pages: vec![OcrPageResult {
+                            page_index: 0,
+                            text: "这段取消后的 OCR 文本不应入库".to_string(),
+                            confidence: Some(0.91),
+                        }],
+                    })
+                },
+            )
             .expect("cancelled job returns without failing command");
         let snapshot = state.snapshot().expect("snapshot builds");
 
@@ -2028,14 +2132,17 @@ mod tests {
             .expect("ocr job queued");
 
         state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |candidate, _request| {
-                state
-                    .cancel_parse_job(candidate.job_id.clone())
-                    .expect("running job cancels");
-                Err(crate::error::AppError::Filesystem(
-                    "OCR_CANCELLED".to_string(),
-                ))
-            })
+            .run_next_ocr_parse_job_with_runner(
+                scanned.active_space_id,
+                |candidate, _request, _progress| {
+                    state
+                        .cancel_parse_job(candidate.job_id.clone())
+                        .expect("running job cancels");
+                    Err(crate::error::AppError::Filesystem(
+                        "OCR_CANCELLED".to_string(),
+                    ))
+                },
+            )
             .expect("cancelled runner error returns without failing command");
         let snapshot = state.snapshot().expect("snapshot builds");
 

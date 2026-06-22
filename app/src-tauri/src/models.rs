@@ -311,6 +311,9 @@ pub struct OcrSidecarRequest {
     pub model_dir: String,
     pub tier: String,
     pub max_pdf_pages: u32,
+    pub progress: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

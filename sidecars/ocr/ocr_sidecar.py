@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Callable, Iterable
 
 
@@ -22,6 +23,8 @@ class OcrRequest:
     model_dir: str
     tier: str
     max_pdf_pages: int
+    progress: bool = False
+    temp_dir: str | None = None
 
 
 def parse_request(raw: str) -> OcrRequest:
@@ -31,6 +34,8 @@ def parse_request(raw: str) -> OcrRequest:
         model_dir=str(payload["modelDir"]),
         tier=str(payload.get("tier", "medium")),
         max_pdf_pages=int(payload.get("maxPdfPages") or DEFAULT_MAX_PDF_PAGES),
+        progress=bool(payload.get("progress", False)),
+        temp_dir=str(payload["tempDir"]) if payload.get("tempDir") else None,
     )
 
 
@@ -147,7 +152,26 @@ def build_real_ocr_engine(request: OcrRequest) -> Callable[[str], Iterable[Any]]
     return predict
 
 
-def extract_ocr_pages(raw_results: Iterable[Any]) -> list[dict[str, Any]]:
+def emit_stream_event(event: dict[str, Any]) -> None:
+    print(json.dumps(event, ensure_ascii=False), flush=True)
+
+
+def emit_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    *,
+    phase: str,
+    current: int,
+    total: int,
+) -> None:
+    if callback is not None:
+        callback({"phase": phase, "current": current, "total": total})
+
+
+def extract_ocr_pages(
+    raw_results: Iterable[Any],
+    *,
+    forced_page_index: int | None = None,
+) -> list[dict[str, Any]]:
     pages = []
     for fallback_index, item in enumerate(raw_results):
         payload = item.json if hasattr(item, "json") else item
@@ -166,9 +190,12 @@ def extract_ocr_pages(raw_results: Iterable[Any]) -> list[dict[str, Any]]:
         confidence = None
         if scores:
             confidence = round(sum(scores) / len(scores), 3)
-        page_index = result.get("page_index")
-        if page_index is None:
-            page_index = fallback_index
+        if forced_page_index is None:
+            page_index = result.get("page_index")
+            if page_index is None:
+                page_index = fallback_index
+        else:
+            page_index = forced_page_index + fallback_index
 
         pages.append(
             {
@@ -181,9 +208,78 @@ def extract_ocr_pages(raw_results: Iterable[Any]) -> list[dict[str, Any]]:
     return pages
 
 
+def write_single_page_pdf(source_pdf: Path, target_pdf: Path, page_index: int) -> None:
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(source_pdf)
+    writer = PdfWriter()
+    writer.add_page(reader.pages[page_index])
+    with target_pdf.open("wb") as file:
+        writer.write(file)
+
+
+@contextlib.contextmanager
+def ocr_page_work_dir(request: OcrRequest):
+    if request.temp_dir:
+        path = Path(request.temp_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        yield path
+        return
+
+    with tempfile.TemporaryDirectory(prefix="library-ocr-") as temp_dir:
+        yield Path(temp_dir)
+
+
+def run_pdf_ocr_by_page(
+    *,
+    work_dir: Path,
+    file_path: Path,
+    engine: Callable[[str], Iterable[Any]],
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+) -> list[dict[str, Any]]:
+    page_count = detect_pdf_page_count(file_path)
+    pages: list[dict[str, Any]] = []
+
+    for page_index in range(page_count):
+        page_number = page_index + 1
+        page_pdf = work_dir / f"page-{page_number}.pdf"
+        write_single_page_pdf(file_path, page_pdf, page_index)
+
+        emit_progress(
+            progress_callback,
+            phase=f"正在识别第 {page_number}/{page_count} 页",
+            current=page_index,
+            total=page_count,
+        )
+        pages.extend(
+            extract_ocr_pages(engine(str(page_pdf)), forced_page_index=page_index)
+        )
+        emit_progress(
+            progress_callback,
+            phase=f"已识别第 {page_number}/{page_count} 页",
+            current=page_number,
+            total=page_count,
+        )
+
+    return pages
+
+
+def run_image_ocr(
+    *,
+    file_path: Path,
+    engine: Callable[[str], Iterable[Any]],
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+) -> list[dict[str, Any]]:
+    emit_progress(progress_callback, phase="正在识别图片", current=0, total=1)
+    pages = extract_ocr_pages(engine(str(file_path)), forced_page_index=0)
+    emit_progress(progress_callback, phase="已识别图片", current=1, total=1)
+    return pages
+
+
 def run_ocr(
     request: OcrRequest,
     ocr_factory: Callable[[OcrRequest], Callable[[str], Iterable[Any]]] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     validation_error = validate_request(request)
     if validation_error is not None:
@@ -191,7 +287,21 @@ def run_ocr(
 
     try:
         engine = (ocr_factory or build_real_ocr_engine)(request)
-        pages = extract_ocr_pages(engine(request.file_path))
+        file_path = Path(request.file_path)
+        if file_path.suffix.lower() == ".pdf":
+            with ocr_page_work_dir(request) as work_dir:
+                pages = run_pdf_ocr_by_page(
+                    work_dir=work_dir,
+                    file_path=file_path,
+                    engine=engine,
+                    progress_callback=progress_callback,
+                )
+        else:
+            pages = run_image_ocr(
+                file_path=file_path,
+                engine=engine,
+                progress_callback=progress_callback,
+            )
     except RuntimeError as exc:
         return build_error_response("OCR_RUNTIME_NOT_INSTALLED", str(exc))
     except Exception as exc:
@@ -208,6 +318,16 @@ def main() -> int:
     raw = sys.stdin.read()
     try:
         request = parse_request(raw)
+        if request.progress:
+            response = run_ocr(
+                request,
+                progress_callback=lambda progress: emit_stream_event(
+                    {"type": "progress", **progress}
+                ),
+            )
+            emit_stream_event({"type": "result", "response": response})
+            return 0
+
         response = run_ocr(request)
     except Exception as exc:
         response = build_error_response("OCR_SIDECAR_ERROR", str(exc))

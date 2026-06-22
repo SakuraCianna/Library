@@ -1,6 +1,7 @@
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{env, fs};
 
@@ -13,6 +14,8 @@ const OCR_SIDECAR_TIMEOUT: Duration = Duration::from_secs(120);
 const OCR_ENV_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OCR_INPUT_BYTES: u64 = 50 * 1024 * 1024;
 const DEFAULT_MAX_OCR_PDF_PAGES: u32 = 12;
+const OCR_TEMP_ROOT_NAME: &str = "library-ocr-runs";
+const OCR_TEMP_DIR_PREFIX: &str = "run-";
 const REQUIRED_MODEL_FILES: [&str; 3] = ["inference.json", "inference.pdiparams", "inference.yml"];
 
 #[derive(Debug, serde::Deserialize)]
@@ -28,22 +31,46 @@ struct OcrSidecarError {
     message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrProgressUpdate {
+    pub phase: String,
+    pub current: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OcrSidecarStreamEvent {
+    Progress {
+        phase: String,
+        current: u32,
+        total: u32,
+    },
+    Result {
+        response: OcrSidecarEnvelope,
+    },
+}
+
 pub fn build_ocr_request(file_path: &Path, model_dir: &Path, tier: &str) -> OcrSidecarRequest {
     OcrSidecarRequest {
         file_path: file_path.to_string_lossy().to_string(),
         model_dir: model_dir.to_string_lossy().to_string(),
         tier: tier.to_string(),
         max_pdf_pages: ocr_pdf_page_limit(),
+        progress: true,
+        temp_dir: None,
     }
 }
 
-pub fn run_ocr_sidecar_cancellable<F>(
+pub fn run_ocr_sidecar_cancellable_with_progress<F, P>(
     request: &OcrSidecarRequest,
     resource_script_path: Option<&Path>,
     is_cancelled: F,
+    on_progress: P,
 ) -> Result<OcrSidecarResult, AppError>
 where
     F: Fn() -> bool,
+    P: FnMut(OcrProgressUpdate),
 {
     let script_path = resolve_ocr_sidecar_script(resource_script_path)?;
     let project_root = discover_project_root().ok();
@@ -54,6 +81,7 @@ where
         &script_path,
         OCR_SIDECAR_TIMEOUT,
         is_cancelled,
+        on_progress,
     )
 }
 
@@ -81,10 +109,22 @@ fn run_ocr_sidecar_with_paths<F>(
     script_path: &Path,
     timeout: Duration,
     is_cancelled: F,
+    on_progress: impl FnMut(OcrProgressUpdate),
 ) -> Result<OcrSidecarResult, AppError>
 where
     F: Fn() -> bool,
 {
+    if request.progress {
+        return run_ocr_sidecar_streaming_with_paths(
+            request,
+            python_path,
+            script_path,
+            timeout,
+            is_cancelled,
+            on_progress,
+        );
+    }
+
     if !script_path.is_file() {
         return Err(AppError::Filesystem(format!(
             "找不到 OCR sidecar：{}",
@@ -92,6 +132,8 @@ where
         )));
     }
 
+    let temp_dir = OcrSidecarTempDir::create()?;
+    let request_payload = request_with_temp_dir(request, temp_dir.path());
     let mut child = Command::new(python_path)
         .arg(script_path)
         .env("DISABLE_MODEL_SOURCE_CHECK", "True")
@@ -118,7 +160,7 @@ where
             .stdin
             .take()
             .ok_or_else(|| AppError::Filesystem("无法写入 OCR sidecar stdin".to_string()))?;
-        let payload = serde_json::to_vec(request)
+        let payload = serde_json::to_vec(&request_payload)
             .map_err(|error| AppError::Filesystem(format!("无法序列化 OCR 请求：{error}")))?;
         stdin
             .write_all(&payload)
@@ -161,6 +203,181 @@ where
     }
 
     parse_ocr_sidecar_stdout(&stdout)
+}
+
+fn run_ocr_sidecar_streaming_with_paths<F, P>(
+    request: &OcrSidecarRequest,
+    python_path: &Path,
+    script_path: &Path,
+    timeout: Duration,
+    is_cancelled: F,
+    mut on_progress: P,
+) -> Result<OcrSidecarResult, AppError>
+where
+    F: Fn() -> bool,
+    P: FnMut(OcrProgressUpdate),
+{
+    if !script_path.is_file() {
+        return Err(AppError::Filesystem(format!(
+            "找不到 OCR sidecar：{}",
+            script_path.display()
+        )));
+    }
+
+    let temp_dir = OcrSidecarTempDir::create()?;
+    let request_payload = request_with_temp_dir(request, temp_dir.path());
+    let mut child = Command::new(python_path)
+        .arg(script_path)
+        .env("DISABLE_MODEL_SOURCE_CHECK", "True")
+        .env("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| AppError::Filesystem(format!("无法启动 OCR sidecar：{error}")))?;
+
+    let (stdout_sender, stdout_receiver) = mpsc::channel();
+    let stdout_handle = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Filesystem("无法读取 OCR sidecar stdout".to_string()))
+        .map(|stdout| forward_output_lines(stdout, stdout_sender))?;
+    let stderr_handle = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Filesystem("无法读取 OCR sidecar stderr".to_string()))
+        .map(read_output_pipe)?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::Filesystem("无法写入 OCR sidecar stdin".to_string()))?;
+        let payload = serde_json::to_vec(&request_payload)
+            .map_err(|error| AppError::Filesystem(format!("无法序列化 OCR 请求：{error}")))?;
+        stdin
+            .write_all(&payload)
+            .map_err(|error| AppError::Filesystem(format!("无法发送 OCR 请求：{error}")))?;
+    }
+
+    let start = Instant::now();
+    let mut final_result: Option<Result<OcrSidecarResult, AppError>> = None;
+    let status = loop {
+        if let Err(error) =
+            drain_ocr_stream_lines(&stdout_receiver, &mut final_result, &mut on_progress)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| AppError::Filesystem(format!("无法等待 OCR sidecar：{error}")))?
+        {
+            break status;
+        }
+        if is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Filesystem(
+                "OCR_CANCELLED：用户取消了 OCR 任务".to_string(),
+            ));
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Filesystem(
+                "OCR_TIMEOUT：OCR sidecar 执行超时".to_string(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    stdout_handle
+        .join()
+        .map_err(|_| AppError::Filesystem("OCR 输出读取线程异常退出".to_string()))?
+        .map_err(|error| AppError::Filesystem(format!("无法读取 OCR 输出：{error}")))?;
+    drain_ocr_stream_lines(&stdout_receiver, &mut final_result, &mut on_progress)?;
+    let stderr = join_output_reader(stderr_handle, "OCR 日志")?;
+
+    if !status.success() {
+        return Err(AppError::Filesystem(format!(
+            "OCR sidecar 退出失败：{}",
+            truncate_chars(stderr.trim(), 500)
+        )));
+    }
+
+    final_result.unwrap_or_else(|| {
+        Err(AppError::Filesystem(
+            "OCR sidecar 未返回最终结果".to_string(),
+        ))
+    })
+}
+
+struct OcrSidecarTempDir {
+    path: PathBuf,
+}
+
+impl OcrSidecarTempDir {
+    fn create() -> Result<Self, AppError> {
+        let root = ocr_temp_root();
+        fs::create_dir_all(&root)
+            .map_err(|error| AppError::Filesystem(format!("无法创建 OCR 临时目录：{error}")))?;
+        let path = root.join(format!("{}{}", OCR_TEMP_DIR_PREFIX, uuid::Uuid::new_v4()));
+        fs::create_dir(&path)
+            .map_err(|error| AppError::Filesystem(format!("无法创建 OCR 任务临时目录：{error}")))?;
+
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for OcrSidecarTempDir {
+    fn drop(&mut self) {
+        if let Err(error) = remove_controlled_ocr_temp_dir(&self.path) {
+            eprintln!(
+                "failed to clean OCR temp dir {}: {error}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+fn request_with_temp_dir(request: &OcrSidecarRequest, temp_dir: &Path) -> OcrSidecarRequest {
+    let mut request_payload = request.clone();
+    request_payload.temp_dir = Some(temp_dir.to_string_lossy().to_string());
+    request_payload
+}
+
+fn ocr_temp_root() -> PathBuf {
+    env::temp_dir().join(OCR_TEMP_ROOT_NAME)
+}
+
+fn remove_controlled_ocr_temp_dir(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let root = ocr_temp_root().canonicalize()?;
+    let target = path.canonicalize()?;
+    let is_direct_child = target.parent() == Some(root.as_path());
+    let has_owned_prefix = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with(OCR_TEMP_DIR_PREFIX))
+        .unwrap_or(false);
+
+    if !is_direct_child || !has_owned_prefix {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refusing to remove unowned OCR temp dir",
+        ));
+    }
+
+    fs::remove_dir_all(target)
 }
 
 fn run_ocr_environment_check_with_paths(
@@ -241,6 +458,80 @@ where
         reader.read_to_string(&mut output)?;
         Ok(output)
     })
+}
+
+fn forward_output_lines<R>(
+    reader: R,
+    sender: mpsc::Sender<String>,
+) -> std::thread::JoinHandle<std::io::Result<()>>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            let line = line?;
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn drain_ocr_stream_lines<P>(
+    receiver: &mpsc::Receiver<String>,
+    final_result: &mut Option<Result<OcrSidecarResult, AppError>>,
+    on_progress: &mut P,
+) -> Result<(), AppError>
+where
+    P: FnMut(OcrProgressUpdate),
+{
+    while let Ok(line) = receiver.try_recv() {
+        handle_ocr_stream_line(&line, final_result, on_progress)?;
+    }
+
+    Ok(())
+}
+
+fn handle_ocr_stream_line<P>(
+    line: &str,
+    final_result: &mut Option<Result<OcrSidecarResult, AppError>>,
+    on_progress: &mut P,
+) -> Result<(), AppError>
+where
+    P: FnMut(OcrProgressUpdate),
+{
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    match serde_json::from_str::<OcrSidecarStreamEvent>(trimmed) {
+        Ok(OcrSidecarStreamEvent::Progress {
+            phase,
+            current,
+            total,
+        }) => {
+            on_progress(OcrProgressUpdate {
+                phase,
+                current,
+                total,
+            });
+            Ok(())
+        }
+        Ok(OcrSidecarStreamEvent::Result { response }) => {
+            *final_result = Some(ocr_envelope_to_result(response));
+            Ok(())
+        }
+        Err(_) => {
+            let envelope: OcrSidecarEnvelope = serde_json::from_str(trimmed).map_err(|error| {
+                AppError::Filesystem(format!("OCR sidecar 返回了无效 JSON：{error}"))
+            })?;
+            *final_result = Some(ocr_envelope_to_result(envelope));
+            Ok(())
+        }
+    }
 }
 
 fn join_output_reader(
@@ -404,6 +695,10 @@ pub fn parse_ocr_sidecar_stdout(stdout: &str) -> Result<OcrSidecarResult, AppErr
     let envelope: OcrSidecarEnvelope = serde_json::from_str(stdout.trim())
         .map_err(|error| AppError::Filesystem(format!("OCR sidecar 返回了无效 JSON：{error}")))?;
 
+    ocr_envelope_to_result(envelope)
+}
+
+fn ocr_envelope_to_result(envelope: OcrSidecarEnvelope) -> Result<OcrSidecarResult, AppError> {
     if envelope.ok {
         return envelope
             .result
@@ -464,13 +759,15 @@ fn display_file_name(relative_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::{Mutex, OnceLock};
     use std::{env, fs};
 
     use super::{
-        build_ocr_document, build_ocr_request, parse_ocr_environment_report,
-        parse_ocr_sidecar_stdout, resolve_ocr_environment_checker, resolve_ocr_sidecar_script,
-        validate_ocr_inputs,
+        build_ocr_document, build_ocr_request, handle_ocr_stream_line,
+        parse_ocr_environment_report, parse_ocr_sidecar_stdout, request_with_temp_dir,
+        resolve_ocr_environment_checker, resolve_ocr_sidecar_script, validate_ocr_inputs,
+        OcrProgressUpdate, OcrSidecarTempDir,
     };
 
     #[test]
@@ -495,6 +792,7 @@ mod tests {
 
         assert_eq!(request.tier, "medium");
         assert_eq!(request.max_pdf_pages, 12);
+        assert!(request.progress);
         assert!(request.file_path.ends_with("scan.pdf"));
     }
 
@@ -541,6 +839,36 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_temp_dir_is_removed_when_guard_drops() {
+        let temp_dir = OcrSidecarTempDir::create().expect("temp dir created");
+        let path = temp_dir.path().to_path_buf();
+        fs::write(path.join("page-1.pdf"), "sensitive page").expect("temp page written");
+
+        assert!(path.is_dir());
+        drop(temp_dir);
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn sidecar_request_payload_contains_owned_temp_dir() {
+        let temp_dir = OcrSidecarTempDir::create().expect("temp dir created");
+        let request = build_ocr_request(
+            Path::new("E:\\Knowledge\\scan.pdf"),
+            Path::new("E:\\CodeHome\\Library\\models\\ocr\\pp-ocrv6"),
+            "medium",
+        );
+
+        let payload = request_with_temp_dir(&request, temp_dir.path());
+        let expected_temp_dir = temp_dir.path().to_string_lossy().to_string();
+
+        assert_eq!(
+            payload.temp_dir.as_deref(),
+            Some(expected_temp_dir.as_str())
+        );
+    }
+
+    #[test]
     fn parses_successful_sidecar_stdout() {
         let result = parse_ocr_sidecar_stdout(
             r#"{"ok":true,"result":{"text":"OCR 文本","pageCount":1,"pages":[{"pageIndex":0,"text":"OCR 文本","confidence":0.99}]}}"#,
@@ -550,6 +878,38 @@ mod tests {
         assert_eq!(result.text, "OCR 文本");
         assert_eq!(result.page_count, 1);
         assert_eq!(result.pages[0].page_index, 0);
+    }
+
+    #[test]
+    fn parses_streaming_progress_and_result_events() {
+        let mut progress_updates = Vec::new();
+        let mut final_result = None;
+
+        handle_ocr_stream_line(
+            r#"{"type":"progress","phase":"已识别第 1/2 页","current":1,"total":2}"#,
+            &mut final_result,
+            &mut |progress| progress_updates.push(progress),
+        )
+        .expect("progress event parses");
+        handle_ocr_stream_line(
+            r#"{"type":"result","response":{"ok":true,"result":{"text":"OCR 文本","pageCount":1,"pages":[{"pageIndex":0,"text":"OCR 文本","confidence":0.99}]}}}"#,
+            &mut final_result,
+            &mut |progress| progress_updates.push(progress),
+        )
+        .expect("result event parses");
+
+        assert_eq!(
+            progress_updates,
+            vec![OcrProgressUpdate {
+                phase: "已识别第 1/2 页".to_string(),
+                current: 1,
+                total: 2,
+            }]
+        );
+        let result = final_result
+            .expect("final result exists")
+            .expect("final result succeeds");
+        assert_eq!(result.text, "OCR 文本");
     }
 
     #[test]
