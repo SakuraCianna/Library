@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
@@ -954,29 +954,34 @@ impl SqliteStore {
             return Ok(Vec::new());
         }
 
+        let candidate_limit = limit.saturating_mul(3).max(limit);
         let mut hits = Vec::new();
         for term in &terms {
             append_unique_hits(
                 &mut hits,
-                self.search_knowledge_blocks_fts(space_id, term, limit)?,
-                limit,
+                self.search_knowledge_blocks_fts(space_id, term, candidate_limit)?,
+                candidate_limit,
             );
-            if hits.len() >= limit {
-                return Ok(hits);
-            }
-        }
-
-        for term in &terms {
-            append_unique_hits(
-                &mut hits,
-                self.search_knowledge_blocks_like(space_id, term, limit)?,
-                limit,
-            );
-            if hits.len() >= limit {
+            if hits.len() >= candidate_limit {
                 break;
             }
         }
 
+        if hits.len() < candidate_limit {
+            for term in &terms {
+                append_unique_hits(
+                    &mut hits,
+                    self.search_knowledge_blocks_like(space_id, term, candidate_limit)?,
+                    candidate_limit,
+                );
+                if hits.len() >= candidate_limit {
+                    break;
+                }
+            }
+        }
+
+        rank_search_hits(&mut hits, query);
+        hits.truncate(limit);
         Ok(hits)
     }
 
@@ -2265,6 +2270,12 @@ fn normalize_lookup_key(relative_path: &str) -> String {
 fn row_to_search_hit(row: &Row<'_>, term: &str) -> rusqlite::Result<KnowledgeBlockSearchHit> {
     let body: String = row.get(2)?;
     let source_locator: String = row.get(3)?;
+    let source_kind = row.get::<_, String>(4)?;
+    let source_kind = if is_ocr_source_locator(&source_locator) {
+        "ocr".to_string()
+    } else {
+        source_kind
+    };
 
     Ok(KnowledgeBlockSearchHit {
         id: row.get(0)?,
@@ -2272,8 +2283,54 @@ fn row_to_search_hit(row: &Row<'_>, term: &str) -> rusqlite::Result<KnowledgeBlo
         excerpt: build_excerpt(&body, term),
         source_file_name: display_source_file_name(&source_locator),
         source_locator,
-        source_kind: row.get(4)?,
+        source_kind,
     })
+}
+
+fn rank_search_hits(hits: &mut [KnowledgeBlockSearchHit], query: &str) {
+    let normalized_query = query.to_lowercase();
+    let wants_ocr = query_contains_ocr_intent(&normalized_query);
+    let original_positions: HashMap<String, usize> = hits
+        .iter()
+        .enumerate()
+        .map(|(index, hit)| (hit.id.clone(), index))
+        .collect();
+
+    hits.sort_by(|left, right| {
+        let left_position = original_positions
+            .get(&left.id)
+            .copied()
+            .unwrap_or(usize::MAX);
+        let right_position = original_positions
+            .get(&right.id)
+            .copied()
+            .unwrap_or(usize::MAX);
+        let left_score = source_rank_score(left, wants_ocr);
+        let right_score = source_rank_score(right, wants_ocr);
+
+        adjusted_source_position(left_position, left_score)
+            .cmp(&adjusted_source_position(right_position, right_score))
+            .then_with(|| right_score.cmp(&left_score))
+            .then_with(|| left_position.cmp(&right_position))
+    });
+}
+
+fn source_rank_score(hit: &KnowledgeBlockSearchHit, wants_ocr: bool) -> u8 {
+    match hit.source_kind.as_str() {
+        "ocr" if wants_ocr => 1,
+        "table" => 1,
+        _ => 0,
+    }
+}
+
+fn adjusted_source_position(position: usize, source_score: u8) -> usize {
+    position.saturating_sub(source_score as usize)
+}
+
+fn query_contains_ocr_intent(query: &str) -> bool {
+    ["ocr", "扫描", "扫描版", "图片", "截图", "识别"]
+        .iter()
+        .any(|token| query.contains(token))
 }
 
 fn append_unique_hits(
@@ -2391,6 +2448,13 @@ fn display_source_file_name(source_locator: &str) -> String {
     display_file_name(source_path)
 }
 
+fn is_ocr_source_locator(source_locator: &str) -> bool {
+    source_locator
+        .rsplit_once('#')
+        .map(|(_, fragment)| fragment == "ocr" || fragment.starts_with("ocr-block-"))
+        .unwrap_or(false)
+}
+
 fn is_sensitive_backup_locator(locator: &str) -> bool {
     let source_path = strip_known_source_fragment(locator).trim();
     if source_path.is_empty() {
@@ -2456,10 +2520,11 @@ fn display_extension(extension: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_source_file_name, SqliteStore};
+    use super::{display_source_file_name, rank_search_hits, SqliteStore};
     use crate::models::{
         BackupExport, BackupExportFile, BackupExportKnowledgeBlock, BackupExportSpace,
-        BackupExportWorkspace, ParsedDocument, ParsedTableInsight, PermissionMode, ScannedFile,
+        BackupExportWorkspace, KnowledgeBlockSearchHit, ParsedDocument, ParsedTableInsight,
+        PermissionMode, ScannedFile,
     };
     use rusqlite::{params, Connection};
 
@@ -2514,6 +2579,17 @@ mod tests {
           tokenize='trigram'
         );
     "#;
+
+    fn ranked_hit(id: &str, source_kind: &str, source_locator: &str) -> KnowledgeBlockSearchHit {
+        KnowledgeBlockSearchHit {
+            id: id.to_string(),
+            title: id.to_string(),
+            excerpt: id.to_string(),
+            source_file_name: display_source_file_name(source_locator),
+            source_locator: source_locator.to_string(),
+            source_kind: source_kind.to_string(),
+        }
+    }
 
     #[test]
     fn creates_knowledge_space_in_local_sqlite() {
@@ -3000,6 +3076,147 @@ mod tests {
         assert_eq!(hits[0].source_locator, "经营报表.xlsx#sheet-001");
         assert_eq!(hits[0].source_file_name, "经营报表.xlsx");
         assert_eq!(hits[0].source_kind, "table");
+    }
+
+    #[test]
+    fn search_ranks_table_sources_before_plain_file_for_table_queries() {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("报表", "D:\\知识库\\报表排序", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-report", &space_id, "经营报表.xlsx", "indexed")
+            .expect("file is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO knowledge_blocks (
+                    id, space_id, file_id, title, body, source_kind, source_locator, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                params![
+                    "block-plain-report",
+                    space_id,
+                    "file-report",
+                    "2026-06 营收说明",
+                    "2026-06 营收在正文里被提到，但没有表头和样例行。",
+                    "original_file",
+                    "经营报表.xlsx",
+                    TEST_TIME
+                ],
+            )
+            .expect("plain block is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO knowledge_blocks (
+                    id, space_id, file_id, title, body, source_kind, source_locator, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                params![
+                    "block-table-report",
+                    space_id,
+                    "file-report",
+                    "经营报表.xlsx · 工作表 1",
+                    "表头：月份、营收、成本。样例 1：2026-06 | 120 | 70。",
+                    "table",
+                    "经营报表.xlsx#sheet-001",
+                    TEST_TIME
+                ],
+            )
+            .expect("table block is inserted");
+
+        let hits = store
+            .search_knowledge_blocks(&space_id, "2026-06 营收", 4)
+            .expect("search succeeds");
+
+        assert!(hits.len() >= 2);
+        assert_eq!(hits[0].source_kind, "table");
+        assert_eq!(hits[0].source_locator, "经营报表.xlsx#sheet-001");
+    }
+
+    #[test]
+    fn source_ranking_promotes_adjacent_structured_sources_only() {
+        let mut hits = vec![
+            ranked_hit("plain-close", "original_file", "经营报表.md"),
+            ranked_hit("table-close", "table", "经营报表.xlsx#sheet-001"),
+        ];
+
+        rank_search_hits(&mut hits, "营收");
+
+        assert_eq!(hits[0].id, "table-close");
+        assert_eq!(hits[1].id, "plain-close");
+    }
+
+    #[test]
+    fn source_ranking_keeps_clear_relevance_leaders_first() {
+        let mut hits = vec![
+            ranked_hit("plain-strong", "original_file", "经营报表.md#block-001"),
+            ranked_hit("plain-next", "original_file", "经营报表.md#block-002"),
+            ranked_hit("plain-third", "original_file", "经营报表.md#block-003"),
+            ranked_hit("table-weak", "table", "历史报表.xlsx#sheet-001"),
+        ];
+
+        rank_search_hits(&mut hits, "营收");
+
+        assert_eq!(hits[0].id, "plain-strong");
+        assert_eq!(hits[1].id, "plain-next");
+        assert_eq!(hits[2].id, "table-weak");
+    }
+
+    #[test]
+    fn search_ranks_ocr_sources_before_plain_file_for_scan_queries() {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("OCR", "D:\\知识库\\OCR排序", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-scan", &space_id, "scan.pdf", "indexed")
+            .expect("file is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO knowledge_blocks (
+                    id, space_id, file_id, title, body, source_kind, source_locator, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                params![
+                    "block-plain-scan",
+                    space_id,
+                    "file-scan",
+                    "发票金额说明",
+                    "普通摘要里提到扫描版发票金额。",
+                    "original_file",
+                    "scan.pdf",
+                    TEST_TIME
+                ],
+            )
+            .expect("plain block is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO knowledge_blocks (
+                    id, space_id, file_id, title, body, source_kind, source_locator, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                params![
+                    "block-ocr-scan",
+                    space_id,
+                    "file-scan",
+                    "scan.pdf · OCR 片段 1/1",
+                    "本地 OCR 识别到扫描版发票金额为 120 元。",
+                    "original_file",
+                    "scan.pdf#ocr-block-001",
+                    TEST_TIME
+                ],
+            )
+            .expect("ocr block is inserted");
+
+        let hits = store
+            .search_knowledge_blocks(&space_id, "扫描版 发票金额", 4)
+            .expect("search succeeds");
+
+        assert!(hits.len() >= 2);
+        assert_eq!(hits[0].source_kind, "ocr");
+        assert_eq!(hits[0].source_locator, "scan.pdf#ocr-block-001");
     }
 
     #[test]

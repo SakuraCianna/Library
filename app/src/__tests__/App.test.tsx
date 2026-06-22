@@ -175,6 +175,57 @@ const answeredTableSnapshot: WorkbenchSnapshot = {
   ],
 };
 
+const answeredMixedSourcesSnapshot: WorkbenchSnapshot = {
+  ...snapshotWithSpace,
+  messages: [
+    {
+      id: "msg-user-mixed",
+      role: "user",
+      content: "营收和扫描版发票一起看",
+      sources: [],
+    },
+    {
+      id: "msg-assistant-mixed",
+      role: "assistant",
+      content: "本地索引命中了文本、表格和 OCR 来源。",
+      sources: [
+        {
+          id: "block-plain",
+          title: "项目说明",
+          excerpt: "普通文档提到营收。",
+          sourceFileName: "项目说明.md",
+          sourceLocator: "项目说明.md",
+          sourceKind: "original_file",
+        },
+        {
+          id: "block-markdown",
+          title: "会议纪要",
+          excerpt: "Markdown 笔记补充了营收背景。",
+          sourceFileName: "会议纪要.md",
+          sourceLocator: "会议纪要.md#block-001",
+          sourceKind: "markdown_note",
+        },
+        {
+          id: "block-table",
+          title: "经营报表.xlsx · 工作表 1",
+          excerpt: "样例 1：2026-06 | 120 | 70",
+          sourceFileName: "经营报表.xlsx",
+          sourceLocator: "经营报表.xlsx#sheet-001",
+          sourceKind: "table",
+        },
+        {
+          id: "block-ocr",
+          title: "scan.pdf · OCR 片段 1/1",
+          excerpt: "本地 OCR 识别到扫描版发票金额。",
+          sourceFileName: "scan.pdf",
+          sourceLocator: "scan.pdf#ocr-block-001",
+          sourceKind: "ocr",
+        },
+      ],
+    },
+  ],
+};
+
 const redisSourceContext = {
   currentIndex: 1,
   totalCount: 2,
@@ -497,7 +548,7 @@ describe("App", () => {
     expect(await screen.findByText(/空值缓存、布隆过滤器/)).toBeInTheDocument();
     expect(screen.getByLabelText("回答来源")).toBeInTheDocument();
     expect(screen.getByText("Redis面试.md")).toBeInTheDocument();
-    expect(screen.getByText("原始文件")).toBeInTheDocument();
+    expect(screen.getAllByText("原始文件").length).toBeGreaterThan(0);
     expect(
       screen.getByText("定位：Redis面试.md#block-001"),
     ).toBeInTheDocument();
@@ -583,7 +634,7 @@ describe("App", () => {
     });
     fireEvent.click(within(composer).getByRole("button", { name: "发送" }));
 
-    expect(await screen.findByText("表格洞察")).toBeInTheDocument();
+    expect((await screen.findAllByText("表格洞察")).length).toBeGreaterThan(0);
     expect(screen.getByText("经营报表.xlsx")).toBeInTheDocument();
     expect(
       screen.getByText("定位：经营报表.xlsx#sheet-001"),
@@ -591,6 +642,74 @@ describe("App", () => {
     expect(screen.getAllByText(/2026-06 \| 120 \| 70/).length).toBeGreaterThan(
       0,
     );
+  });
+
+  it("can hide assistant sources and filter them by source type", async () => {
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "ask_agent") {
+        return answeredMixedSourcesSnapshot;
+      }
+      return snapshotWithSpace;
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "真实知识库" });
+    const composer = screen.getByRole("form", { name: "智能助手输入区" });
+    fireEvent.change(within(composer).getByLabelText("向智能助手提问"), {
+      target: { value: "营收和扫描版发票一起看" },
+    });
+    fireEvent.click(within(composer).getByRole("button", { name: "发送" }));
+
+    const sources = await screen.findByLabelText("回答来源");
+    expect(within(sources).getByText("项目说明.md")).toBeInTheDocument();
+    expect(within(sources).getByText("会议纪要.md")).toBeInTheDocument();
+    expect(within(sources).getByText("经营报表.xlsx")).toBeInTheDocument();
+    expect(within(sources).getByText("scan.pdf")).toBeInTheDocument();
+    expect(
+      within(sources).getByRole("button", { name: "全部来源" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(
+      within(sources).getByRole("button", { name: "Markdown 笔记" }),
+    );
+    expect(within(sources).queryByText("项目说明.md")).not.toBeInTheDocument();
+    expect(within(sources).getByText("会议纪要.md")).toBeInTheDocument();
+    expect(within(sources).queryByText("经营报表.xlsx")).not.toBeInTheDocument();
+    expect(
+      within(sources).getByRole("button", { name: "Markdown 笔记" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(within(sources).getByRole("button", { name: "表格洞察" }));
+    expect(within(sources).queryByText("项目说明.md")).not.toBeInTheDocument();
+    expect(within(sources).queryByText("会议纪要.md")).not.toBeInTheDocument();
+    expect(within(sources).getByText("经营报表.xlsx")).toBeInTheDocument();
+    expect(within(sources).queryByText("scan.pdf")).not.toBeInTheDocument();
+
+    fireEvent.click(within(sources).getByRole("button", { name: "本地 OCR" }));
+    expect(within(sources).queryByText("经营报表.xlsx")).not.toBeInTheDocument();
+    expect(within(sources).getByText("scan.pdf")).toBeInTheDocument();
+
+    fireEvent.click(within(sources).getByRole("button", { name: "全部来源" }));
+    expect(within(sources).getByText("项目说明.md")).toBeInTheDocument();
+    expect(within(sources).getByText("会议纪要.md")).toBeInTheDocument();
+    expect(within(sources).getByText("经营报表.xlsx")).toBeInTheDocument();
+    expect(within(sources).getByText("scan.pdf")).toBeInTheDocument();
+    expect(
+      within(sources).getByRole("button", { name: "全部来源" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(within(sources).getByRole("button", { name: "隐藏来源" }));
+    expect(within(sources).queryByText("scan.pdf")).not.toBeInTheDocument();
+    expect(
+      within(sources).getByRole("button", { name: "显示来源" }),
+    ).toBeInTheDocument();
   });
 
   it("renders parse queue status when jobs exist", async () => {
