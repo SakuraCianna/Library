@@ -14,7 +14,7 @@ use crate::models::{
     ScanSummary, ScannedFile, TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
-use crate::parser::parse_file;
+use crate::parser::parse_file_with_sidecar;
 use crate::runtime::ocr_config;
 use crate::scanner::{scan_folder_with_progress, ScanProgress};
 use crate::storage::sqlite::{ParseJobWriteOutcome, ScanJobWriteOutcome, SqliteStore};
@@ -485,8 +485,12 @@ impl AppState {
         Ok(true)
     }
 
-    pub fn run_document_worker<F>(&self, space_id: String, mut notify: F)
-    where
+    pub fn run_document_worker<F>(
+        &self,
+        space_id: String,
+        resource_script_path: Option<PathBuf>,
+        mut notify: F,
+    ) where
         F: FnMut(&str),
     {
         loop {
@@ -498,7 +502,11 @@ impl AppState {
                         relative_path: candidate.relative_path.clone(),
                         extension: candidate.extension.clone(),
                     };
-                    parse_file(root_path, &file_candidate)
+                    parse_file_with_sidecar(
+                        root_path,
+                        &file_candidate,
+                        resource_script_path.as_deref(),
+                    )
                 },
                 &mut notify,
             );
@@ -1537,10 +1545,11 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use std::{env, fs};
 
-    use super::{parse_file, AppState};
+    use super::AppState;
     use crate::models::{
         ChatRole, OcrPageResult, OcrSidecarResult, ParsedTableInsight, PermissionMode, ScannedFile,
     };
+    use crate::parser::parse_file;
     use crate::storage::sqlite::SqliteStore;
 
     #[test]

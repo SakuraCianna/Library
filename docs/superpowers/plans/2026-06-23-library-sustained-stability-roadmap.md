@@ -56,6 +56,9 @@ npm run build
 Set-Location E:\CodeHome\Library\sidecars\ocr
 ..\..\.venv\Scripts\python.exe -m pytest
 
+Set-Location E:\CodeHome\Library\sidecars\parser
+..\..\.venv\Scripts\python.exe -m pytest
+
 Set-Location E:\CodeHome\Library\app\src-tauri
 cargo fmt -- --check
 cargo test
@@ -150,15 +153,16 @@ Set-Location E:\CodeHome\Library
 - Modify: `app/src-tauri/src/parser.rs`
 - Modify: `app/src-tauri/src/state.rs`
 - Modify: `app/src-tauri/src/commands.rs`
-- Modify: `app/src-tauri/src/lib.rs`
+- Modify: `app/src-tauri/tauri.conf.json`
 - Modify: `README.md`
+- Inspect: `app/src-tauri/src/lib.rs`
 
-- [ ] Define a stdin/stdout JSON protocol similar to the OCR sidecar.
-- [ ] Add tests for Markdown, text PDF fallback, DOCX, XLSX, unsupported file, timeout, and malformed output.
-- [ ] Keep Rust path validation and database writes as the trusted boundary.
-- [ ] Do not allow the parser sidecar to download models or send file contents to cloud services.
-- [ ] Add a development README that states required Python packages and local-only behavior.
-- [ ] Run parser tests, the full verification gate, and a manual smoke test with local fixtures.
+- [x] Define a stdin/stdout JSON protocol similar to the OCR sidecar.
+- [x] Add tests for Markdown, text PDF fallback, DOCX, XLSX, unsupported file, timeout, and malformed output.
+- [x] Keep Rust path validation and database writes as the trusted boundary.
+- [x] Do not allow the parser sidecar to download models or send file contents to cloud services.
+- [x] Add a development README that states required Python packages and local-only behavior.
+- [x] Run parser tests, the full verification gate, and a manual smoke test with local fixtures.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 5: Backup Restore Foundation
@@ -221,4 +225,4 @@ Set-Location E:\CodeHome\Library
 
 ## Next Immediate Target
 
-Start Module 4: Document Parser Sidecar Foundation. The durable target is a local-only parser sidecar with a bounded JSON protocol, focused tests for Markdown, text PDF fallback, DOCX, XLSX, unsupported files, timeout, and malformed output, and Rust remaining the trusted path-validation and database-write boundary.
+Start Module 5: Backup Restore Foundation. The durable target is a guarded local restore path with preflight validation before touching existing data, explicit user confirmation for overwrite-capable actions, and tests for archive rejection, path traversal rejection, and incompatible export versions.

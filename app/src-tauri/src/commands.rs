@@ -76,11 +76,15 @@ pub fn index_knowledge_space(
         .map_err(ErrorResponse::from)?;
 
     if should_spawn {
+        let resource_script = app
+            .path()
+            .resolve("sidecars/parser/parser_sidecar.py", BaseDirectory::Resource)
+            .ok();
         let app_for_worker = app.clone();
         std::thread::spawn(move || {
             let worker_state = app_for_worker.state::<AppState>();
             let worker_space_id = space_id.clone();
-            worker_state.run_document_worker(space_id, |reason| {
+            worker_state.run_document_worker(space_id, resource_script, |reason| {
                 emit_workbench_updated(&app_for_worker, Some(&worker_space_id), reason);
             });
         });

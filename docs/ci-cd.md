@@ -25,11 +25,13 @@
 - 运行 `npm run build`
 - 在 `sidecars/ocr` 安装 `requirements-dev.txt`
 - 运行 `python -m pytest` 验证 OCR sidecar 协议和环境自检脚本
+- 在 `sidecars/parser` 安装 `requirements-dev.txt`
+- 运行 `python -m pytest` 验证文档解析 sidecar 协议、格式支持和错误边界
 - 运行 `cargo fmt -- --check`
 - 运行 `cargo test`
 - 运行 `cargo check`
 
-CI 只需要 `contents: read` 权限，不读取 DeepSeek API Key，不下载 OCR 模型，不访问个人知识库数据。OCR sidecar 测试只使用轻量单元测试和临时 fixture，不依赖本机真实模型目录。
+CI 只需要 `contents: read` 权限，不读取 DeepSeek API Key，不下载 OCR 模型，不访问个人知识库数据。OCR 和文档解析 sidecar 测试只使用轻量单元测试和临时 fixture，不依赖本机真实模型目录，也不会把文件内容发送到云端服务。
 
 ## Release
 
