@@ -36,6 +36,7 @@
 - Windows 桌面端 Release 构建工作流
 - DeepSeek 本地安全配置状态读取
 - PP-OCRv6 本地模型下载脚本和状态检查
+- 桌面应用内 OCR 环境自检入口
 - 本地 OCR sidecar JSON 协议和 PaddleOCR 真实推理入口
 - 图片文件可进入本地 OCR 队列并写入统一知识块
 - SQLite 解析队列入队、后台执行、取消、进度和列表查询骨架
@@ -150,7 +151,9 @@ $env:OCR_MODEL_DIR = "D:\AIModels\Library\ocr\pp-ocrv6"
 .\scripts\检查OCR环境.ps1 -Tier medium
 ```
 
-桌面构建会把 `sidecars/ocr/ocr_sidecar.py` 和 `requirements.txt` 作为 Tauri resource 打包。开发态优先使用仓库根目录下的 `.venv\Scripts\python.exe`，打包后可通过本机环境变量显式指定：
+桌面应用左侧默认权限设置面板也提供 OCR 自检入口，会检查模型文件、sidecar、`pypdf`、`paddleocr` 和 `paddlepaddle`。
+
+桌面构建会把 `sidecars/ocr/ocr_sidecar.py`、`check_ocr_environment.py` 和 `requirements.txt` 作为 Tauri resource 打包。开发态优先使用仓库根目录下的 `.venv\Scripts\python.exe`，打包后可通过本机环境变量显式指定：
 
 ```powershell
 $env:OCR_PYTHON_PATH = "E:\CodeHome\Library\.venv\Scripts\python.exe"

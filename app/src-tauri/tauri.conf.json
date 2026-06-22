@@ -25,6 +25,7 @@
     "active": true,
     "targets": "all",
     "resources": {
+      "../../sidecars/ocr/check_ocr_environment.py": "sidecars/ocr/check_ocr_environment.py",
       "../../sidecars/ocr/ocr_sidecar.py": "sidecars/ocr/ocr_sidecar.py",
       "../../sidecars/ocr/requirements.txt": "sidecars/ocr/requirements.txt"
     },

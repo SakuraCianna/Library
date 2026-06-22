@@ -4,8 +4,8 @@ use crate::error::ErrorResponse;
 use crate::events::emit_workbench_updated;
 use crate::models::{
     AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
-    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, PermissionRequest, RuntimeStatus,
-    ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
+    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, OcrEnvironmentReport, PermissionRequest,
+    RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
 };
 use crate::state::AppState;
 
@@ -168,4 +168,21 @@ pub fn get_runtime_status(app: tauri::AppHandle) -> Result<RuntimeStatus, ErrorR
     })?;
 
     Ok(crate::runtime::runtime_status(&app_data_dir))
+}
+
+#[tauri::command]
+pub fn check_ocr_environment(app: tauri::AppHandle) -> Result<OcrEnvironmentReport, ErrorResponse> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| ErrorResponse {
+        message: format!("无法读取应用数据目录：{error}"),
+    })?;
+    let resource_checker = app
+        .path()
+        .resolve(
+            "sidecars/ocr/check_ocr_environment.py",
+            BaseDirectory::Resource,
+        )
+        .ok();
+
+    crate::ocr::check_ocr_environment(&app_data_dir, resource_checker.as_deref())
+        .map_err(Into::into)
 }

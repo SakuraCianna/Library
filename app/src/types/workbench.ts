@@ -67,6 +67,18 @@ export interface OcrRuntimeStatus {
   missingModels: string[];
 }
 
+export interface OcrEnvironmentReport {
+  ok: boolean;
+  checks: OcrEnvironmentCheck[];
+}
+
+export interface OcrEnvironmentCheck {
+  name: string;
+  ok: boolean;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
 export interface ParseJobSummary {
   id: string;
   fileId: string | null;
