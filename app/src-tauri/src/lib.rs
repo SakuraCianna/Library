@@ -34,6 +34,7 @@ pub fn run() {
             commands::cancel_parse_job,
             commands::start_ocr_worker,
             commands::ask_agent,
+            commands::open_source_file,
             commands::set_default_permission,
             commands::get_runtime_status,
             commands::check_ocr_environment

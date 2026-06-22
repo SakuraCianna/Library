@@ -223,11 +223,13 @@ describe("App", () => {
   });
 
   it("sends a sidebar question through the agent command and renders the answer", async () => {
+    const invocations: Array<{ cmd: string; args?: unknown }> = [];
     Object.defineProperty(globalThis, "isTauri", {
       configurable: true,
       value: true,
     });
-    mockIPC((cmd) => {
+    mockIPC((cmd, args) => {
+      invocations.push({ cmd, args });
       if (cmd === "get_runtime_status") {
         return runtimeStatus;
       }
@@ -263,6 +265,22 @@ describe("App", () => {
     expect(
       within(sourcePanel).getByText("缓存穿透需要空值缓存和布隆过滤器。"),
     ).toBeInTheDocument();
+
+    fireEvent.click(within(sourcePanel).getByRole("button", { name: "打开文件" }));
+    await waitFor(() =>
+      expect(invocations.some((invocation) => invocation.cmd === "open_source_file")).toBe(
+        true,
+      ),
+    );
+    expect(invocations).toContainEqual({
+      cmd: "open_source_file",
+      args: {
+        request: {
+          spaceId: "space-real",
+          sourceLocator: "Redis面试.md",
+        },
+      },
+    });
 
     fireEvent.click(within(sourcePanel).getByRole("button", { name: "查看最新" }));
     expect(screen.getByRole("article", { name: "知识块预览" })).toBeInTheDocument();
