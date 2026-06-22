@@ -206,8 +206,8 @@ Set-Location E:\CodeHome\Library
 - [x] Keep DeepSeek API key redaction in Rust and never expose raw keys to the frontend.
 - [x] Add UI controls for source visibility and source-type filtering if tests show ranking ambiguity.
 - [x] Make local fallback answers clearly source-grounded and honest about missing evidence.
-- [ ] Run the full verification gate.
-- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+- [x] Run the full verification gate.
+- [x] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 7: Release Readiness
 
