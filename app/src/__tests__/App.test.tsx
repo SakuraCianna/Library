@@ -250,6 +250,22 @@ describe("App", () => {
     expect(screen.getByText("Redis面试.md")).toBeInTheDocument();
     expect(screen.getByText("定位：Redis面试.md")).toBeInTheDocument();
     expect(screen.getByText("缓存穿透需要空值缓存和布隆过滤器。")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "查看来源 Redis面试.md Redis 缓存穿透",
+      }),
+    );
+    const sourcePanel = screen.getByRole("article", { name: "聊天来源详情" });
+    expect(within(sourcePanel).getByText("聊天来源预览")).toBeInTheDocument();
+    expect(within(sourcePanel).getByText("Redis 缓存穿透")).toBeInTheDocument();
+    expect(within(sourcePanel).getByText("定位：Redis面试.md")).toBeInTheDocument();
+    expect(
+      within(sourcePanel).getByText("缓存穿透需要空值缓存和布隆过滤器。"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(sourcePanel).getByRole("button", { name: "查看最新" }));
+    expect(screen.getByRole("article", { name: "知识块预览" })).toBeInTheDocument();
   });
 
   it("renders parse queue status when jobs exist", async () => {
@@ -469,6 +485,7 @@ describe("App", () => {
         title: "scan.pdf",
         excerpt: "扫描版 PDF 的本地 OCR 文本",
         sourceFileName: "scan.pdf",
+        sourceLocator: "scan.pdf#ocr",
       },
     };
     Object.defineProperty(globalThis, "isTauri", {
@@ -520,6 +537,7 @@ describe("App", () => {
         title: "scan.pdf",
         excerpt: "事件刷新后的 OCR 文本",
         sourceFileName: "scan.pdf",
+        sourceLocator: "scan.pdf#ocr",
       },
     };
     let currentSnapshot = snapshotWithRunningJob;
@@ -614,6 +632,7 @@ describe("App", () => {
         title: "Redis面试.md",
         excerpt: "缓存穿透需要空值缓存和布隆过滤器。",
         sourceFileName: "Redis面试.md",
+        sourceLocator: "Redis面试.md",
       },
     };
     Object.defineProperty(globalThis, "isTauri", {

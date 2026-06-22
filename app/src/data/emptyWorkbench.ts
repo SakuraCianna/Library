@@ -12,6 +12,7 @@ export const emptyWorkbench: WorkbenchSnapshot = {
     title: "暂无知识块",
     excerpt: "请先添加一个真实文件夹作为知识库。",
     sourceFileName: "暂无来源文件",
+    sourceLocator: "暂无来源定位",
   },
   tablePreview: {
     id: "table-empty",
