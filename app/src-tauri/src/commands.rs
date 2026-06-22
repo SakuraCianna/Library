@@ -1,9 +1,10 @@
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::error::ErrorResponse;
 use crate::models::{
-    CreateKnowledgeSpaceRequest, DefaultPermissionRequest, PermissionRequest,
-    ScanKnowledgeSpaceRequest, WorkbenchSnapshot,
+    AskAgentRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
+    IndexKnowledgeSpaceRequest, PermissionRequest, RuntimeStatus, ScanKnowledgeSpaceRequest,
+    WorkbenchSnapshot,
 };
 use crate::state::AppState;
 
@@ -45,6 +46,27 @@ pub fn scan_knowledge_space(
 }
 
 #[tauri::command]
+pub fn index_knowledge_space(
+    state: State<'_, AppState>,
+    request: IndexKnowledgeSpaceRequest,
+) -> Result<WorkbenchSnapshot, ErrorResponse> {
+    state
+        .index_knowledge_space(request.space_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn ask_agent(
+    state: State<'_, AppState>,
+    request: AskAgentRequest,
+) -> Result<WorkbenchSnapshot, ErrorResponse> {
+    state
+        .ask_agent(request.space_id, request.question)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn set_default_permission(
     state: State<'_, AppState>,
     request: DefaultPermissionRequest,
@@ -52,4 +74,13 @@ pub fn set_default_permission(
     state
         .update_default_permission(request.space_id, request.permission)
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_runtime_status(app: tauri::AppHandle) -> Result<RuntimeStatus, ErrorResponse> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| ErrorResponse {
+        message: format!("无法读取应用数据目录：{error}"),
+    })?;
+
+    Ok(crate::runtime::runtime_status(&app_data_dir))
 }

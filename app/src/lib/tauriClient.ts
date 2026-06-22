@@ -2,7 +2,26 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { emptyWorkbench } from "../data/emptyWorkbench";
-import type { PermissionMode, WorkbenchSnapshot } from "../types/workbench";
+import type {
+  PermissionMode,
+  RuntimeStatus,
+  WorkbenchSnapshot,
+} from "../types/workbench";
+
+const browserRuntimeStatus: RuntimeStatus = {
+  deepseek: {
+    configured: false,
+    model: "deepseek-v4-flash",
+    baseUrl: "https://api.deepseek.com",
+    keyHint: "桌面端读取本机配置",
+  },
+  ocr: {
+    configured: false,
+    tier: "medium",
+    modelDir: "桌面端读取本机模型目录",
+    missingModels: ["PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"],
+  },
+};
 
 function isTauriRuntime() {
   return isTauri();
@@ -68,6 +87,14 @@ export async function getWorkbenchSnapshot(): Promise<WorkbenchSnapshot> {
   return invoke<WorkbenchSnapshot>("get_workbench_snapshot");
 }
 
+export async function getRuntimeStatus(): Promise<RuntimeStatus> {
+  if (!isTauriRuntime()) {
+    return browserRuntimeStatus;
+  }
+
+  return invoke<RuntimeStatus>("get_runtime_status");
+}
+
 export async function requestSessionPermission(
   requested: PermissionMode,
 ): Promise<WorkbenchSnapshot> {
@@ -111,6 +138,46 @@ export async function scanKnowledgeSpace(
 
   return invoke<WorkbenchSnapshot>("scan_knowledge_space", {
     request: { spaceId },
+  });
+}
+
+export async function indexKnowledgeSpace(
+  spaceId: string,
+): Promise<WorkbenchSnapshot> {
+  if (!isTauriRuntime()) {
+    return emptyWorkbench;
+  }
+
+  return invoke<WorkbenchSnapshot>("index_knowledge_space", {
+    request: { spaceId },
+  });
+}
+
+export async function askAgent(
+  spaceId: string,
+  question: string,
+): Promise<WorkbenchSnapshot> {
+  if (!isTauriRuntime()) {
+    return {
+      ...emptyWorkbench,
+      activeSpaceId: spaceId,
+      messages: [
+        {
+          id: "browser-question",
+          role: "user",
+          content: question,
+        },
+        {
+          id: "browser-answer",
+          role: "assistant",
+          content: "浏览器预览无法读取本地索引，请在桌面应用中运行。",
+        },
+      ],
+    };
+  }
+
+  return invoke<WorkbenchSnapshot>("ask_agent", {
+    request: { spaceId, question },
   });
 }
 

@@ -1,6 +1,9 @@
+mod agent;
 mod commands;
 mod error;
 mod models;
+mod parser;
+mod runtime;
 mod scanner;
 mod state;
 pub mod storage;
@@ -24,7 +27,10 @@ pub fn run() {
             commands::set_session_permission,
             commands::create_knowledge_space,
             commands::scan_knowledge_space,
-            commands::set_default_permission
+            commands::index_knowledge_space,
+            commands::ask_agent,
+            commands::set_default_permission,
+            commands::get_runtime_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

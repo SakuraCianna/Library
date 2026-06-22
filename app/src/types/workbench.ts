@@ -46,6 +46,25 @@ export interface PendingAction {
   requiresApproval: boolean;
 }
 
+export interface RuntimeStatus {
+  deepseek: DeepSeekRuntimeStatus;
+  ocr: OcrRuntimeStatus;
+}
+
+export interface DeepSeekRuntimeStatus {
+  configured: boolean;
+  model: string;
+  baseUrl: string;
+  keyHint: string;
+}
+
+export interface OcrRuntimeStatus {
+  configured: boolean;
+  tier: string;
+  modelDir: string;
+  missingModels: string[];
+}
+
 export interface WorkbenchSnapshot {
   spaces: KnowledgeSpace[];
   activeSpaceId: string;

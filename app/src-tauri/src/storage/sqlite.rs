@@ -1,11 +1,12 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::models::{
-    KnowledgeFile, KnowledgeSpace, ParseStatus, PermissionMode, ScanSummary, ScannedFile,
+    FileParseCandidate, KnowledgeBlockSearchHit, KnowledgeFile, KnowledgeSpace, ParseStatus,
+    ParsedDocument, PermissionMode, ScanSummary, ScannedFile,
 };
 
 const FOUNDATION_SCHEMA: &str = include_str!("../../migrations/001_foundation.sql");
@@ -184,12 +185,202 @@ impl SqliteStore {
         files
     }
 
+    pub fn list_parse_candidates(
+        &self,
+        space_id: &str,
+    ) -> rusqlite::Result<Vec<FileParseCandidate>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, relative_path, extension
+             FROM files
+             WHERE space_id = ?1
+               AND deleted_at IS NULL
+               AND parse_status IN ('queued', 'changed', 'failed')
+             ORDER BY relative_path COLLATE NOCASE",
+        )?;
+
+        let candidates = statement
+            .query_map([space_id], |row| {
+                Ok(FileParseCandidate {
+                    file_id: row.get(0)?,
+                    relative_path: row.get(1)?,
+                    extension: row.get(2)?,
+                })
+            })?
+            .collect();
+
+        candidates
+    }
+
+    pub fn replace_file_knowledge_block(
+        &mut self,
+        space_id: &str,
+        file_id: &str,
+        document: &ParsedDocument,
+    ) -> rusqlite::Result<()> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let tx = self.connection.transaction()?;
+
+        tx.execute(
+            "UPDATE knowledge_blocks
+             SET searchable = 0, deleted_at = ?1, updated_at = ?1
+             WHERE space_id = ?2 AND file_id = ?3 AND deleted_at IS NULL",
+            params![now, space_id, file_id],
+        )?;
+
+        tx.execute(
+            "INSERT INTO knowledge_blocks (
+                id, space_id, file_id, title, body, source_kind, source_locator,
+                searchable, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, 'original_file', ?6, 1, ?7, ?7)",
+            params![
+                Uuid::new_v4().to_string(),
+                space_id,
+                file_id,
+                document.title,
+                format!("{}\n\n{}", document.summary, document.body),
+                document.source_locator,
+                now
+            ],
+        )?;
+
+        tx.execute(
+            "UPDATE files
+             SET parse_status = ?1, updated_at = ?2
+             WHERE id = ?3 AND space_id = ?4 AND deleted_at IS NULL",
+            params![ParseStatus::Indexed.as_str(), now, file_id, space_id],
+        )?;
+
+        tx.commit()
+    }
+
+    pub fn mark_file_parse_failed(&self, file_id: &str) -> rusqlite::Result<()> {
+        let now = OffsetDateTime::now_utc().to_string();
+        self.connection.execute(
+            "UPDATE files
+             SET parse_status = ?1, updated_at = ?2
+             WHERE id = ?3 AND deleted_at IS NULL",
+            params![ParseStatus::Failed.as_str(), now, file_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn latest_knowledge_block(
+        &self,
+        space_id: &str,
+    ) -> rusqlite::Result<Option<KnowledgeBlockSearchHit>> {
+        self.connection
+            .query_row(
+                "SELECT id, title, body, source_locator
+                 FROM knowledge_blocks
+                 WHERE space_id = ?1
+                   AND searchable = 1
+                   AND deleted_at IS NULL
+                 ORDER BY updated_at DESC, fts_rowid DESC
+                 LIMIT 1",
+                [space_id],
+                |row| row_to_search_hit(row, ""),
+            )
+            .optional()
+    }
+
+    pub fn search_knowledge_blocks(
+        &self,
+        space_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
+        let terms = search_terms(query);
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut hits = Vec::new();
+        for term in &terms {
+            append_unique_hits(
+                &mut hits,
+                self.search_knowledge_blocks_fts(space_id, term, limit)?,
+                limit,
+            );
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
+        }
+
+        for term in &terms {
+            append_unique_hits(
+                &mut hits,
+                self.search_knowledge_blocks_like(space_id, term, limit)?,
+                limit,
+            );
+            if hits.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(hits)
+    }
+
     pub fn count_knowledge_spaces(&self) -> rusqlite::Result<u32> {
         self.connection.query_row(
             "SELECT COUNT(*) FROM knowledge_spaces WHERE deleted_at IS NULL",
             [],
             |row| row.get::<_, u32>(0),
         )
+    }
+
+    fn search_knowledge_blocks_fts(
+        &self,
+        space_id: &str,
+        term: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
+        let mut statement = self.connection.prepare(
+            "SELECT block.id, block.title, block.body, block.source_locator
+             FROM knowledge_blocks_fts fts
+             JOIN knowledge_blocks block ON block.fts_rowid = fts.rowid
+             WHERE block.space_id = ?1
+               AND block.searchable = 1
+               AND block.deleted_at IS NULL
+               AND knowledge_blocks_fts MATCH ?2
+             ORDER BY rank
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![space_id, term, limit as i64], |row| {
+            row_to_search_hit(row, term)
+        });
+
+        match rows {
+            Ok(mapped) => mapped.collect(),
+            Err(_) => Ok(Vec::new()),
+        }
+    }
+
+    fn search_knowledge_blocks_like(
+        &self,
+        space_id: &str,
+        term: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
+        let pattern = format!("%{term}%");
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, body, source_locator
+             FROM knowledge_blocks
+             WHERE space_id = ?1
+               AND searchable = 1
+               AND deleted_at IS NULL
+               AND (title LIKE ?2 OR body LIKE ?2 OR source_locator LIKE ?2)
+             ORDER BY updated_at DESC, fts_rowid DESC
+             LIMIT ?3",
+        )?;
+
+        let hits = statement
+            .query_map(params![space_id, pattern, limit as i64], |row| {
+                row_to_search_hit(row, term)
+            })?
+            .collect();
+
+        hits
     }
 
     pub fn apply_scan_results(
@@ -531,6 +722,120 @@ fn normalize_lookup_key(relative_path: &str) -> String {
     relative_path.replace('/', "\\").to_lowercase()
 }
 
+fn row_to_search_hit(row: &Row<'_>, term: &str) -> rusqlite::Result<KnowledgeBlockSearchHit> {
+    let body: String = row.get(2)?;
+    let source_locator: String = row.get(3)?;
+
+    Ok(KnowledgeBlockSearchHit {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        excerpt: build_excerpt(&body, term),
+        source_file_name: display_file_name(&source_locator),
+        source_locator,
+    })
+}
+
+fn append_unique_hits(
+    current: &mut Vec<KnowledgeBlockSearchHit>,
+    incoming: Vec<KnowledgeBlockSearchHit>,
+    limit: usize,
+) {
+    for hit in incoming {
+        if current.iter().any(|existing| existing.id == hit.id) {
+            continue;
+        }
+
+        current.push(hit);
+        if current.len() >= limit {
+            break;
+        }
+    }
+}
+
+fn search_terms(query: &str) -> Vec<String> {
+    let normalized = query.trim();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut terms = Vec::new();
+    push_unique_term(&mut terms, normalized);
+
+    for part in normalized
+        .split(|character: char| character.is_whitespace() || is_query_punctuation(character))
+    {
+        push_unique_term(&mut terms, part);
+        let characters = part.chars().collect::<Vec<_>>();
+        for window_size in [4_usize, 3_usize] {
+            if characters.len() <= window_size {
+                continue;
+            }
+
+            for window in characters.windows(window_size).take(8) {
+                let term = window.iter().collect::<String>();
+                push_unique_term(&mut terms, &term);
+            }
+        }
+    }
+
+    terms
+}
+
+fn push_unique_term(terms: &mut Vec<String>, value: &str) {
+    let term = value.trim_matches(is_query_punctuation).trim();
+    if term.chars().count() < 2 || terms.iter().any(|existing| existing == term) {
+        return;
+    }
+
+    terms.push(term.to_string());
+}
+
+fn is_query_punctuation(character: char) -> bool {
+    matches!(
+        character,
+        '，' | '。'
+            | '、'
+            | '；'
+            | '：'
+            | '？'
+            | '！'
+            | ','
+            | '.'
+            | ';'
+            | ':'
+            | '?'
+            | '!'
+            | '"'
+            | '\''
+            | '“'
+            | '”'
+            | '‘'
+            | '’'
+            | '('
+            | ')'
+            | '（'
+            | '）'
+    )
+}
+
+fn build_excerpt(body: &str, term: &str) -> String {
+    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let excerpt = if !term.is_empty() {
+        normalized
+            .find(term)
+            .map(|index| normalized[index..].to_string())
+            .unwrap_or_else(|| normalized.clone())
+    } else {
+        normalized
+    };
+
+    let mut output = excerpt.chars().take(180).collect::<String>();
+    if excerpt.chars().count() > 180 {
+        output.push('…');
+    }
+    output
+}
+
 fn display_file_name(relative_path: &str) -> String {
     relative_path
         .rsplit(['\\', '/'])
@@ -551,7 +856,7 @@ fn display_extension(extension: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
-    use crate::models::{PermissionMode, ScannedFile};
+    use crate::models::{ParsedDocument, PermissionMode, ScannedFile};
     use rusqlite::{params, Connection};
 
     const TEST_TIME: &str = "2026-06-21T00:00:00Z";
@@ -764,6 +1069,36 @@ mod tests {
             .expect("fts rows decode");
 
         assert_eq!(hits, vec![fts_rowid]);
+    }
+
+    #[test]
+    fn stores_parsed_document_as_searchable_knowledge_block() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("面试", "D:\\知识库\\Redis", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-redis", &space_id, "Redis面试.md", "queued")
+            .expect("file is inserted");
+        let document = ParsedDocument {
+            title: "Redis面试.md".to_string(),
+            body: "Redis 缓存穿透是查询不存在的数据导致缓存和数据库都无法命中。".to_string(),
+            summary: "Redis 缓存穿透是查询不存在数据导致的缓存失效问题。".to_string(),
+            source_locator: "Redis面试.md".to_string(),
+        };
+
+        store
+            .replace_file_knowledge_block(&space_id, "file-redis", &document)
+            .expect("knowledge block is stored");
+
+        let hits = store
+            .search_knowledge_blocks(&space_id, "缓存穿透", 3)
+            .expect("search succeeds");
+        let files = store.list_files(&space_id).expect("files list");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_file_name, "Redis面试.md");
+        assert!(hits[0].excerpt.contains("缓存穿透"));
+        assert_eq!(files[0].status, crate::models::ParseStatus::Indexed);
     }
 
     #[test]
