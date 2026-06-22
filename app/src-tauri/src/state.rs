@@ -1299,11 +1299,7 @@ fn validate_folder_path(path: &Path) -> Result<(), AppError> {
 }
 
 fn source_locator_to_relative_path(source_locator: &str) -> Result<PathBuf, AppError> {
-    let locator = source_locator
-        .trim()
-        .strip_suffix("#ocr")
-        .unwrap_or_else(|| source_locator.trim())
-        .trim();
+    let locator = strip_known_source_fragment(source_locator);
 
     if locator.is_empty() || locator == "暂无来源定位" {
         return Err(AppError::Filesystem(
@@ -1331,6 +1327,32 @@ fn source_locator_to_relative_path(source_locator: &str) -> Result<PathBuf, AppE
     }
 
     Ok(safe_path)
+}
+
+fn strip_known_source_fragment(source_locator: &str) -> &str {
+    let mut source_path = source_locator.trim();
+
+    while let Some((path, fragment)) = source_path.rsplit_once('#') {
+        if !is_known_source_fragment(fragment) {
+            break;
+        }
+        source_path = path.trim();
+    }
+
+    source_path
+}
+
+fn is_known_source_fragment(fragment: &str) -> bool {
+    fragment == "ocr"
+        || numbered_fragment(fragment, "block-")
+        || numbered_fragment(fragment, "ocr-block-")
+}
+
+fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
+    fragment
+        .strip_prefix(prefix)
+        .map(|value| !value.is_empty() && value.chars().all(|character| character.is_ascii_digit()))
+        .unwrap_or(false)
 }
 
 fn display_relative_file_name(relative_path: &str) -> String {
@@ -1433,7 +1455,7 @@ mod tests {
             .expect("space created");
 
         let resolved = state
-            .resolve_source_file_path(&created.active_space_id, "docs/Redis.md")
+            .resolve_source_file_path(&created.active_space_id, "docs/Redis.md#block-001")
             .expect("source file resolves");
 
         assert_eq!(
@@ -1457,10 +1479,18 @@ mod tests {
             .expect("space created");
 
         let resolved = state
-            .resolve_source_file_path(&created.active_space_id, "scan.pdf#ocr")
+            .resolve_source_file_path(&created.active_space_id, "scan.pdf#ocr-block-001")
             .expect("ocr source file resolves");
 
         assert_eq!(resolved, source_file.canonicalize().expect("canonical pdf"));
+
+        let legacy_resolved = state
+            .resolve_source_file_path(&created.active_space_id, "scan.pdf#ocr")
+            .expect("legacy ocr source file resolves");
+        assert_eq!(
+            legacy_resolved,
+            source_file.canonicalize().expect("canonical pdf")
+        );
     }
 
     #[test]

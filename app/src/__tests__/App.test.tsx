@@ -94,7 +94,7 @@ const answeredSnapshot: WorkbenchSnapshot = {
           title: "Redis 缓存穿透",
           excerpt: "缓存穿透需要空值缓存和布隆过滤器。",
           sourceFileName: "Redis面试.md",
-          sourceLocator: "Redis面试.md",
+          sourceLocator: "Redis面试.md#block-001",
         },
       ],
     },
@@ -250,7 +250,7 @@ describe("App", () => {
     expect(await screen.findByText(/空值缓存、布隆过滤器/)).toBeInTheDocument();
     expect(screen.getByLabelText("回答来源")).toBeInTheDocument();
     expect(screen.getByText("Redis面试.md")).toBeInTheDocument();
-    expect(screen.getByText("定位：Redis面试.md")).toBeInTheDocument();
+    expect(screen.getByText("定位：Redis面试.md#block-001")).toBeInTheDocument();
     expect(screen.getByText("缓存穿透需要空值缓存和布隆过滤器。")).toBeInTheDocument();
 
     fireEvent.click(
@@ -261,7 +261,9 @@ describe("App", () => {
     const sourcePanel = screen.getByRole("article", { name: "聊天来源详情" });
     expect(within(sourcePanel).getByText("聊天来源预览")).toBeInTheDocument();
     expect(within(sourcePanel).getByText("Redis 缓存穿透")).toBeInTheDocument();
-    expect(within(sourcePanel).getByText("定位：Redis面试.md")).toBeInTheDocument();
+    expect(
+      within(sourcePanel).getByText("定位：Redis面试.md#block-001"),
+    ).toBeInTheDocument();
     expect(
       within(sourcePanel).getByText("缓存穿透需要空值缓存和布隆过滤器。"),
     ).toBeInTheDocument();
@@ -277,7 +279,7 @@ describe("App", () => {
       args: {
         request: {
           spaceId: "space-real",
-          sourceLocator: "Redis面试.md",
+          sourceLocator: "Redis面试.md#block-001",
         },
       },
     });
