@@ -29,6 +29,7 @@ export interface KnowledgeBlockPreview {
   excerpt: string;
   sourceFileName: string;
   sourceLocator: string;
+  sourceKind?: string;
 }
 
 export interface KnowledgeBlockContext {
@@ -49,6 +50,7 @@ export interface ChatMessageSource {
   excerpt: string;
   sourceFileName: string;
   sourceLocator: string;
+  sourceKind?: string;
 }
 
 export interface ChatMessage {

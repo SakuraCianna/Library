@@ -104,6 +104,35 @@ const answeredSnapshot: WorkbenchSnapshot = {
           excerpt: "缓存穿透需要空值缓存和布隆过滤器。",
           sourceFileName: "Redis面试.md",
           sourceLocator: "Redis面试.md#block-001",
+          sourceKind: "original_file",
+        },
+      ],
+    },
+  ],
+};
+
+const answeredTableSnapshot: WorkbenchSnapshot = {
+  ...snapshotWithSpace,
+  messages: [
+    {
+      id: "msg-user-table",
+      role: "user",
+      content: "2026-06 营收是多少？",
+      sources: [],
+    },
+    {
+      id: "msg-assistant-table",
+      role: "assistant",
+      content:
+        "根据本地索引，1. [表格洞察] 经营报表.xlsx · 工作表 1：样例 1：2026-06 | 120 | 70",
+      sources: [
+        {
+          id: "table-report",
+          title: "经营报表.xlsx · 工作表 1",
+          excerpt: "表头：月份、营收、成本 样例 1：2026-06 | 120 | 70",
+          sourceFileName: "经营报表.xlsx",
+          sourceLocator: "经营报表.xlsx#sheet-001",
+          sourceKind: "table",
         },
       ],
     },
@@ -305,6 +334,7 @@ describe("App", () => {
     expect(await screen.findByText(/空值缓存、布隆过滤器/)).toBeInTheDocument();
     expect(screen.getByLabelText("回答来源")).toBeInTheDocument();
     expect(screen.getByText("Redis面试.md")).toBeInTheDocument();
+    expect(screen.getByText("原始文件")).toBeInTheDocument();
     expect(screen.getByText("定位：Redis面试.md#block-001")).toBeInTheDocument();
     expect(screen.getByText("缓存穿透需要空值缓存和布隆过滤器。")).toBeInTheDocument();
 
@@ -351,6 +381,35 @@ describe("App", () => {
 
     fireEvent.click(within(sourcePanel).getByRole("button", { name: "查看最新" }));
     expect(screen.getByRole("article", { name: "知识块预览" })).toBeInTheDocument();
+  });
+
+  it("labels table insight sources in assistant answers", async () => {
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "ask_agent") {
+        return answeredTableSnapshot;
+      }
+      return snapshotWithSpace;
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "真实知识库" });
+    const composer = screen.getByRole("form", { name: "智能助手输入区" });
+    fireEvent.change(within(composer).getByLabelText("向智能助手提问"), {
+      target: { value: "2026-06 营收是多少？" },
+    });
+    fireEvent.click(within(composer).getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText("表格洞察")).toBeInTheDocument();
+    expect(screen.getByText("经营报表.xlsx")).toBeInTheDocument();
+    expect(screen.getByText("定位：经营报表.xlsx#sheet-001")).toBeInTheDocument();
+    expect(screen.getAllByText(/2026-06 \| 120 \| 70/).length).toBeGreaterThan(0);
   });
 
   it("renders parse queue status when jobs exist", async () => {

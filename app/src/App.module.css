@@ -847,6 +847,28 @@
   font-size: 11px;
 }
 
+.messageSourceHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.messageSourceHeader strong {
+  flex: 1 1 auto;
+}
+
+.messageSourceButton .messageSourceHeader span {
+  flex: 0 0 auto;
+  border: 1px solid #bfd0e5;
+  border-radius: var(--radius-control);
+  background: #eef5ff;
+  padding: 1px 5px;
+  color: #355273;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .messageSourceExcerpt {
   margin: 2px 0 0;
   color: #334862;
