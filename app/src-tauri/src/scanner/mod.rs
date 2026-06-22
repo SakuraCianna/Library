@@ -18,7 +18,24 @@ const SKIPPED_DIR_NAMES: [&str; 7] = [
     ".venv",
 ];
 
+#[cfg(test)]
 pub fn scan_folder(root_path: &Path) -> io::Result<Vec<ScannedFile>> {
+    scan_folder_with_progress(root_path, |_| true)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanProgress {
+    pub scanned_files: u32,
+    pub current_path: String,
+}
+
+pub fn scan_folder_with_progress<F>(
+    root_path: &Path,
+    mut on_progress: F,
+) -> io::Result<Vec<ScannedFile>>
+where
+    F: FnMut(&ScanProgress) -> bool,
+{
     let root_path = root_path.canonicalize()?;
     let mut files = Vec::new();
 
@@ -46,12 +63,20 @@ pub fn scan_folder(root_path: &Path) -> io::Result<Vec<ScannedFile>> {
         let content_hash = hash_file(path)?;
 
         files.push(ScannedFile {
-            relative_path,
+            relative_path: relative_path.clone(),
             extension,
             size_bytes: metadata.len() as i64,
             modified_at,
             content_hash,
         });
+
+        let progress = ScanProgress {
+            scanned_files: files.len() as u32,
+            current_path: relative_path,
+        };
+        if !on_progress(&progress) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "SCAN_CANCELLED"));
+        }
     }
 
     files.sort_by(|left, right| {

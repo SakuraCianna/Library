@@ -46,6 +46,7 @@ const jobStatusLabel: Record<string, string> = {
   cancelled: "已取消",
 };
 const jobTypeLabel: Record<string, string> = {
+  scan: "文件夹扫描",
   document: "文档解析",
   ocr: "本地 OCR",
 };
@@ -72,11 +73,23 @@ function queueStatusClass(status: string) {
 }
 
 function queueProgressText(job: ParseJobSummary) {
+  if (job.status === "succeeded" && job.progressTotal <= 0 && job.progressCurrent === 0) {
+    return "完成";
+  }
+
   if (job.progressTotal <= 0) {
+    if (job.progressCurrent > 0) {
+      return `已处理 ${job.progressCurrent}`;
+    }
+
     return "等待";
   }
 
   return `${job.progressCurrent}/${job.progressTotal}`;
+}
+
+function cancelJobLabel(job: ParseJobSummary) {
+  return job.jobType === "scan" ? "取消扫描任务" : "取消解析任务";
 }
 
 export default function App() {
@@ -107,8 +120,15 @@ export default function App() {
   const hasActiveSpace = activeSpace !== null;
   const defaultPermission = activeSpace?.defaultPermission ?? "readonly";
   const changedFileCount = activeSpace?.changedFileCount ?? 0;
+  const scanQueueCount = activeSpace?.scanQueueCount ?? 0;
   const documentQueueCount = activeSpace?.documentQueueCount ?? 0;
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
+  const hasQueuedScanJob = snapshot.parseJobs.some(
+    (job) => job.jobType === "scan" && job.status === "queued",
+  );
+  const hasRunningScanJob = snapshot.parseJobs.some(
+    (job) => job.jobType === "scan" && job.status === "running",
+  );
   const hasQueuedDocumentJob = snapshot.parseJobs.some(
     (job) => job.jobType === "document" && job.status === "queued",
   );
@@ -130,7 +150,8 @@ export default function App() {
       )
       .flatMap((job) => (job.fileId ? [job.fileId] : [])),
   );
-  const hasRunningParseJob = hasRunningDocumentJob || hasRunningOcrJob;
+  const hasRunningParseJob =
+    hasRunningScanJob || hasRunningDocumentJob || hasRunningOcrJob;
   const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
 
   useEffect(() => {
@@ -204,7 +225,7 @@ export default function App() {
                   <span className={styles.spaceName}>{space.name}</span>
                   <span className={styles.spacePath}>{space.path}</span>
                   <span className={styles.spaceMeta}>
-                    变更 {space.changedFileCount} · 文档队列{" "}
+                    变更 {space.changedFileCount} · 扫描队列 {space.scanQueueCount} · 文档队列{" "}
                     {space.documentQueueCount} · OCR 队列 {space.ocrQueueCount}
                   </span>
                 </button>
@@ -302,7 +323,10 @@ export default function App() {
             <button
               className={styles.plainButton}
               disabled={!hasActiveSpace || loading}
-              onClick={() => void scanActiveSpace()}
+              onClick={() => {
+                keepQueuePollingWarm();
+                void scanActiveSpace();
+              }}
               type="button"
             >
               <Icon aria-hidden icon={refreshCwIcon} />
@@ -341,6 +365,7 @@ export default function App() {
             <div className={styles.statusLine}>
               <span>已索引 {snapshot.files.length} 个文件</span>
               <span>已变更 {changedFileCount} 个文件</span>
+              <span>扫描队列 {scanQueueCount} 个</span>
               <span>文档队列 {documentQueueCount} 个</span>
               <span>OCR 队列 {ocrQueueCount} 个</span>
               {loading ? <span>处理中</span> : null}
@@ -439,6 +464,18 @@ export default function App() {
                   <div className={styles.queueHeaderActions}>
                     <button
                       className={styles.plainButton}
+                      disabled={loading || !hasQueuedScanJob || hasRunningScanJob}
+                      onClick={() => {
+                        keepQueuePollingWarm();
+                        void scanActiveSpace();
+                      }}
+                      type="button"
+                    >
+                      <Icon aria-hidden icon={refreshCwIcon} />
+                      <span>启动扫描</span>
+                    </button>
+                    <button
+                      className={styles.plainButton}
                       disabled={loading || !hasQueuedDocumentJob || hasRunningDocumentJob}
                       onClick={() => {
                         keepQueuePollingWarm();
@@ -494,11 +531,11 @@ export default function App() {
                         </span>
                         {job.status === "queued" || job.status === "running" ? (
                           <button
-                            aria-label={`取消解析任务 ${job.fileName}`}
+                            aria-label={`${cancelJobLabel(job)} ${job.fileName}`}
                             className={styles.iconButton}
                             disabled={loading}
                             onClick={() => void cancelJob(job.id)}
-                            title="取消解析任务"
+                            title={cancelJobLabel(job)}
                             type="button"
                           >
                             <Icon aria-hidden icon={xIcon} />

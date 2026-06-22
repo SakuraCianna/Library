@@ -17,6 +17,7 @@ const snapshotWithSpace: WorkbenchSnapshot = {
       path: "D:\\知识库\\真实",
       defaultPermission: "approval",
       changedFileCount: 0,
+      scanQueueCount: 0,
       documentQueueCount: 0,
       ocrQueueCount: 0,
     },
@@ -234,6 +235,59 @@ describe("App", () => {
 
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "排队 OCR scan.pdf" })).toBeDisabled();
+  });
+
+  it("starts folder scanning through the scan command", async () => {
+    const commands: string[] = [];
+    const scanningSnapshot = {
+      ...snapshotWithSpace,
+      spaces: [
+        {
+          ...snapshotWithSpace.spaces[0],
+          scanQueueCount: 1,
+        },
+      ],
+      parseJobs: [
+        parseJob({
+          id: "job-scan",
+          fileId: null,
+          fileName: "文件夹扫描",
+          jobType: "scan",
+          progressCurrent: 3,
+          progressTotal: 0,
+          phase: "正在扫描 README.md",
+        }),
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      commands.push(cmd);
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "scan_knowledge_space") {
+        return scanningSnapshot;
+      }
+      return snapshotWithSpace;
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "真实知识库" });
+    fireEvent.click(screen.getByRole("button", { name: "扫描" }));
+
+    expect(await screen.findByText("文件夹扫描")).toBeInTheDocument();
+    expect(screen.getByText("文件夹扫描 · 正在扫描 README.md")).toBeInTheDocument();
+    expect(screen.getByText("已处理 3")).toBeInTheDocument();
+    expect(commands).toContain("scan_knowledge_space");
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1700));
+
+    expect(
+      commands.filter((command) => command === "get_workbench_snapshot").length,
+    ).toBeGreaterThan(1);
   });
 
   it("starts the OCR worker through the desktop command", async () => {
