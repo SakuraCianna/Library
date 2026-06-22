@@ -5,8 +5,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::models::{
-    FileParseCandidate, KnowledgeBlockSearchHit, KnowledgeFile, KnowledgeSpace, ParseJobSummary,
-    ParseStatus, ParsedDocument, PermissionMode, ScanSummary, ScannedFile,
+    FileParseCandidate, KnowledgeBlockSearchHit, KnowledgeFile, KnowledgeSpace, ParseJobCandidate,
+    ParseJobSummary, ParseStatus, ParsedDocument, PermissionMode, ScanSummary, ScannedFile,
 };
 
 const FOUNDATION_SCHEMA: &str = include_str!("../../migrations/001_foundation.sql");
@@ -410,6 +410,35 @@ impl SqliteStore {
         jobs
     }
 
+    pub fn next_queued_parse_job(
+        &self,
+        space_id: &str,
+        job_type: &str,
+    ) -> rusqlite::Result<Option<ParseJobCandidate>> {
+        self.connection
+            .query_row(
+                "SELECT job.id, file.id, file.relative_path, file.extension
+                 FROM parse_jobs job
+                 JOIN files file ON file.id = job.file_id
+                 WHERE job.space_id = ?1
+                   AND job.job_type = ?2
+                   AND job.status = 'queued'
+                   AND file.deleted_at IS NULL
+                 ORDER BY job.created_at ASC
+                 LIMIT 1",
+                params![space_id, job_type],
+                |row| {
+                    Ok(ParseJobCandidate {
+                        job_id: row.get(0)?,
+                        file_id: row.get(1)?,
+                        relative_path: row.get(2)?,
+                        extension: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn cancel_parse_job(&self, job_id: &str) -> rusqlite::Result<bool> {
         let now = OffsetDateTime::now_utc().to_string();
         let updated = self.connection.execute(
@@ -417,6 +446,46 @@ impl SqliteStore {
              SET status = 'cancelled', updated_at = ?1
              WHERE id = ?2 AND status = 'queued'",
             params![now, job_id],
+        )?;
+
+        Ok(updated > 0)
+    }
+
+    pub fn mark_parse_job_running(&self, job_id: &str) -> rusqlite::Result<bool> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let updated = self.connection.execute(
+            "UPDATE parse_jobs
+             SET status = 'running', error_message = NULL, updated_at = ?1
+             WHERE id = ?2 AND status = 'queued'",
+            params![now, job_id],
+        )?;
+
+        Ok(updated > 0)
+    }
+
+    pub fn mark_parse_job_succeeded(&self, job_id: &str) -> rusqlite::Result<bool> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let updated = self.connection.execute(
+            "UPDATE parse_jobs
+             SET status = 'succeeded', error_message = NULL, updated_at = ?1
+             WHERE id = ?2 AND status = 'running'",
+            params![now, job_id],
+        )?;
+
+        Ok(updated > 0)
+    }
+
+    pub fn mark_parse_job_failed(
+        &self,
+        job_id: &str,
+        error_message: &str,
+    ) -> rusqlite::Result<bool> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let updated = self.connection.execute(
+            "UPDATE parse_jobs
+             SET status = 'failed', error_message = ?1, updated_at = ?2
+             WHERE id = ?3 AND status = 'running'",
+            params![error_message, now, job_id],
         )?;
 
         Ok(updated > 0)
@@ -1230,6 +1299,62 @@ mod tests {
         assert_eq!(jobs[0].file_id.as_deref(), Some("file-scan"));
         assert_eq!(jobs[0].status, "queued");
         assert_eq!(jobs[1].status, "cancelled");
+    }
+
+    #[test]
+    fn moves_queued_parse_job_through_running_and_succeeded_states() {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("OCR", "D:\\知识库\\OCR", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-scan", &space_id, "scan.pdf", "queued")
+            .expect("file is inserted");
+        let job_id = store
+            .enqueue_parse_job(&space_id, "file-scan", "ocr")
+            .expect("job enqueued");
+
+        let candidate = store
+            .next_queued_parse_job(&space_id, "ocr")
+            .expect("query succeeds")
+            .expect("queued job exists");
+        let started = store
+            .mark_parse_job_running(&candidate.job_id)
+            .expect("job starts");
+        let succeeded = store
+            .mark_parse_job_succeeded(&candidate.job_id)
+            .expect("job succeeds");
+        let jobs = store.list_parse_jobs(&space_id).expect("jobs list");
+
+        assert_eq!(candidate.job_id, job_id);
+        assert_eq!(candidate.file_id, "file-scan");
+        assert_eq!(candidate.relative_path, "scan.pdf");
+        assert!(started);
+        assert!(succeeded);
+        assert_eq!(jobs[0].status, "succeeded");
+        assert!(jobs[0].error_message.is_none());
+    }
+
+    #[test]
+    fn records_failed_parse_job_message() {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("OCR", "D:\\知识库\\OCR", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-scan", &space_id, "scan.pdf", "queued")
+            .expect("file is inserted");
+        let job_id = store
+            .enqueue_parse_job(&space_id, "file-scan", "ocr")
+            .expect("job enqueued");
+
+        store.mark_parse_job_running(&job_id).expect("job starts");
+        let failed = store
+            .mark_parse_job_failed(&job_id, "OCR_EMPTY_RESULT")
+            .expect("job fails");
+        let jobs = store.list_parse_jobs(&space_id).expect("jobs list");
+
+        assert!(failed);
+        assert_eq!(jobs[0].status, "failed");
+        assert_eq!(jobs[0].error_message.as_deref(), Some("OCR_EMPTY_RESULT"));
     }
 
     #[test]

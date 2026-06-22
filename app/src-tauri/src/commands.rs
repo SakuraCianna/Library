@@ -1,10 +1,10 @@
-use tauri::{Manager, State};
+use tauri::{path::BaseDirectory, Manager, State};
 
 use crate::error::ErrorResponse;
 use crate::models::{
     AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
-    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, PermissionRequest, RuntimeStatus,
-    ScanKnowledgeSpaceRequest, WorkbenchSnapshot,
+    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, PermissionRequest, RunOcrJobRequest,
+    RuntimeStatus, ScanKnowledgeSpaceRequest, WorkbenchSnapshot,
 };
 use crate::state::AppState;
 
@@ -71,6 +71,22 @@ pub fn cancel_parse_job(
     request: CancelParseJobRequest,
 ) -> Result<WorkbenchSnapshot, ErrorResponse> {
     state.cancel_parse_job(request.job_id).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn run_next_ocr_parse_job(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: RunOcrJobRequest,
+) -> Result<WorkbenchSnapshot, ErrorResponse> {
+    let resource_script = app
+        .path()
+        .resolve("sidecars/ocr/ocr_sidecar.py", BaseDirectory::Resource)
+        .ok();
+
+    state
+        .run_next_ocr_parse_job(request.space_id, resource_script)
+        .map_err(Into::into)
 }
 
 #[tauri::command]

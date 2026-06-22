@@ -483,6 +483,13 @@
   margin-top: 12px;
 }
 
+.queueHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
 .queueRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

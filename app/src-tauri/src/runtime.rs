@@ -7,6 +7,8 @@ use crate::models::{DeepSeekRuntimeStatus, OcrRuntimeStatus, RuntimeStatus};
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-flash";
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const DEFAULT_OCR_TIER: &str = "medium";
+const REQUIRED_OCR_MODEL_FILES: [&str; 3] =
+    ["inference.json", "inference.pdiparams", "inference.yml"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeepSeekConfig {
@@ -71,15 +73,7 @@ fn build_runtime_status(
     tier: String,
     model_dir: PathBuf,
 ) -> RuntimeStatus {
-    let required_models = [
-        format!("PP-OCRv6_{tier}_det"),
-        format!("PP-OCRv6_{tier}_rec"),
-    ];
-    let missing_models = required_models
-        .iter()
-        .filter(|name| !model_dir.join(name).is_dir())
-        .cloned()
-        .collect::<Vec<_>>();
+    let missing_models = missing_ocr_assets(&model_dir, &tier);
 
     let configured = api_key
         .map(|value| !value.trim().is_empty())
@@ -103,6 +97,28 @@ fn build_runtime_status(
     }
 }
 
+fn missing_ocr_assets(model_dir: &Path, tier: &str) -> Vec<String> {
+    [
+        format!("PP-OCRv6_{tier}_det"),
+        format!("PP-OCRv6_{tier}_rec"),
+    ]
+    .into_iter()
+    .flat_map(|model_name| {
+        let model_path = model_dir.join(&model_name);
+        if !model_path.is_dir() {
+            return vec![model_name];
+        }
+
+        REQUIRED_OCR_MODEL_FILES
+            .iter()
+            .filter_map(|file_name| {
+                (!model_path.join(file_name).is_file()).then(|| format!("{model_name}/{file_name}"))
+            })
+            .collect::<Vec<_>>()
+    })
+    .collect()
+}
+
 fn default_ocr_model_dir(app_data_dir: &Path) -> PathBuf {
     if let Ok(current_dir) = env::current_dir() {
         for ancestor in current_dir.ancestors() {
@@ -117,15 +133,14 @@ fn default_ocr_model_dir(app_data_dir: &Path) -> PathBuf {
 }
 
 fn config_value(key: &str, local_env: &HashMap<String, String>) -> Option<String> {
-    env::var(key)
-        .ok()
+    if let Ok(value) = env::var(key) {
+        return (!value.trim().is_empty()).then_some(value);
+    }
+
+    local_env
+        .get(key)
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            local_env
-                .get(key)
-                .filter(|value| !value.trim().is_empty())
-                .cloned()
-        })
+        .cloned()
 }
 
 fn load_local_env() -> HashMap<String, String> {
@@ -222,7 +237,7 @@ mod tests {
     fn redacts_deepseek_key_and_reports_missing_ocr_models() {
         let temp_dir = tempdir().expect("temp dir");
         let status = build_runtime_status(
-            Some("sk-test-12345678"),
+            Some("test-key-12345678"),
             "deepseek-v4-flash".to_string(),
             "https://api.deepseek.com".to_string(),
             "medium".to_string(),
@@ -230,7 +245,7 @@ mod tests {
         );
 
         assert!(status.deepseek.configured);
-        assert_eq!(status.deepseek.key_hint, "sk-...5678");
+        assert_eq!(status.deepseek.key_hint, "tes...5678");
         assert!(!status.ocr.configured);
         assert_eq!(status.ocr.missing_models.len(), 2);
     }
@@ -270,6 +285,12 @@ mod tests {
         let temp_dir = tempdir().expect("temp dir");
         std::fs::create_dir(temp_dir.path().join("PP-OCRv6_medium_det")).expect("det dir");
         std::fs::create_dir(temp_dir.path().join("PP-OCRv6_medium_rec")).expect("rec dir");
+        for model_name in ["PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"] {
+            for file_name in ["inference.json", "inference.pdiparams", "inference.yml"] {
+                std::fs::write(temp_dir.path().join(model_name).join(file_name), "model")
+                    .expect("model file");
+            }
+        }
 
         let status = build_runtime_status(
             None,

@@ -178,6 +178,18 @@ export async function cancelParseJob(
   });
 }
 
+export async function runNextOcrParseJob(
+  spaceId: string,
+): Promise<WorkbenchSnapshot> {
+  if (!isTauriRuntime()) {
+    return emptyWorkbench;
+  }
+
+  return invoke<WorkbenchSnapshot>("run_next_ocr_parse_job", {
+    request: { spaceId },
+  });
+}
+
 export async function askAgent(
   spaceId: string,
   question: string,

@@ -36,9 +36,10 @@
 - Windows 桌面端 Release 构建工作流
 - DeepSeek 本地安全配置状态读取
 - PP-OCRv6 本地模型下载脚本和状态检查
-- 本地 OCR sidecar JSON 协议骨架
-- SQLite 解析队列入队、取消和列表查询骨架
+- 本地 OCR sidecar JSON 协议和 PaddleOCR 真实推理入口
+- SQLite 解析队列入队、取消、执行和列表查询骨架
 - 前端解析队列状态展示
+- 前端可手动运行下一条 OCR 解析任务
 - 前端和 Rust 单元测试
 
 ### 权限说明
@@ -49,8 +50,8 @@
 
 ### 暂未实现
 
-- 扫描版 PDF 和图片 OCR 推理执行
-- OCR sidecar 真实推理依赖安装与调用
+- 图片 OCR 推理执行
+- OCR 后台批量调度、进度流和重试策略
 - 高保真 PDF 版面解析
 - 表格深度理解和表格问答
 - DeepSeek 流式输出
@@ -133,7 +134,21 @@ $env:OCR_MODEL_DIR = "E:\CodeHome\Library\models\ocr\pp-ocrv6"
 $env:OCR_MODEL_DIR = "D:\AIModels\Library\ocr\pp-ocrv6"
 ```
 
-当前 OCR 阶段只完成模型下载和状态检查。OCR 推理执行、扫描件解析和表格深度理解会在后续解析模块接入。
+真实 OCR 运行依赖通过 Python sidecar 安装：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\sidecars\ocr\requirements.txt
+```
+
+桌面构建会把 `sidecars/ocr/ocr_sidecar.py` 和 `requirements.txt` 作为 Tauri resource 打包。开发态优先使用仓库根目录下的 `.venv\Scripts\python.exe`，打包后可通过本机环境变量显式指定：
+
+```powershell
+$env:OCR_PYTHON_PATH = "E:\CodeHome\Library\.venv\Scripts\python.exe"
+$env:OCR_SIDECAR_PATH = "E:\CodeHome\Library\sidecars\ocr\ocr_sidecar.py"
+```
+
+当前 OCR 阶段支持对队列中的扫描版 PDF 执行本地 PaddleOCR 推理，并把结果写入统一知识块。每个模型目录必须包含 `inference.json`、`inference.pdiparams`、`inference.yml`，输入 PDF 当前限制为 50 MB 以内。图片 OCR、批量后台调度、进度流和表格深度理解会在后续解析模块接入。
 
 ## MVP 最短链路
 
@@ -145,7 +160,7 @@ $env:OCR_MODEL_DIR = "D:\AIModels\Library\ocr\pp-ocrv6"
 
 建索引/摘要会把扫描到的 `.md`、`.txt`、`.docx`、`.xlsx` 和文本型 `.pdf` 转成统一知识块并写入本地 SQLite。助手回答会先检索本地知识块；如果本机配置了 DeepSeek API Key，会尝试使用 `deepseek-v4-flash` 生成更自然的回答，失败时自动回退到本地检索结果。
 
-当前 PDF 解析是 MVP 轻量能力，适合可抽取文本的 PDF。扫描版 PDF、复杂版面和图片文字需要后续 OCR 管线。
+当前普通 PDF 解析是 MVP 轻量能力，适合可抽取文本的 PDF。扫描版 PDF 可以先排队 OCR，再在解析队列中手动运行下一条 OCR 任务。复杂版面、图片文字、批量任务和 OCR 进度展示仍是后续能力。
 
 ## 常用命令
 

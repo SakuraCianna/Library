@@ -229,4 +229,90 @@ describe("App", () => {
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "排队 OCR scan.pdf" })).toBeDisabled();
   });
+
+  it("runs a queued OCR job through the desktop command", async () => {
+    const snapshotWithJob = {
+      ...snapshotWithSpace,
+      parseJobs: [
+        {
+          id: "job-ocr",
+          fileId: "file-pdf",
+          fileName: "scan.pdf",
+          jobType: "ocr",
+          status: "queued",
+          errorMessage: null,
+        },
+      ],
+    };
+    const finishedSnapshot = {
+      ...snapshotWithJob,
+      parseJobs: [
+        {
+          ...snapshotWithJob.parseJobs[0],
+          status: "succeeded",
+        },
+      ],
+      blockPreview: {
+        id: "block-ocr",
+        title: "scan.pdf",
+        excerpt: "扫描版 PDF 的本地 OCR 文本",
+        sourceFileName: "scan.pdf",
+      },
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "run_next_ocr_parse_job") {
+        return finishedSnapshot;
+      }
+      return snapshotWithJob;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("解析队列")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "运行 OCR" }));
+
+    expect(await screen.findByText("succeeded")).toBeInTheDocument();
+    expect(screen.getByText("扫描版 PDF 的本地 OCR 文本")).toBeInTheDocument();
+  });
+
+  it("shows an error when running a queued OCR job fails", async () => {
+    const snapshotWithJob = {
+      ...snapshotWithSpace,
+      parseJobs: [
+        {
+          id: "job-ocr",
+          fileId: "file-pdf",
+          fileName: "scan.pdf",
+          jobType: "ocr",
+          status: "queued",
+          errorMessage: null,
+        },
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "run_next_ocr_parse_job") {
+        throw new Error("模型目录缺失");
+      }
+      return snapshotWithJob;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("解析队列")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "运行 OCR" }));
+
+    expect(await screen.findByText("模型目录缺失")).toBeInTheDocument();
+  });
 });

@@ -63,6 +63,7 @@ export default function App() {
     createSpaceFromFolder,
     enqueueOcrJob,
     indexActiveSpace,
+    runNextOcrJob,
     scanActiveSpace,
     setFolderDefaultPermission,
     setSessionPermission,
@@ -76,6 +77,9 @@ export default function App() {
   const defaultPermission = activeSpace?.defaultPermission ?? "readonly";
   const changedFileCount = activeSpace?.changedFileCount ?? 0;
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
+  const hasQueuedOcrJob = snapshot.parseJobs.some(
+    (job) => job.jobType === "ocr" && job.status === "queued",
+  );
   const activeOcrFileIds = new Set(
     snapshot.parseJobs
       .filter(
@@ -359,8 +363,20 @@ export default function App() {
 
             {snapshot.parseJobs.length > 0 ? (
               <section className={`${styles.panel} ${styles.panelPadded}`} aria-label="解析队列">
-                <div className={styles.panelKicker}>后台任务</div>
-                <h3 className={styles.panelTitle}>解析队列</h3>
+                <div className={styles.queueHeader}>
+                  <div>
+                    <div className={styles.panelKicker}>后台任务</div>
+                    <h3 className={styles.panelTitle}>解析队列</h3>
+                  </div>
+                  <button
+                    className={styles.plainButton}
+                    disabled={loading || !hasQueuedOcrJob}
+                    onClick={() => void runNextOcrJob()}
+                    type="button"
+                  >
+                    运行 OCR
+                  </button>
+                </div>
                 <div className={styles.queueList}>
                   {snapshot.parseJobs.map((job) => (
                     <div className={styles.queueRow} key={job.id}>

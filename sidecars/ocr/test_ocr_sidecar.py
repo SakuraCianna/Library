@@ -1,6 +1,19 @@
 import json
+import os
+from pathlib import Path
+import sys
+import types
 
-from ocr_sidecar import build_error_response, parse_request
+from ocr_sidecar import (
+    build_error_response,
+    build_real_ocr_engine,
+    build_paddleocr_kwargs,
+    extract_ocr_pages,
+    missing_model_assets,
+    parse_request,
+    required_model_paths,
+    run_ocr,
+)
 
 
 def test_parse_request_accepts_local_file_and_model_dir():
@@ -25,3 +38,174 @@ def test_error_response_is_json_serializable():
     assert response["ok"] is False
     assert response["error"]["code"] == "OCR_MODEL_MISSING"
     assert "模型目录不存在" in response["error"]["message"]
+
+
+def test_required_model_paths_use_ppocrv6_medium_dirs(tmp_path: Path):
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(tmp_path / "scan.pdf"),
+                "modelDir": str(tmp_path / "models"),
+                "tier": "medium",
+            }
+        )
+    )
+
+    det_dir, rec_dir = required_model_paths(request)
+
+    assert det_dir.name == "PP-OCRv6_medium_det"
+    assert rec_dir.name == "PP-OCRv6_medium_rec"
+
+
+def test_missing_model_assets_require_runtime_files(tmp_path: Path):
+    model_dir = tmp_path / "models"
+    (model_dir / "PP-OCRv6_medium_det").mkdir(parents=True)
+    (model_dir / "PP-OCRv6_medium_rec").mkdir(parents=True)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(tmp_path / "scan.pdf"),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+            }
+        )
+    )
+
+    missing = missing_model_assets(request)
+
+    assert "PP-OCRv6_medium_det/inference.json" in missing
+    assert "PP-OCRv6_medium_rec/inference.pdiparams" in missing
+
+
+def test_build_paddleocr_kwargs_forces_local_models_and_cpu(tmp_path: Path):
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(tmp_path / "scan.pdf"),
+                "modelDir": str(tmp_path / "models"),
+                "tier": "medium",
+            }
+        )
+    )
+
+    kwargs = build_paddleocr_kwargs(request)
+
+    assert kwargs["text_detection_model_name"] == "PP-OCRv6_medium_det"
+    assert kwargs["text_recognition_model_name"] == "PP-OCRv6_medium_rec"
+    assert kwargs["use_doc_orientation_classify"] is False
+    assert kwargs["use_doc_unwarping"] is False
+    assert kwargs["use_textline_orientation"] is False
+    assert kwargs["enable_mkldnn"] is False
+    assert kwargs["device"] == "cpu"
+
+
+def test_extract_ocr_pages_normalizes_paddle_result_shape():
+    raw_results = [
+        {
+            "res": {
+                "page_index": 0,
+                "rec_texts": ["HELLO", "OCR"],
+                "rec_scores": [0.99, 0.88],
+            }
+        },
+        {
+            "res": {
+                "page_index": 1,
+                "rec_texts": ["PAGE TWO"],
+                "rec_scores": [0.77],
+            }
+        },
+    ]
+
+    pages = extract_ocr_pages(raw_results)
+
+    assert pages == [
+        {"pageIndex": 0, "text": "HELLO\nOCR", "confidence": 0.935},
+        {"pageIndex": 1, "text": "PAGE TWO", "confidence": 0.77},
+    ]
+
+
+def test_run_ocr_uses_injected_engine_without_importing_heavy_runtime(tmp_path: Path):
+    pdf_path = tmp_path / "scan.pdf"
+    model_dir = tmp_path / "models"
+    (model_dir / "PP-OCRv6_medium_det").mkdir(parents=True)
+    (model_dir / "PP-OCRv6_medium_rec").mkdir(parents=True)
+    for model_name in ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"):
+        for file_name in ("inference.json", "inference.pdiparams", "inference.yml"):
+            (model_dir / model_name / file_name).write_text("model", encoding="utf-8")
+    pdf_path.write_bytes(b"%PDF-1.4 scanned")
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(pdf_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: lambda _path: [
+            {"res": {"page_index": 0, "rec_texts": ["LOCAL OCR TEXT"], "rec_scores": [0.9]}}
+        ],
+    )
+
+    assert response["ok"] is True
+    assert response["result"]["text"] == "LOCAL OCR TEXT"
+    assert response["result"]["pageCount"] == 1
+
+
+def test_run_ocr_reports_empty_result(tmp_path: Path):
+    pdf_path = tmp_path / "scan.pdf"
+    model_dir = tmp_path / "models"
+    (model_dir / "PP-OCRv6_medium_det").mkdir(parents=True)
+    (model_dir / "PP-OCRv6_medium_rec").mkdir(parents=True)
+    for model_name in ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"):
+        for file_name in ("inference.json", "inference.pdiparams", "inference.yml"):
+            (model_dir / model_name / file_name).write_text("model", encoding="utf-8")
+    pdf_path.write_bytes(b"%PDF-1.4 scanned")
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(pdf_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+            }
+        )
+    )
+
+    response = run_ocr(request, ocr_factory=lambda _request: lambda _path: [])
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OCR_EMPTY_RESULT"
+
+
+def test_real_ocr_engine_forces_model_source_flags(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DISABLE_MODEL_SOURCE_CHECK", "False")
+    monkeypatch.setenv("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "False")
+    fake_module = types.ModuleType("paddleocr")
+
+    class FakePaddleOCR:
+        def __init__(self, **_kwargs):
+            pass
+
+        def predict(self, _path: str):
+            return []
+
+    fake_module.PaddleOCR = FakePaddleOCR
+    monkeypatch.setitem(sys.modules, "paddleocr", fake_module)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(tmp_path / "scan.pdf"),
+                "modelDir": str(tmp_path / "models"),
+                "tier": "medium",
+            }
+        )
+    )
+
+    build_real_ocr_engine(request)
+
+    assert os.environ["DISABLE_MODEL_SOURCE_CHECK"] == "True"
+    assert os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] == "True"
