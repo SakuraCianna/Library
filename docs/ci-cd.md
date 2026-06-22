@@ -17,16 +17,19 @@
 
 - 使用 `windows-latest`，贴近当前 Windows 桌面应用目标环境
 - 安装 Node.js 22，并启用 npm 缓存
+- 安装 Python 3.13，并启用 pip 缓存
 - 安装 Protocol Buffers compiler，并写入 `PROTOC`
 - 安装 Rust stable 和 `rustfmt`
 - 运行 `npm ci`
 - 运行 `npm test`
 - 运行 `npm run build`
+- 在 `sidecars/ocr` 安装 `requirements-dev.txt`
+- 运行 `python -m pytest` 验证 OCR sidecar 协议和环境自检脚本
 - 运行 `cargo fmt -- --check`
 - 运行 `cargo test`
 - 运行 `cargo check`
 
-CI 只需要 `contents: read` 权限，不读取 DeepSeek API Key，不下载 OCR 模型，不访问个人知识库数据。
+CI 只需要 `contents: read` 权限，不读取 DeepSeek API Key，不下载 OCR 模型，不访问个人知识库数据。OCR sidecar 测试只使用轻量单元测试和临时 fixture，不依赖本机真实模型目录。
 
 ## Release
 

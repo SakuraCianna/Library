@@ -15,10 +15,9 @@
 Recorded on 2026-06-23 from `E:\CodeHome\Library`.
 
 - Branch: `codex/Library`.
-- Verification started from a clean source worktree; the current task then added this roadmap document.
-- `main` and `origin/main`: `086310f387f741f55ab78547f1a91c434c10a01f`.
-- `codex/Library` and `origin/codex/Library`: `54022eb703faace781757258c152fafd64047670`.
-- File diff between `main` and `codex/Library`: none; `codex/Library` only has a branch-sync merge commit on top.
+- Module 1 started from a clean worktree at `43daf861e02a3b3174e7b35b4174187269a64f7f`.
+- `main`, `origin/main`, `codex/Library`, and `origin/codex/Library`: `43daf861e02a3b3174e7b35b4174187269a64f7f`.
+- File diff between `main` and `codex/Library`: none at Module 1 start.
 - Frontend tests: `npm test` passed, 4 files and 28 tests.
 - Frontend build: `npm run build` passed.
 - OCR sidecar tests: `..\..\.venv\Scripts\python.exe -m pytest` passed, 20 tests.
@@ -86,11 +85,11 @@ Set-Location E:\CodeHome\Library
 - Inspect/possibly modify: `docs/ci-cd.md`
 - Inspect: `docs/superpowers/plans/*.md`
 
-- [ ] Re-run the full verification gate and capture the exact pass/fail counts.
-- [ ] Compare README implemented features against source files and tests.
-- [ ] Mark only evidence-backed completed plan steps in older plan files.
-- [ ] Leave any manual smoke-test-only items unchecked unless the smoke path was run in the current module.
-- [ ] Add a short "当前进度验收" section to README if it improves user-facing clarity.
+- [x] Re-run the full verification gate and capture the exact pass/fail counts.
+- [x] Compare README implemented features against source files and tests.
+- [x] Mark only evidence-backed completed plan steps in older plan files.
+- [x] Leave any manual smoke-test-only items unchecked unless the smoke path was run in the current module.
+- [x] Add a short "当前进度验收" section to README if it improves user-facing clarity.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 2: Import And OCR Stability Limits

@@ -43,7 +43,7 @@ This module should produce a working local-first OCR pipeline boundary. It shoul
 - Create: `sidecars/ocr/requirements.txt`
 - Create: `sidecars/ocr/README.md`
 
-- [ ] **Step 1: Add Python sidecar tests first**
+- [x] **Step 1: Add Python sidecar tests first**
 
 Create `sidecars/ocr/test_ocr_sidecar.py`:
 
@@ -77,7 +77,7 @@ def test_error_response_is_json_serializable():
     assert "模型目录不存在" in response["error"]["message"]
 ```
 
-- [ ] **Step 2: Add initial sidecar implementation**
+- [x] **Step 2: Add initial sidecar implementation**
 
 Create `sidecars/ocr/ocr_sidecar.py`:
 
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 3: Add sidecar dependency file**
+- [x] **Step 3: Add sidecar dependency file**
 
 Create `sidecars/ocr/requirements.txt`:
 
@@ -151,7 +151,7 @@ paddleocr==3.3.2
 paddlepaddle==3.3.0
 ```
 
-- [ ] **Step 4: Add sidecar README**
+- [x] **Step 4: Add sidecar README**
 
 Create `sidecars/ocr/README.md`:
 
@@ -188,7 +188,7 @@ Set-Location .\sidecars\ocr
 python -m pytest
 ```
 
-Expected after implementation: 2 tests pass.
+Current verification: `..\..\.venv\Scripts\python.exe -m pytest` passes 20 OCR sidecar tests. This does not prove the historical fail-then-pass sequence, so the red/green process checkbox remains open.
 
 ---
 
@@ -199,7 +199,7 @@ Expected after implementation: 2 tests pass.
 - Modify: `app/src-tauri/src/models.rs`
 - Modify: `app/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Add Rust models**
+- [x] **Step 1: Add Rust models**
 
 Add to `app/src-tauri/src/models.rs`:
 
@@ -220,7 +220,7 @@ pub struct OcrSidecarResult {
 }
 ```
 
-- [ ] **Step 2: Add OCR runner tests**
+- [x] **Step 2: Add OCR runner tests**
 
 Create `app/src-tauri/src/ocr.rs` with tests:
 
@@ -271,7 +271,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Register OCR module**
+- [x] **Step 3: Register OCR module**
 
 Modify `app/src-tauri/src/lib.rs`:
 
@@ -279,7 +279,7 @@ Modify `app/src-tauri/src/lib.rs`:
 mod ocr;
 ```
 
-- [ ] **Step 4: Run Rust OCR tests**
+- [x] **Step 4: Run Rust OCR tests**
 
 Run:
 
@@ -298,7 +298,7 @@ Expected: OCR boundary tests pass.
 - Modify: `app/src-tauri/src/models.rs`
 - Modify: `app/src-tauri/src/storage/sqlite.rs`
 
-- [ ] **Step 1: Add parse job model**
+- [x] **Step 1: Add parse job model**
 
 Add to `models.rs`:
 
@@ -314,7 +314,7 @@ pub struct ParseJobSummary {
 }
 ```
 
-- [ ] **Step 2: Add storage tests**
+- [x] **Step 2: Add storage tests**
 
 Append to `storage/sqlite.rs` tests:
 
@@ -339,7 +339,7 @@ fn enqueues_and_cancels_parse_job() {
 }
 ```
 
-- [ ] **Step 3: Implement storage helpers**
+- [x] **Step 3: Implement storage helpers**
 
 Add methods to `SqliteStore`:
 
@@ -358,7 +358,7 @@ pub fn enqueue_parse_job(&self, space_id: &str, file_id: &str, job_type: &str) -
 
 Also implement `list_parse_jobs` and `cancel_parse_job` with explicit `queued`-only cancellation.
 
-- [ ] **Step 4: Run focused storage tests**
+- [x] **Step 4: Run focused storage tests**
 
 Run:
 
@@ -381,7 +381,7 @@ Expected: focused test passes.
 - Modify: `app/src/App.module.css`
 - Modify: `app/src/__tests__/App.test.tsx`
 
-- [ ] **Step 1: Add UI test first**
+- [x] **Step 1: Add UI test first**
 
 In `App.test.tsx`, add:
 
@@ -415,7 +415,7 @@ it("renders parse queue status when jobs exist", async () => {
 });
 ```
 
-- [ ] **Step 2: Add front-end type**
+- [x] **Step 2: Add front-end type**
 
 Add to `workbench.ts`:
 
@@ -431,15 +431,15 @@ export interface ParseJobSummary {
 
 Add `parseJobs: ParseJobSummary[]` to `WorkbenchSnapshot`.
 
-- [ ] **Step 3: Render queue panel**
+- [x] **Step 3: Render queue panel**
 
 In `App.tsx`, render a small `解析队列` panel in the right content column using `snapshot.parseJobs`.
 
-- [ ] **Step 4: Add scoped styles**
+- [x] **Step 4: Add scoped styles**
 
 In `App.module.css`, add `.queueList`, `.queueRow`, and `.queueStatus` styles using existing design tokens.
 
-- [ ] **Step 5: Run front-end checks**
+- [x] **Step 5: Run front-end checks**
 
 Run:
 
@@ -458,7 +458,7 @@ Expected: tests and build pass.
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update README**
+- [x] **Step 1: Update README**
 
 Add OCR sidecar status:
 
@@ -469,7 +469,7 @@ Add OCR sidecar status:
 
 Keep high-fidelity OCR/table extraction under `暂未实现` until real inference is proven.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run:
 

@@ -30,33 +30,33 @@
 
 ### Task 1: Lock Behavior With Failing Tests
 
-- [ ] Add Rust tests showing queued Markdown files can be parsed, stored as searchable knowledge blocks, and used by `ask_agent`.
-- [ ] Add a React test showing the sidebar composer sends a question through `ask_agent` and renders the returned answer.
+- [x] Add Rust tests showing queued Markdown files can be parsed, stored as searchable knowledge blocks, and used by `ask_agent`.
+- [x] Add a React test showing the sidebar composer sends a question through `ask_agent` and renders the returned answer.
 - [ ] Run `cargo test parser storage::sqlite state::tests::indexes_scanned_files_into_searchable_blocks` and `npm test -- App.test.tsx`; confirm failures are caused by missing implementation.
 
 ### Task 2: Implement Structured Parsing And Indexing
 
-- [ ] Add `ParsedDocument`, parser functions, and lightweight extractors for `.md`, `.txt`, `.docx`, `.xlsx`, and `.pdf`.
-- [ ] Add SQLite methods to list parse candidates, replace file knowledge blocks, mark status indexed or failed, and search FTS/fallback text.
-- [ ] Add `index_knowledge_space` command that parses queued/changed files and refreshes the workbench snapshot.
+- [x] Add `ParsedDocument`, parser functions, and lightweight extractors for `.md`, `.txt`, `.docx`, `.xlsx`, and `.pdf`.
+- [x] Add SQLite methods to list parse candidates, replace file knowledge blocks, mark status indexed or failed, and search FTS/fallback text.
+- [x] Add `index_knowledge_space` command that parses queued/changed files and refreshes the workbench snapshot.
 
 ### Task 3: Implement Agent Chat
 
-- [ ] Add local `.env` loading for DeepSeek settings while preserving OS environment precedence.
-- [ ] Add `ask_agent` command that searches local blocks, builds source-grounded context, calls DeepSeek when configured, and falls back to a local cited answer on API failure or missing key.
-- [ ] Keep chat messages in memory for the active desktop session and return them through the existing snapshot.
+- [x] Add local `.env` loading for DeepSeek settings while preserving OS environment precedence.
+- [x] Add `ask_agent` command that searches local blocks, builds source-grounded context, calls DeepSeek when configured, and falls back to a local cited answer on API failure or missing key.
+- [x] Keep chat messages in memory for the active desktop session and return them through the existing snapshot.
 
 ### Task 4: Wire Frontend Controls
 
-- [ ] Add an index/summary button beside scan, wired to `index_knowledge_space`.
-- [ ] Make the sidebar form controlled, submit via `ask_agent`, show disabled/loading states, and preserve current messages.
-- [ ] Keep styles inside `App.module.css` and preserve the existing workbench layout.
+- [x] Add an index/summary button beside scan, wired to `index_knowledge_space`.
+- [x] Make the sidebar form controlled, submit via `ask_agent`, show disabled/loading states, and preserve current messages.
+- [x] Keep styles inside `App.module.css` and preserve the existing workbench layout.
 
 ### Task 5: Document And Verify
 
 - [ ] Write `.env` with Chinese comments and the provided local DeepSeek key.
-- [ ] Update README feature status and quick-start notes without writing the real key.
-- [ ] Run `npm test`, `npm run build`, `cargo fmt -- --check`, `cargo test`, `cargo check` when possible, plus a secret scan that excludes `.env`.
+- [x] Update README feature status and quick-start notes without writing the real key.
+- [x] Run `npm test`, `npm run build`, `cargo fmt -- --check`, `cargo test`, `cargo check` when possible, plus a secret scan that excludes `.env`.
 - [ ] Request an independent reviewer and fix or report findings.
 
 ## Self-Review
