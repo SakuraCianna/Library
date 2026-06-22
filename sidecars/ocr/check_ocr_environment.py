@@ -10,6 +10,7 @@ from typing import Any
 
 
 OCR_VERSION = "PP-OCRv6"
+DEFAULT_MAX_IMAGE_PIXELS = 25_000_000
 REQUIRED_MODEL_FILES = ("inference.json", "inference.pdiparams", "inference.yml")
 
 
@@ -52,6 +53,7 @@ def smoke_test_sidecar(
     model_dir: Path,
     tier: str,
     max_pdf_pages: int,
+    max_image_pixels: int,
     timeout_seconds: int,
 ) -> dict[str, Any]:
     if not smoke_pdf.is_file():
@@ -62,6 +64,7 @@ def smoke_test_sidecar(
         "modelDir": str(model_dir),
         "tier": tier,
         "maxPdfPages": max_pdf_pages,
+        "maxImagePixels": max_image_pixels,
     }
 
     try:
@@ -125,6 +128,7 @@ def build_report(
     require_runtime: bool,
     smoke_pdf: Path | None,
     max_pdf_pages: int,
+    max_image_pixels: int,
     timeout_seconds: int,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
@@ -182,6 +186,7 @@ def build_report(
                 model_dir=model_dir,
                 tier=tier,
                 max_pdf_pages=max_pdf_pages,
+                max_image_pixels=max_image_pixels,
                 timeout_seconds=timeout_seconds,
             )
         )
@@ -198,6 +203,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smoke-file")
     parser.add_argument("--smoke-pdf")
     parser.add_argument("--max-pdf-pages", type=int, default=12)
+    parser.add_argument("--max-image-pixels", type=int, default=DEFAULT_MAX_IMAGE_PIXELS)
     parser.add_argument("--timeout-seconds", type=int, default=180)
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
@@ -223,6 +229,7 @@ def main() -> int:
         require_runtime=args.require_runtime,
         smoke_pdf=Path(smoke_input) if smoke_input else None,
         max_pdf_pages=args.max_pdf_pages,
+        max_image_pixels=args.max_image_pixels,
         timeout_seconds=args.timeout_seconds,
     )
 

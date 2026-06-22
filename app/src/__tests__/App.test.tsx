@@ -458,6 +458,36 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("redacts absolute paths from parse queue errors", async () => {
+    const snapshotWithPrivatePathError = {
+      ...snapshotWithSpace,
+      parseJobs: [
+        parseJob({
+          status: "failed",
+          errorMessage:
+            "OCR_RUNTIME_ERROR：E:\\Users\\Sakura\\Secret\\scan.pdf 处理失败",
+        }),
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return snapshotWithPrivatePathError;
+    });
+    render(<App />);
+
+    expect(
+      await screen.findByText("OCR_RUNTIME_ERROR：本地文件路径 处理失败"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Sakura/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Secret/)).not.toBeInTheDocument();
+  });
+
   it("renders OCR page progress in the parse queue", async () => {
     const snapshotWithProgress = {
       ...snapshotWithSpace,

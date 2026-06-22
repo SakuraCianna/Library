@@ -14,6 +14,7 @@ const OCR_SIDECAR_TIMEOUT: Duration = Duration::from_secs(120);
 const OCR_ENV_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OCR_INPUT_BYTES: u64 = 50 * 1024 * 1024;
 const DEFAULT_MAX_OCR_PDF_PAGES: u32 = 12;
+const DEFAULT_MAX_OCR_IMAGE_PIXELS: u64 = 25_000_000;
 const OCR_TEMP_ROOT_NAME: &str = "library-ocr-runs";
 const OCR_TEMP_DIR_PREFIX: &str = "run-";
 const REQUIRED_MODEL_FILES: [&str; 3] = ["inference.json", "inference.pdiparams", "inference.yml"];
@@ -57,6 +58,7 @@ pub fn build_ocr_request(file_path: &Path, model_dir: &Path, tier: &str) -> OcrS
         model_dir: model_dir.to_string_lossy().to_string(),
         tier: tier.to_string(),
         max_pdf_pages: ocr_pdf_page_limit(),
+        max_image_pixels: ocr_image_pixel_limit(),
         progress: true,
         temp_dir: None,
     }
@@ -400,6 +402,10 @@ fn run_ocr_environment_check_with_paths(
         .arg(model_dir)
         .arg("--tier")
         .arg(tier)
+        .arg("--max-pdf-pages")
+        .arg(ocr_pdf_page_limit().to_string())
+        .arg("--max-image-pixels")
+        .arg(ocr_image_pixel_limit().to_string())
         .arg("--require-runtime")
         .arg("--json")
         .stdout(Stdio::piped())
@@ -592,6 +598,14 @@ fn ocr_pdf_page_limit() -> u32 {
         .unwrap_or(DEFAULT_MAX_OCR_PDF_PAGES)
 }
 
+fn ocr_image_pixel_limit() -> u64 {
+    env::var("OCR_MAX_IMAGE_PIXELS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_OCR_IMAGE_PIXELS)
+}
+
 fn required_ocr_models(tier: &str) -> [String; 2] {
     [
         format!("PP-OCRv6_{tier}_det"),
@@ -775,6 +789,7 @@ mod tests {
     fn validates_existing_file_and_model_dir() {
         let _env_lock = env_lock().lock().expect("env lock");
         let _page_guard = EnvVarGuard::set("OCR_MAX_PDF_PAGES", "12");
+        let _image_guard = EnvVarGuard::set("OCR_MAX_IMAGE_PIXELS", "25000000");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let input = temp_dir.path().join("scan.pdf");
         let model_dir = temp_dir.path().join("models");
@@ -793,6 +808,7 @@ mod tests {
 
         assert_eq!(request.tier, "medium");
         assert_eq!(request.max_pdf_pages, 12);
+        assert_eq!(request.max_image_pixels, 25_000_000);
         assert!(request.progress);
         assert!(request.file_path.ends_with("scan.pdf"));
     }
@@ -811,6 +827,22 @@ mod tests {
             .expect_err("incomplete model files are rejected");
 
         assert!(error.to_string().contains("inference.json"));
+    }
+
+    #[test]
+    fn rejects_ocr_input_over_50_mb_before_model_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let input = temp_dir.path().join("oversized.pdf");
+        let model_dir = temp_dir.path().join("models");
+        let file = fs::File::create(&input).expect("input file");
+        file.set_len(super::MAX_OCR_INPUT_BYTES + 1)
+            .expect("sparse oversized input");
+
+        let error = validate_ocr_inputs(&input, &model_dir, "medium")
+            .expect_err("oversized OCR input is rejected");
+
+        assert!(error.to_string().contains("OCR_INPUT_TOO_LARGE"));
+        assert!(error.to_string().contains("50 MB"));
     }
 
     #[test]

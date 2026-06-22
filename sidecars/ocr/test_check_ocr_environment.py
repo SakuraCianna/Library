@@ -36,6 +36,7 @@ def test_build_report_passes_with_minimal_local_assets(tmp_path: Path):
         require_runtime=False,
         smoke_pdf=None,
         max_pdf_pages=12,
+        max_image_pixels=25_000_000,
         timeout_seconds=10,
     )
 
@@ -58,7 +59,8 @@ def test_smoke_test_sidecar_runs_python_json_protocol(tmp_path: Path):
         "\n".join(
             [
                 "import json, sys",
-                "json.loads(sys.stdin.read())",
+                "payload = json.loads(sys.stdin.read())",
+                "assert payload['maxImagePixels'] == 25",
                 "print(json.dumps({'ok': True, 'result': {'text': 'OCR', 'pageCount': 1}}))",
             ]
         ),
@@ -73,6 +75,7 @@ def test_smoke_test_sidecar_runs_python_json_protocol(tmp_path: Path):
         model_dir=tmp_path / "models",
         tier="medium",
         max_pdf_pages=12,
+        max_image_pixels=25,
         timeout_seconds=10,
     )
 

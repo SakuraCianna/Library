@@ -19,6 +19,23 @@ const SKIPPED_DIR_NAMES: [&str; 7] = [
     "dist",
     ".venv",
 ];
+const DEFAULT_MAX_SCANNED_FILES: usize = 10_000;
+const DEFAULT_MAX_SCANNED_TOTAL_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+struct ScanLimits {
+    max_files: usize,
+    max_total_bytes: u64,
+}
+
+impl Default for ScanLimits {
+    fn default() -> Self {
+        Self {
+            max_files: DEFAULT_MAX_SCANNED_FILES,
+            max_total_bytes: DEFAULT_MAX_SCANNED_TOTAL_BYTES,
+        }
+    }
+}
 
 #[cfg(test)]
 pub fn scan_folder(root_path: &Path) -> io::Result<Vec<ScannedFile>> {
@@ -38,8 +55,20 @@ pub fn scan_folder_with_progress<F>(
 where
     F: FnMut(&ScanProgress) -> bool,
 {
+    scan_folder_with_progress_and_limits(root_path, &mut on_progress, ScanLimits::default())
+}
+
+fn scan_folder_with_progress_and_limits<F>(
+    root_path: &Path,
+    mut on_progress: F,
+    limits: ScanLimits,
+) -> io::Result<Vec<ScannedFile>>
+where
+    F: FnMut(&ScanProgress) -> bool,
+{
     let root_path = root_path.canonicalize()?;
     let mut files = Vec::new();
+    let mut total_bytes = 0_u64;
 
     for entry in WalkDir::new(&root_path)
         .into_iter()
@@ -56,6 +85,23 @@ where
         };
 
         let metadata = entry.metadata()?;
+        let next_file_count = files.len() + 1;
+        if next_file_count > limits.max_files {
+            return Err(scan_limit_error(format!(
+                "SCAN_TOO_MANY_FILES：扫描文件数量超过 {} 个上限，请拆分目录后再扫描",
+                limits.max_files
+            )));
+        }
+
+        let next_total_bytes = total_bytes.saturating_add(metadata.len());
+        if next_total_bytes > limits.max_total_bytes {
+            return Err(scan_limit_error(format!(
+                "SCAN_TOTAL_BYTES_TOO_LARGE：扫描文件总大小超过 {} 上限，请缩小目录范围后再扫描",
+                format_byte_limit(limits.max_total_bytes)
+            )));
+        }
+        total_bytes = next_total_bytes;
+
         let modified_at = metadata
             .modified()
             .map(OffsetDateTime::from)
@@ -87,6 +133,18 @@ where
             .cmp(&right.relative_path.to_lowercase())
     });
     Ok(files)
+}
+
+fn scan_limit_error(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn format_byte_limit(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{} MB", bytes / 1024 / 1024)
+    } else {
+        format!("{bytes} 字节")
+    }
 }
 
 fn should_visit(entry: &DirEntry) -> bool {
@@ -135,7 +193,7 @@ fn hash_file(path: &Path) -> io::Result<String> {
 mod tests {
     use std::fs;
 
-    use super::scan_folder;
+    use super::{scan_folder, scan_folder_with_progress_and_limits, ScanLimits};
 
     #[test]
     fn scans_supported_files_and_skips_hidden_or_unsupported_entries() {
@@ -177,5 +235,48 @@ mod tests {
             .clone();
 
         assert_ne!(first_hash, second_hash);
+    }
+
+    #[test]
+    fn rejects_scan_when_supported_file_count_exceeds_limit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(temp_dir.path().join("one.md"), "one").expect("write one");
+        fs::write(temp_dir.path().join("two.md"), "two").expect("write two");
+        fs::write(temp_dir.path().join("three.md"), "three").expect("write three");
+
+        let error = scan_folder_with_progress_and_limits(
+            temp_dir.path(),
+            |_| true,
+            ScanLimits {
+                max_files: 2,
+                max_total_bytes: u64::MAX,
+            },
+        )
+        .expect_err("scan limit rejects too many files");
+        let message = error.to_string();
+
+        assert!(message.contains("SCAN_TOO_MANY_FILES"));
+        assert!(!message.contains(temp_dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn rejects_scan_when_supported_total_size_exceeds_limit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(temp_dir.path().join("one.md"), "12345").expect("write one");
+        fs::write(temp_dir.path().join("two.md"), "67890").expect("write two");
+
+        let error = scan_folder_with_progress_and_limits(
+            temp_dir.path(),
+            |_| true,
+            ScanLimits {
+                max_files: 10,
+                max_total_bytes: 7,
+            },
+        )
+        .expect_err("scan limit rejects too many bytes");
+        let message = error.to_string();
+
+        assert!(message.contains("SCAN_TOTAL_BYTES_TOO_LARGE"));
+        assert!(!message.contains(temp_dir.path().to_string_lossy().as_ref()));
     }
 }

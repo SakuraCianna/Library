@@ -14,7 +14,23 @@ OCR_VERSION = "PP-OCRv6"
 SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 MAX_INPUT_BYTES = 50 * 1024 * 1024
 DEFAULT_MAX_PDF_PAGES = 12
+DEFAULT_MAX_IMAGE_PIXELS = 25_000_000
 REQUIRED_MODEL_FILES = ("inference.json", "inference.pdiparams", "inference.yml")
+JPEG_SOF_MARKERS = {
+    0xC0,
+    0xC1,
+    0xC2,
+    0xC3,
+    0xC5,
+    0xC6,
+    0xC7,
+    0xC9,
+    0xCA,
+    0xCB,
+    0xCD,
+    0xCE,
+    0xCF,
+}
 
 
 @dataclass(frozen=True)
@@ -23,6 +39,7 @@ class OcrRequest:
     model_dir: str
     tier: str
     max_pdf_pages: int
+    max_image_pixels: int
     progress: bool = False
     temp_dir: str | None = None
 
@@ -34,6 +51,9 @@ def parse_request(raw: str) -> OcrRequest:
         model_dir=str(payload["modelDir"]),
         tier=str(payload.get("tier", "medium")),
         max_pdf_pages=int(payload.get("maxPdfPages") or DEFAULT_MAX_PDF_PAGES),
+        max_image_pixels=int(
+            payload.get("maxImagePixels") or DEFAULT_MAX_IMAGE_PIXELS
+        ),
         progress=bool(payload.get("progress", False)),
         temp_dir=str(payload["tempDir"]) if payload.get("tempDir") else None,
     )
@@ -84,6 +104,194 @@ def detect_pdf_page_count(file_path: Path) -> int:
     return len(reader.pages)
 
 
+def detect_image_dimensions(file_path: Path) -> tuple[int, int] | None:
+    with file_path.open("rb") as file:
+        header = file.read(32)
+
+    if header.startswith(b"\x89PNG\r\n\x1a\n") and header[12:16] == b"IHDR":
+        width = int.from_bytes(header[16:20], "big")
+        height = int.from_bytes(header[20:24], "big")
+        if width > 0 and height > 0:
+            return width, height
+
+    if header.startswith(b"BM") and len(header) >= 26:
+        width = int.from_bytes(header[18:22], "little", signed=True)
+        height = abs(int.from_bytes(header[22:26], "little", signed=True))
+        if width > 0 and height > 0:
+            return width, height
+
+    if header.startswith(b"\xff\xd8"):
+        return detect_jpeg_dimensions(file_path)
+
+    if header[0:2] in (b"II", b"MM") and len(header) >= 8:
+        return detect_tiff_dimensions(file_path)
+
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return detect_webp_dimensions(file_path)
+
+    return None
+
+
+def read_uint16(data: bytes, offset: int, byte_order: str) -> int:
+    return int.from_bytes(data[offset : offset + 2], byte_order)
+
+
+def read_uint32(data: bytes, offset: int, byte_order: str) -> int:
+    return int.from_bytes(data[offset : offset + 4], byte_order)
+
+
+def detect_jpeg_dimensions(file_path: Path) -> tuple[int, int] | None:
+    with file_path.open("rb") as file:
+        if file.read(2) != b"\xff\xd8":
+            return None
+
+        while True:
+            marker_prefix = file.read(1)
+            if not marker_prefix:
+                return None
+
+            while marker_prefix != b"\xff":
+                marker_prefix = file.read(1)
+                if not marker_prefix:
+                    return None
+
+            marker = file.read(1)
+            while marker == b"\xff":
+                marker = file.read(1)
+            if not marker:
+                return None
+
+            marker_code = marker[0]
+            if marker_code in (0xD8, 0xD9):
+                continue
+            if 0xD0 <= marker_code <= 0xD7 or marker_code == 0x01:
+                continue
+
+            length_bytes = file.read(2)
+            if len(length_bytes) != 2:
+                return None
+            segment_length = int.from_bytes(length_bytes, "big")
+            if segment_length < 2:
+                return None
+
+            payload_length = segment_length - 2
+            if marker_code in JPEG_SOF_MARKERS:
+                payload = file.read(payload_length)
+                if len(payload) < 5:
+                    return None
+                height = int.from_bytes(payload[1:3], "big")
+                width = int.from_bytes(payload[3:5], "big")
+                if width > 0 and height > 0:
+                    return width, height
+                return None
+
+            file.seek(payload_length, os.SEEK_CUR)
+
+
+def detect_tiff_dimensions(file_path: Path) -> tuple[int, int] | None:
+    with file_path.open("rb") as file:
+        header = file.read(8)
+        if header.startswith(b"II"):
+            byte_order = "little"
+        elif header.startswith(b"MM"):
+            byte_order = "big"
+        else:
+            return None
+
+        if read_uint16(header, 2, byte_order) != 42:
+            return None
+
+        file.seek(read_uint32(header, 4, byte_order))
+        entry_count_bytes = file.read(2)
+        if len(entry_count_bytes) != 2:
+            return None
+
+        entry_count = int.from_bytes(entry_count_bytes, byte_order)
+        width = None
+        height = None
+        for _ in range(entry_count):
+            entry = file.read(12)
+            if len(entry) != 12:
+                return None
+
+            tag = read_uint16(entry, 0, byte_order)
+            value_type = read_uint16(entry, 2, byte_order)
+            value_count = read_uint32(entry, 4, byte_order)
+            if value_count < 1 or tag not in (256, 257):
+                continue
+
+            value = read_tiff_inline_value(entry[8:12], value_type, byte_order)
+            if value is None:
+                continue
+
+            if tag == 256:
+                width = value
+            elif tag == 257:
+                height = value
+
+        if width and height:
+            return width, height
+
+    return None
+
+
+def read_tiff_inline_value(value_data: bytes, value_type: int, byte_order: str) -> int | None:
+    if value_type == 3:
+        return read_uint16(value_data, 0, byte_order)
+    if value_type == 4:
+        return read_uint32(value_data, 0, byte_order)
+    return None
+
+
+def detect_webp_dimensions(file_path: Path) -> tuple[int, int] | None:
+    with file_path.open("rb") as file:
+        riff_header = file.read(12)
+        if not (riff_header.startswith(b"RIFF") and riff_header[8:12] == b"WEBP"):
+            return None
+
+        while True:
+            chunk_header = file.read(8)
+            if len(chunk_header) != 8:
+                return None
+
+            chunk_type = chunk_header[0:4]
+            chunk_size = int.from_bytes(chunk_header[4:8], "little")
+            chunk_data = file.read(chunk_size)
+            if len(chunk_data) != chunk_size:
+                return None
+
+            dimensions = webp_chunk_dimensions(chunk_type, chunk_data)
+            if dimensions is not None:
+                return dimensions
+
+            if chunk_size % 2 == 1:
+                file.seek(1, os.SEEK_CUR)
+
+
+def webp_chunk_dimensions(chunk_type: bytes, chunk_data: bytes) -> tuple[int, int] | None:
+    if chunk_type == b"VP8X" and len(chunk_data) >= 10:
+        width = int.from_bytes(chunk_data[4:7], "little") + 1
+        height = int.from_bytes(chunk_data[7:10], "little") + 1
+        return width, height
+
+    if chunk_type == b"VP8 " and len(chunk_data) >= 10:
+        if chunk_data[3:6] != b"\x9d\x01\x2a":
+            return None
+        width = int.from_bytes(chunk_data[6:8], "little") & 0x3FFF
+        height = int.from_bytes(chunk_data[8:10], "little") & 0x3FFF
+        if width > 0 and height > 0:
+            return width, height
+        return None
+
+    if chunk_type == b"VP8L" and len(chunk_data) >= 5 and chunk_data[0] == 0x2F:
+        b1, b2, b3, b4 = chunk_data[1:5]
+        width = 1 + (((b2 & 0x3F) << 8) | b1)
+        height = 1 + (((b4 & 0x0F) << 10) | (b3 << 2) | ((b2 & 0xC0) >> 6))
+        return width, height
+
+    return None
+
+
 def build_paddleocr_kwargs(request: OcrRequest) -> dict[str, Any]:
     det_dir, rec_dir = required_model_paths(request)
     return {
@@ -121,6 +329,21 @@ def validate_request(request: OcrRequest) -> dict[str, Any] | None:
             return build_error_response(
                 "OCR_TOO_MANY_PAGES",
                 f"OCR PDF 页数 {page_count} 超过当前上限 {request.max_pdf_pages}",
+            )
+    else:
+        dimensions = detect_image_dimensions(file_path)
+        if dimensions is None:
+            return build_error_response(
+                "OCR_IMAGE_DIMENSION_UNREADABLE",
+                "无法读取 OCR 图片尺寸，请确认图片文件有效",
+            )
+
+        width, height = dimensions
+        pixel_count = width * height
+        if pixel_count > request.max_image_pixels:
+            return build_error_response(
+                "OCR_IMAGE_TOO_LARGE",
+                f"OCR 图片尺寸 {width}x{height} 超过当前上限 {request.max_image_pixels} 像素",
             )
 
     missing = missing_model_assets(request)

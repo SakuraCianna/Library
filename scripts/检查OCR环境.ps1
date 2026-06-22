@@ -5,6 +5,8 @@ param(
   [string]$PythonPath = '',
   [string]$SmokeFile = '',
   [string]$SmokePdf = '',
+  [int]$MaxPdfPages = 12,
+  [int]$MaxImagePixels = 25000000,
   [switch]$SkipRuntime
 )
 
@@ -43,7 +45,11 @@ $arguments = @(
   '--model-dir',
   $modelPath,
   '--tier',
-  $Tier
+  $Tier,
+  '--max-pdf-pages',
+  $MaxPdfPages,
+  '--max-image-pixels',
+  $MaxImagePixels
 )
 
 if (-not $SkipRuntime) {
