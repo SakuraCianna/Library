@@ -10,6 +10,7 @@ use crate::models::{
 };
 
 const DOCUMENT_PARSE_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
+const AUTO_OCR_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"];
 const FOUNDATION_SCHEMA: &str = include_str!("../../migrations/001_foundation.sql");
 const FOUNDATION_TABLES: [&str; 6] = [
     "knowledge_spaces",
@@ -47,6 +48,7 @@ pub enum ScanJobWriteOutcome {
     Updated {
         summary: ScanSummary,
         queued_document_count: u32,
+        queued_ocr_count: u32,
     },
     Cancelled,
     NotRunning,
@@ -373,6 +375,7 @@ impl SqliteStore {
 
         let summary = apply_scan_results_in_tx(&tx, space_id, scanned_files, &now)?;
         let queued_document_count = enqueue_document_parse_jobs_in_tx(&tx, space_id, &now)?;
+        let queued_ocr_count = enqueue_image_ocr_parse_jobs_in_tx(&tx, space_id, &now)?;
         tx.execute(
             "UPDATE parse_jobs
              SET status = 'succeeded',
@@ -390,6 +393,7 @@ impl SqliteStore {
         Ok(ScanJobWriteOutcome::Updated {
             summary,
             queued_document_count,
+            queued_ocr_count,
         })
     }
 
@@ -606,6 +610,26 @@ impl SqliteStore {
                 .enqueue_parse_job_with_status(space_id, &candidate.file_id, "document")?
                 .inserted
             {
+                inserted_count += 1;
+            }
+        }
+
+        Ok(inserted_count)
+    }
+
+    pub fn enqueue_image_ocr_parse_jobs(&self, space_id: &str) -> rusqlite::Result<u32> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let candidates = list_image_ocr_candidates_in_tx(&self.connection, space_id)?;
+        let mut inserted_count = 0_u32;
+
+        for candidate in candidates {
+            if enqueue_file_parse_job_in_tx(
+                &self.connection,
+                space_id,
+                &candidate.file_id,
+                "ocr",
+                &now,
+            )? {
                 inserted_count += 1;
             }
         }
@@ -1296,37 +1320,67 @@ fn enqueue_document_parse_jobs_in_tx(
     let mut inserted_count = 0_u32;
 
     for candidate in candidates {
-        let existing_id = tx
-            .query_row(
-                "SELECT id
-                 FROM parse_jobs
-                 WHERE space_id = ?1
-                   AND file_id = ?2
-                   AND job_type = 'document'
-                   AND status IN ('queued', 'running')
-                 ORDER BY created_at DESC
-                 LIMIT 1",
-                params![space_id, candidate.file_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-
-        if existing_id.is_some() {
-            continue;
+        if enqueue_file_parse_job_in_tx(tx, space_id, &candidate.file_id, "document", now)? {
+            inserted_count += 1;
         }
-
-        tx.execute(
-            "INSERT INTO parse_jobs (
-                id, space_id, file_id, job_type, status, phase, progress_current,
-                progress_total, created_at, updated_at
-             )
-             VALUES (?1, ?2, ?3, 'document', 'queued', '等待执行', 0, 1, ?4, ?4)",
-            params![Uuid::new_v4().to_string(), space_id, candidate.file_id, now],
-        )?;
-        inserted_count += 1;
     }
 
     Ok(inserted_count)
+}
+
+fn enqueue_image_ocr_parse_jobs_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+    now: &str,
+) -> rusqlite::Result<u32> {
+    let candidates = list_image_ocr_candidates_in_tx(tx, space_id)?;
+    let mut inserted_count = 0_u32;
+
+    for candidate in candidates {
+        if enqueue_file_parse_job_in_tx(tx, space_id, &candidate.file_id, "ocr", now)? {
+            inserted_count += 1;
+        }
+    }
+
+    Ok(inserted_count)
+}
+
+fn enqueue_file_parse_job_in_tx(
+    connection: &Connection,
+    space_id: &str,
+    file_id: &str,
+    job_type: &str,
+    now: &str,
+) -> rusqlite::Result<bool> {
+    let existing_id = connection
+        .query_row(
+            "SELECT id
+             FROM parse_jobs
+             WHERE space_id = ?1
+               AND file_id = ?2
+               AND job_type = ?3
+               AND status IN ('queued', 'running')
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![space_id, file_id, job_type],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    if existing_id.is_some() {
+        return Ok(false);
+    }
+
+    connection.execute(
+        "INSERT INTO parse_jobs (
+            id, space_id, file_id, job_type, status, phase, progress_current,
+            progress_total, created_at, updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, 'queued', '等待执行', 0, 1, ?5, ?5)",
+        params![Uuid::new_v4().to_string(), space_id, file_id, job_type, now],
+    )?;
+
+    Ok(true)
 }
 
 fn list_parse_candidates_in_tx(
@@ -1362,9 +1416,45 @@ fn list_parse_candidates_in_tx(
     candidates
 }
 
+fn list_image_ocr_candidates_in_tx(
+    connection: &Connection,
+    space_id: &str,
+) -> rusqlite::Result<Vec<FileParseCandidate>> {
+    let mut statement = connection.prepare(
+        "SELECT id, relative_path, extension
+         FROM files
+         WHERE space_id = ?1
+           AND deleted_at IS NULL
+           AND parse_status IN ('queued', 'changed', 'failed')
+         ORDER BY relative_path COLLATE NOCASE",
+    )?;
+
+    let candidates = statement
+        .query_map([space_id], |row| {
+            Ok(FileParseCandidate {
+                file_id: row.get(0)?,
+                relative_path: row.get(1)?,
+                extension: row.get(2)?,
+            })
+        })?
+        .filter_map(|candidate| match candidate {
+            Ok(candidate) if is_auto_ocr_extension(&candidate.extension) => Some(Ok(candidate)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect();
+
+    candidates
+}
+
 fn is_document_parse_extension(extension: &str) -> bool {
     let extension = extension.trim_start_matches('.').to_lowercase();
     DOCUMENT_PARSE_EXTENSIONS.contains(&extension.as_str())
+}
+
+fn is_auto_ocr_extension(extension: &str) -> bool {
+    let extension = extension.trim_start_matches('.').to_lowercase();
+    AUTO_OCR_EXTENSIONS.contains(&extension.as_str())
 }
 
 fn replace_file_knowledge_block_in_tx(
@@ -1803,19 +1893,30 @@ mod tests {
         let inserted_again = store
             .enqueue_document_parse_jobs(&space_id)
             .expect("document jobs dedupe");
+        let ocr_inserted = store
+            .enqueue_image_ocr_parse_jobs(&space_id)
+            .expect("image ocr jobs enqueue");
+        let ocr_inserted_again = store
+            .enqueue_image_ocr_parse_jobs(&space_id)
+            .expect("image ocr jobs dedupe");
         let jobs = store.list_parse_jobs(&space_id).expect("jobs list");
         let spaces = store.list_knowledge_spaces().expect("spaces list");
 
         assert_eq!(inserted, 2);
         assert_eq!(inserted_again, 0);
+        assert_eq!(ocr_inserted, 1);
+        assert_eq!(ocr_inserted_again, 0);
         assert_eq!(
             jobs.iter()
                 .filter(|job| job.job_type == "document" && job.status == "queued")
                 .count(),
             2
         );
-        assert!(!jobs.iter().any(|job| job.file_name == "截图.png"));
+        assert!(jobs.iter().any(|job| {
+            job.job_type == "ocr" && job.status == "queued" && job.file_name == "截图.png"
+        }));
         assert_eq!(spaces[0].document_queue_count, 2);
+        assert_eq!(spaces[0].ocr_queue_count, 1);
     }
 
     #[test]

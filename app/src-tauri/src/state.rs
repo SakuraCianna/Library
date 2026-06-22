@@ -33,6 +33,7 @@ enum ScanJobOutcome {
     Succeeded {
         summary: ScanSummary,
         queued_document_count: u32,
+        queued_ocr_count: u32,
     },
     Failed,
     Cancelled,
@@ -335,9 +336,11 @@ impl AppState {
                         ScanJobWriteOutcome::Updated {
                             summary,
                             queued_document_count,
+                            queued_ocr_count,
                         } => ScanJobOutcome::Succeeded {
                             summary,
                             queued_document_count,
+                            queued_ocr_count,
                         },
                         ScanJobWriteOutcome::Cancelled => ScanJobOutcome::Cancelled,
                         ScanJobWriteOutcome::NotRunning => {
@@ -819,13 +822,15 @@ impl AppState {
             ScanJobOutcome::Succeeded {
                 summary,
                 queued_document_count,
+                queued_ocr_count,
             } => {
                 self.push_system_message(format!(
-                    "扫描完成：新增 {} 个，变更 {} 个，删除 {} 个；已排队 {} 个文档解析任务。",
+                    "扫描完成：新增 {} 个，变更 {} 个，删除 {} 个；已排队 {} 个文档解析任务、{} 个图片 OCR 任务。",
                     summary.added_count,
                     summary.changed_count,
                     summary.deleted_count,
-                    queued_document_count
+                    queued_document_count,
+                    queued_ocr_count
                 ));
             }
             ScanJobOutcome::Failed => {
@@ -1204,10 +1209,11 @@ mod tests {
             .parse_jobs
             .iter()
             .any(|job| job.job_type == "document" && job.status == "queued"));
-        assert!(!scanned
-            .parse_jobs
-            .iter()
-            .any(|job| job.job_type == "document" && job.file_name == "image.png"));
+        assert!(scanned.parse_jobs.iter().any(|job| job.job_type == "ocr"
+            && job.status == "queued"
+            && job.file_name == "image.png"));
+        assert_eq!(scanned.spaces[0].document_queue_count, 1);
+        assert_eq!(scanned.spaces[0].ocr_queue_count, 1);
     }
 
     #[test]
