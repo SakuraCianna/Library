@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::models::{
     FileParseCandidate, KnowledgeBlockContext, KnowledgeBlockSearchHit, KnowledgeFile,
     KnowledgeSpace, ParseJobCandidate, ParseJobSummary, ParseStatus, ParsedDocument,
-    PermissionMode, ScanSummary, ScannedFile,
+    PermissionMode, ScanSummary, ScannedFile, TableInsightPreview,
 };
 
 const DOCUMENT_PARSE_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
@@ -478,6 +478,33 @@ impl SqliteStore {
                  LIMIT 1",
                 [space_id],
                 |row| row_to_search_hit(row, ""),
+            )
+            .optional()
+    }
+
+    pub fn latest_table_insight(
+        &self,
+        space_id: &str,
+    ) -> rusqlite::Result<Option<TableInsightPreview>> {
+        self.connection
+            .query_row(
+                "SELECT id, title, body
+                 FROM knowledge_blocks
+                 WHERE space_id = ?1
+                   AND source_kind = 'table'
+                   AND searchable = 1
+                   AND deleted_at IS NULL
+                 ORDER BY updated_at DESC, fts_rowid DESC
+                 LIMIT 1",
+                [space_id],
+                |row| {
+                    let body: String = row.get(2)?;
+                    Ok(TableInsightPreview {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        description: build_excerpt(&body, ""),
+                    })
+                },
             )
             .optional()
     }
@@ -1569,21 +1596,28 @@ fn replace_file_knowledge_block_in_tx(
 
     let blocks = document_knowledge_blocks(document);
     for block in blocks.iter().rev() {
-        tx.execute(
-            "INSERT INTO knowledge_blocks (
-                id, space_id, file_id, title, body, source_kind, source_locator,
-                searchable, created_at, updated_at
-             )
-             VALUES (?1, ?2, ?3, ?4, ?5, 'original_file', ?6, 1, ?7, ?7)",
-            params![
-                Uuid::new_v4().to_string(),
-                space_id,
-                file_id,
-                block.title,
-                block.body,
-                block.source_locator,
-                now
-            ],
+        insert_knowledge_block_in_tx(
+            tx,
+            space_id,
+            file_id,
+            &block.title,
+            &block.body,
+            "original_file",
+            &block.source_locator,
+            now,
+        )?;
+    }
+
+    for insight in document.table_insights.iter().rev() {
+        insert_knowledge_block_in_tx(
+            tx,
+            space_id,
+            file_id,
+            &insight.title,
+            &insight.body,
+            "table",
+            &insight.source_locator,
+            now,
         )?;
     }
 
@@ -1592,6 +1626,37 @@ fn replace_file_knowledge_block_in_tx(
          SET parse_status = ?1, updated_at = ?2
          WHERE id = ?3 AND space_id = ?4 AND deleted_at IS NULL",
         params![ParseStatus::Indexed.as_str(), now, file_id, space_id],
+    )?;
+
+    Ok(())
+}
+
+fn insert_knowledge_block_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+    file_id: &str,
+    title: &str,
+    body: &str,
+    source_kind: &str,
+    source_locator: &str,
+    now: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO knowledge_blocks (
+            id, space_id, file_id, title, body, source_kind, source_locator,
+            searchable, created_at, updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)",
+        params![
+            Uuid::new_v4().to_string(),
+            space_id,
+            file_id,
+            title,
+            body,
+            source_kind,
+            source_locator,
+            now
+        ],
     )?;
 
     Ok(())
@@ -1906,6 +1971,7 @@ fn is_known_source_fragment(fragment: &str) -> bool {
     fragment == "ocr"
         || numbered_fragment(fragment, "block-")
         || numbered_fragment(fragment, "ocr-block-")
+        || numbered_fragment(fragment, "sheet-")
 }
 
 fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
@@ -1926,7 +1992,7 @@ fn display_extension(extension: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{display_source_file_name, SqliteStore};
-    use crate::models::{ParsedDocument, PermissionMode, ScannedFile};
+    use crate::models::{ParsedDocument, ParsedTableInsight, PermissionMode, ScannedFile};
     use rusqlite::{params, Connection};
 
     const TEST_TIME: &str = "2026-06-21T00:00:00Z";
@@ -2201,6 +2267,7 @@ mod tests {
             body: "Redis 缓存穿透是查询不存在的数据导致缓存和数据库都无法命中。".to_string(),
             summary: "Redis 缓存穿透是查询不存在数据导致的缓存失效问题。".to_string(),
             source_locator: "Redis面试.md".to_string(),
+            table_insights: Vec::new(),
         };
 
         store
@@ -2216,6 +2283,55 @@ mod tests {
         assert_eq!(hits[0].source_file_name, "Redis面试.md");
         assert!(hits[0].excerpt.contains("缓存穿透"));
         assert_eq!(files[0].status, crate::models::ParseStatus::Indexed);
+    }
+
+    #[test]
+    fn stores_table_insights_as_searchable_table_blocks() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("报表", "D:\\知识库\\报表", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-report", &space_id, "经营报表.xlsx", "queued")
+            .expect("file is inserted");
+        let document = ParsedDocument {
+            title: "经营报表.xlsx".to_string(),
+            body: "工作簿普通文本".to_string(),
+            summary: "工作簿普通文本".to_string(),
+            source_locator: "经营报表.xlsx".to_string(),
+            table_insights: vec![ParsedTableInsight {
+                title: "经营报表.xlsx · 工作表 1".to_string(),
+                body: "经营报表.xlsx · 工作表 1 结构：3 行，3 列 表头：月份、营收、成本 样例 1：2026-06 | 120 | 70 可问答字段：月份、营收、成本".to_string(),
+                summary: "工作表 1：3 行、3 列；表头：月份、营收、成本".to_string(),
+                source_locator: "经营报表.xlsx#sheet-001".to_string(),
+            }],
+        };
+
+        store
+            .replace_file_knowledge_block(&space_id, "file-report", &document)
+            .expect("knowledge blocks are stored");
+
+        let table_count: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_blocks WHERE file_id = ?1 AND source_kind = 'table' AND searchable = 1",
+                ["file-report"],
+                |row| row.get(0),
+            )
+            .expect("table block count query works");
+        let preview = store
+            .latest_table_insight(&space_id)
+            .expect("latest table query succeeds")
+            .expect("table preview exists");
+        let hits = store
+            .search_knowledge_blocks(&space_id, "营收", 3)
+            .expect("search succeeds");
+
+        assert_eq!(table_count, 1);
+        assert_eq!(preview.title, "经营报表.xlsx · 工作表 1");
+        assert!(preview.description.contains("3 行"));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_locator, "经营报表.xlsx#sheet-001");
+        assert_eq!(hits[0].source_file_name, "经营报表.xlsx");
     }
 
     #[test]
@@ -2235,6 +2351,7 @@ mod tests {
             ),
             summary: "Redis 缓存穿透资料。".to_string(),
             source_locator: "Redis面试.md".to_string(),
+            table_insights: Vec::new(),
         };
 
         store
@@ -2286,6 +2403,7 @@ mod tests {
             ),
             summary: "扫描版 PDF OCR 结果。".to_string(),
             source_locator: "scan.pdf#ocr".to_string(),
+            table_insights: Vec::new(),
         };
 
         store
@@ -2316,6 +2434,10 @@ mod tests {
         assert_eq!(
             display_source_file_name("docs\\Redis面试.md#block-001"),
             "Redis面试.md"
+        );
+        assert_eq!(
+            display_source_file_name("reports\\经营报表.xlsx#sheet-001"),
+            "经营报表.xlsx"
         );
         assert_eq!(display_source_file_name("Redis面试.md"), "Redis面试.md");
     }

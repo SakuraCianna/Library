@@ -17,7 +17,7 @@ export const emptyWorkbench: WorkbenchSnapshot = {
   tablePreview: {
     id: "table-empty",
     title: "表格理解等待接入",
-    description: "本阶段先完成文件扫描入库，表格结构理解将在后续解析阶段接入。",
+    description: "本阶段先完成文件扫描入库，表格结构洞察会在解析 xlsx 后显示。",
   },
   messages: [
     {

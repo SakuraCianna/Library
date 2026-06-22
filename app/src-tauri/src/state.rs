@@ -109,6 +109,12 @@ impl AppState {
                 .map_err(|error| AppError::Storage(error.to_string()))?,
             None => None,
         };
+        let latest_table = match active_space.as_ref() {
+            Some(space) => store
+                .latest_table_insight(&space.id)
+                .map_err(|error| AppError::Storage(error.to_string()))?,
+            None => None,
+        };
         let parse_jobs = match active_space.as_ref() {
             Some(space) => store
                 .list_parse_jobs(&space.id)
@@ -133,6 +139,7 @@ impl AppState {
             files,
             parse_jobs,
             latest_block,
+            latest_table,
             messages,
         ))
     }
@@ -1213,6 +1220,7 @@ fn build_snapshot(
     files: Vec<crate::models::KnowledgeFile>,
     parse_jobs: Vec<crate::models::ParseJobSummary>,
     latest_block: Option<crate::models::KnowledgeBlockSearchHit>,
+    latest_table: Option<TableInsightPreview>,
     messages: Vec<ChatMessage>,
 ) -> WorkbenchSnapshot {
     let has_spaces = !spaces.is_empty();
@@ -1259,11 +1267,11 @@ fn build_snapshot(
                     "暂无来源定位".to_string()
                 },
             }),
-        table_preview: TableInsightPreview {
+        table_preview: latest_table.unwrap_or_else(|| TableInsightPreview {
             id: "table-empty".to_string(),
             title: "表格理解等待接入".to_string(),
-            description: "本阶段先完成文件扫描入库，表格结构理解将在后续解析阶段接入。".to_string(),
-        },
+            description: "本阶段先完成文件扫描入库，表格结构洞察会在解析 xlsx 后显示。".to_string(),
+        }),
         messages: if messages.is_empty() {
             vec![ChatMessage {
                 id: "msg-system-ready".to_string(),
@@ -1358,6 +1366,7 @@ fn is_known_source_fragment(fragment: &str) -> bool {
     fragment == "ocr"
         || numbered_fragment(fragment, "block-")
         || numbered_fragment(fragment, "ocr-block-")
+        || numbered_fragment(fragment, "sheet-")
 }
 
 fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
@@ -1389,7 +1398,9 @@ mod tests {
     use std::{env, fs};
 
     use super::{parse_file, AppState};
-    use crate::models::{ChatRole, OcrPageResult, OcrSidecarResult, PermissionMode, ScannedFile};
+    use crate::models::{
+        ChatRole, OcrPageResult, OcrSidecarResult, ParsedTableInsight, PermissionMode, ScannedFile,
+    };
     use crate::storage::sqlite::SqliteStore;
 
     #[test]
@@ -1502,6 +1513,30 @@ mod tests {
         assert_eq!(
             legacy_resolved,
             source_file.canonicalize().expect("canonical pdf")
+        );
+    }
+
+    #[test]
+    fn resolves_xlsx_sheet_source_locator_to_original_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_file = temp_dir.path().join("经营报表.xlsx");
+        fs::write(&source_file, "xlsx").expect("write xlsx");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "报表".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let resolved = state
+            .resolve_source_file_path(&created.active_space_id, "经营报表.xlsx#sheet-001")
+            .expect("xlsx source file resolves");
+
+        assert_eq!(
+            resolved,
+            source_file.canonicalize().expect("canonical xlsx")
         );
     }
 
@@ -1673,6 +1708,48 @@ mod tests {
     }
 
     #[test]
+    fn indexes_xlsx_table_insight_into_snapshot_preview() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(temp_dir.path().join("经营报表.xlsx"), "xlsx").expect("write xlsx");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "报表".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id.clone())
+            .expect("space scanned");
+
+        state
+            .run_next_document_parse_job_with_parser(scanned.active_space_id, |_root, candidate| {
+                Ok(crate::models::ParsedDocument {
+                    title: candidate.relative_path.clone(),
+                    body: "Excel 工作簿原始文本".to_string(),
+                    summary: "Excel 工作簿原始文本".to_string(),
+                    source_locator: candidate.relative_path.clone(),
+                    table_insights: vec![ParsedTableInsight {
+                        title: "经营报表.xlsx · 工作表 1".to_string(),
+                        body: "经营报表.xlsx · 工作表 1 结构：3 行，3 列 表头：月份、营收、成本 样例 1：2026-06 | 120 | 70".to_string(),
+                        summary: "工作表 1：3 行、3 列；表头：月份、营收、成本".to_string(),
+                        source_locator: "经营报表.xlsx#sheet-001".to_string(),
+                    }],
+                })
+            })
+            .expect("document job runs");
+        let indexed = state.snapshot().expect("snapshot builds");
+
+        assert_eq!(indexed.files[0].status_label, "已索引");
+        assert_eq!(indexed.table_preview.title, "经营报表.xlsx · 工作表 1");
+        assert!(indexed
+            .table_preview
+            .description
+            .contains("月份、营收、成本"));
+    }
+
+    #[test]
     fn failed_document_job_can_be_retried_into_searchable_block() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         fs::write(
@@ -1759,6 +1836,7 @@ mod tests {
                         body: format!("这段取消后的文档文本不应入库：{}", candidate_root.display()),
                         summary: "不应入库".to_string(),
                         source_locator: candidate.relative_path.clone(),
+                        table_insights: Vec::new(),
                     })
                 },
             )

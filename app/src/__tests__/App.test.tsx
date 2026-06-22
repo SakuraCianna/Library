@@ -41,6 +41,15 @@ const snapshotWithSpace: WorkbenchSnapshot = {
   ],
 };
 
+const snapshotWithTablePreview: WorkbenchSnapshot = {
+  ...snapshotWithSpace,
+  tablePreview: {
+    id: "table-report",
+    title: "经营报表.xlsx · 工作表 1",
+    description: "结构：3 行，3 列。表头：月份、营收、成本。",
+  },
+};
+
 const runtimeStatus = {
   deepseek: {
     configured: false,
@@ -199,6 +208,25 @@ describe("App", () => {
 
     expect(screen.getAllByText("默认权限").length).toBeGreaterThan(0);
     expect(screen.getByText(/文件夹长期保存的 Agent 操作边界/)).toBeInTheDocument();
+  });
+
+  it("renders real xlsx table insight preview from the snapshot", async () => {
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return snapshotWithTablePreview;
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "真实知识库" });
+
+    expect(screen.getByText("经营报表.xlsx · 工作表 1")).toBeInTheDocument();
+    expect(screen.getByText(/表头：月份、营收、成本/)).toBeInTheDocument();
   });
 
   it("runs the OCR environment check from the runtime panel", async () => {

@@ -274,6 +274,15 @@ pub struct ParsedDocument {
     pub body: String,
     pub summary: String,
     pub source_locator: String,
+    pub table_insights: Vec<ParsedTableInsight>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedTableInsight {
+    pub title: String,
+    pub body: String,
+    pub summary: String,
+    pub source_locator: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

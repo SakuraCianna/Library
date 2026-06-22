@@ -3,10 +3,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
-use crate::models::{FileParseCandidate, ParsedDocument};
+use crate::models::{FileParseCandidate, ParsedDocument, ParsedTableInsight};
 
 const MAX_BODY_CHARS: usize = 60_000;
 const SUMMARY_CHARS: usize = 180;
+const MAX_TABLE_CELL_CHARS: usize = 80;
+const TABLE_SAMPLE_ROWS: usize = 3;
 
 pub fn parse_file(
     root_path: &Path,
@@ -14,10 +16,15 @@ pub fn parse_file(
 ) -> Result<ParsedDocument, AppError> {
     let file_path = resolve_file_path(root_path, &candidate.relative_path)?;
     let extension = candidate.extension.trim_start_matches('.').to_lowercase();
+    let mut table_insights = Vec::new();
     let raw_text = match extension.as_str() {
         "md" | "txt" => read_text_lossy(&file_path)?,
         "docx" => read_docx_text(&file_path)?,
-        "xlsx" => read_xlsx_text(&file_path)?,
+        "xlsx" => {
+            let analysis = read_xlsx_analysis(&file_path, &candidate.relative_path)?;
+            table_insights = analysis.table_insights;
+            analysis.body
+        }
         "pdf" => read_pdf_text_lossy(&file_path)?,
         _ => {
             return Err(AppError::Filesystem(format!(
@@ -40,7 +47,14 @@ pub fn parse_file(
         summary: summarize(&body),
         body: truncate_chars(&body, MAX_BODY_CHARS),
         source_locator: candidate.relative_path.clone(),
+        table_insights,
     })
+}
+
+#[derive(Debug)]
+struct XlsxAnalysis {
+    body: String,
+    table_insights: Vec<ParsedTableInsight>,
 }
 
 fn resolve_file_path(root_path: &Path, relative_path: &str) -> Result<PathBuf, AppError> {
@@ -80,9 +94,10 @@ fn read_docx_text(path: &Path) -> Result<String, AppError> {
     Ok(xml_to_text(&document))
 }
 
-fn read_xlsx_text(path: &Path) -> Result<String, AppError> {
+fn read_xlsx_analysis(path: &Path, relative_path: &str) -> Result<XlsxAnalysis, AppError> {
     let mut archive = open_zip(path)?;
-    let mut parts = Vec::new();
+    let mut shared_strings_xml = String::new();
+    let mut sheet_parts = Vec::new();
 
     for index in 0..archive.len() {
         let mut file = archive
@@ -99,14 +114,279 @@ fn read_xlsx_text(path: &Path) -> Result<String, AppError> {
         let mut xml = String::new();
         file.read_to_string(&mut xml)
             .map_err(|error| AppError::Filesystem(format!("无法解析 Excel XML：{error}")))?;
-        let text = xml_to_text(&xml);
 
-        if !text.is_empty() {
-            parts.push(text);
+        if is_shared_strings {
+            shared_strings_xml = xml;
+        } else {
+            sheet_parts.push((name, xml));
         }
     }
 
-    Ok(parts.join("\n"))
+    sheet_parts.sort_by_key(|(name, _)| worksheet_sort_key(name));
+
+    let mut parts = Vec::new();
+    let mut table_insights = Vec::new();
+    let shared_strings = parse_shared_strings(&shared_strings_xml);
+
+    let shared_text = xml_to_text(&shared_strings_xml);
+    if !shared_text.is_empty() {
+        parts.push(shared_text);
+    }
+
+    for (index, (_, xml)) in sheet_parts.iter().enumerate() {
+        let text = xml_to_text(xml);
+        if !text.is_empty() {
+            parts.push(text);
+        }
+
+        if let Some(insight) =
+            worksheet_table_insight(relative_path, index + 1, xml, &shared_strings)
+        {
+            parts.push(insight.body.clone());
+            table_insights.push(insight);
+        }
+    }
+
+    Ok(XlsxAnalysis {
+        body: parts.join("\n"),
+        table_insights,
+    })
+}
+
+fn worksheet_sort_key(name: &str) -> usize {
+    name.rsplit('/')
+        .next()
+        .and_then(|file_name| file_name.strip_prefix("sheet"))
+        .and_then(|value| value.strip_suffix(".xml"))
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(usize::MAX)
+}
+
+fn parse_shared_strings(xml: &str) -> Vec<String> {
+    extract_xml_blocks(xml, "si")
+        .into_iter()
+        .map(xml_to_text)
+        .collect()
+}
+
+#[derive(Debug, Default)]
+struct WorksheetRowSummary {
+    values: Vec<String>,
+    column_count: usize,
+}
+
+impl WorksheetRowSummary {
+    fn has_content(&self) -> bool {
+        !self.values.is_empty()
+    }
+}
+
+fn worksheet_table_insight(
+    relative_path: &str,
+    sheet_index: usize,
+    xml: &str,
+    shared_strings: &[String],
+) -> Option<ParsedTableInsight> {
+    let mut row_count = 0_usize;
+    let mut column_count = 0_usize;
+    let mut header_values = Vec::new();
+    let mut sample_rows = Vec::new();
+
+    visit_xml_blocks(xml, "row", |row_xml| {
+        let row = worksheet_row_summary(row_xml, shared_strings);
+        if !row.has_content() {
+            return;
+        }
+
+        row_count += 1;
+        column_count = column_count.max(row.column_count);
+
+        if row_count == 1 {
+            header_values = row.values;
+        } else if sample_rows.len() < TABLE_SAMPLE_ROWS {
+            sample_rows.push(row.values);
+        }
+    });
+
+    if row_count == 0 {
+        return None;
+    }
+
+    let header_summary = if header_values.is_empty() {
+        "未识别表头".to_string()
+    } else {
+        join_limited(&header_values, "、", 12)
+    };
+    let title = format!(
+        "{} · 工作表 {sheet_index}",
+        display_file_name(relative_path)
+    );
+    let source_locator = format!("{relative_path}#sheet-{sheet_index:03}");
+    let mut lines = vec![
+        title.clone(),
+        format!("来源：{source_locator}"),
+        format!("结构：{row_count} 行，{column_count} 列"),
+        format!("表头：{header_summary}"),
+    ];
+
+    for (sample_index, row) in sample_rows.iter().enumerate() {
+        let sample = row_sample(row);
+        if !sample.is_empty() {
+            lines.push(format!("样例 {}：{sample}", sample_index + 1));
+        }
+    }
+
+    if !header_values.is_empty() {
+        lines.push(format!("可问答字段：{header_summary}"));
+    }
+
+    let body = lines.join("\n");
+    Some(ParsedTableInsight {
+        title,
+        summary: format!(
+            "工作表 {sheet_index}：{row_count} 行、{column_count} 列；表头：{header_summary}"
+        ),
+        body,
+        source_locator,
+    })
+}
+
+fn worksheet_row_summary(row_xml: &str, shared_strings: &[String]) -> WorksheetRowSummary {
+    let mut values = Vec::new();
+    let mut column_count = 0_usize;
+    let mut fallback_column_index = 0_usize;
+
+    for cell_xml in extract_xml_blocks(row_xml, "c") {
+        let column_index = cell_column_index(cell_xml).unwrap_or(fallback_column_index);
+        fallback_column_index = column_index.saturating_add(1);
+
+        if let Some(value) = worksheet_cell_value(cell_xml, shared_strings) {
+            column_count = column_count.max(column_index + 1);
+            values.push(value);
+        }
+    }
+
+    WorksheetRowSummary {
+        values,
+        column_count,
+    }
+}
+
+fn worksheet_cell_value(cell_xml: &str, shared_strings: &[String]) -> Option<String> {
+    let cell_type = xml_attribute(cell_xml, "t");
+    let value = if matches!(cell_type.as_deref(), Some("s")) {
+        first_xml_tag_text(cell_xml, "v")
+            .and_then(|index| index.parse::<usize>().ok())
+            .and_then(|index| shared_strings.get(index).cloned())
+    } else if matches!(cell_type.as_deref(), Some("inlineStr")) {
+        first_xml_tag_text(cell_xml, "is")
+    } else {
+        first_xml_tag_text(cell_xml, "v")
+    }?;
+
+    let value = normalize_text(&value);
+    if value.is_empty() {
+        None
+    } else {
+        Some(truncate_chars(&value, MAX_TABLE_CELL_CHARS))
+    }
+}
+
+fn xml_attribute(xml: &str, attribute: &str) -> Option<String> {
+    let marker = format!("{attribute}=\"");
+    let start = xml.find(&marker)? + marker.len();
+    let rest = &xml[start..];
+    let end = rest.find('"')?;
+    Some(unescape_xml(&rest[..end]))
+}
+
+fn first_xml_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let open_marker = format!("<{tag}");
+    let close_marker = format!("</{tag}>");
+    let start = xml.find(&open_marker)?;
+    let rest = &xml[start..];
+    let content_start = rest.find('>')? + 1;
+    let content = &rest[content_start..];
+    let content_end = content.find(&close_marker)?;
+    Some(xml_to_text(&content[..content_end]))
+}
+
+fn cell_column_index(cell_xml: &str) -> Option<usize> {
+    let reference = xml_attribute(cell_xml, "r")?;
+    let letters = reference
+        .chars()
+        .take_while(|character| character.is_ascii_alphabetic())
+        .collect::<String>();
+    column_letters_to_index(&letters)
+}
+
+fn column_letters_to_index(letters: &str) -> Option<usize> {
+    let mut index = 0_usize;
+    if letters.is_empty() {
+        return None;
+    }
+
+    for character in letters.chars() {
+        let value = character.to_ascii_uppercase() as u8;
+        if !value.is_ascii_uppercase() {
+            return None;
+        }
+        index = index * 26 + usize::from(value - b'A' + 1);
+    }
+
+    Some(index - 1)
+}
+
+fn visit_xml_blocks<'a, F>(xml: &'a str, tag: &str, mut visitor: F)
+where
+    F: FnMut(&'a str),
+{
+    let open_marker = format!("<{tag}");
+    let close_marker = format!("</{tag}>");
+    let mut cursor = xml;
+
+    while let Some(start) = cursor.find(&open_marker) {
+        let candidate = &cursor[start..];
+        let Some(end) = candidate.find(&close_marker) else {
+            break;
+        };
+        let block_end = end + close_marker.len();
+        visitor(&candidate[..block_end]);
+        cursor = &candidate[block_end..];
+    }
+}
+
+fn extract_xml_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+    let mut blocks = Vec::new();
+    visit_xml_blocks(xml, tag, |block| blocks.push(block));
+
+    blocks
+}
+
+fn non_empty_values(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        })
+        .collect()
+}
+
+fn row_sample(row: &[String]) -> String {
+    join_limited(&non_empty_values(row), " | ", 8)
+}
+
+fn join_limited(values: &[String], separator: &str, limit: usize) -> String {
+    let mut output = values.iter().take(limit).cloned().collect::<Vec<_>>();
+    if values.len() > limit {
+        output.push(format!("另有 {} 项", values.len() - limit));
+    }
+    output.join(separator)
 }
 
 fn open_zip(path: &Path) -> Result<zip::ZipArchive<File>, AppError> {
@@ -273,7 +553,9 @@ fn display_file_name(relative_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use std::path::Path;
 
     use super::parse_file;
     use crate::models::FileParseCandidate;
@@ -320,5 +602,84 @@ mod tests {
         .expect("pdf parses");
 
         assert!(document.body.contains("缓存穿透"));
+    }
+
+    #[test]
+    fn extracts_xlsx_worksheet_table_insight() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let workbook_path = temp_dir.path().join("经营报表.xlsx");
+        write_test_xlsx(&workbook_path);
+
+        let document = parse_file(
+            temp_dir.path(),
+            &FileParseCandidate {
+                file_id: "file-xlsx".to_string(),
+                relative_path: "经营报表.xlsx".to_string(),
+                extension: "xlsx".to_string(),
+            },
+        )
+        .expect("xlsx parses");
+
+        assert_eq!(document.title, "经营报表.xlsx");
+        assert_eq!(document.table_insights.len(), 1);
+        assert!(document.body.contains("经营报表.xlsx · 工作表 1"));
+        assert!(document.body.contains("月份、营收、成本"));
+        assert!(document.body.contains("2026-06 | 120 | 70"));
+
+        let insight = &document.table_insights[0];
+        assert_eq!(insight.source_locator, "经营报表.xlsx#sheet-001");
+        assert!(insight.summary.contains("3 行、3 列"));
+        assert!(insight.body.contains("可问答字段：月份、营收、成本"));
+    }
+
+    fn write_test_xlsx(path: &Path) {
+        let file = File::create(path).expect("xlsx file created");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("xl/sharedStrings.xml", options)
+            .expect("shared strings entry starts");
+        zip.write_all(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <si><t></t></si>
+  <si><t>月份</t></si>
+  <si><t>营收</t></si>
+  <si><t>成本</t></si>
+  <si><t>2026-06</t></si>
+  <si><t>2026-07</t></si>
+</sst>"#
+                .as_bytes(),
+        )
+        .expect("shared strings written");
+
+        zip.start_file("xl/worksheets/sheet1.xml", options)
+            .expect("worksheet entry starts");
+        zip.write_all(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s"><v>1</v></c>
+      <c r="B1" t="s"><v>2</v></c>
+      <c r="C1" t="s"><v>3</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s"><v>4</v></c>
+      <c r="B2"><v>120</v></c>
+      <c r="C2"><v>70</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s"><v>5</v></c>
+      <c r="B3"><v>140</v></c>
+      <c r="C3"><v>80</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#
+                .as_bytes(),
+        )
+        .expect("worksheet written");
+        zip.finish().expect("xlsx zip finalized");
     }
 }
