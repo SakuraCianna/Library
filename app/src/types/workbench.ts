@@ -10,6 +10,7 @@ export interface KnowledgeSpace {
   path: string;
   defaultPermission: PermissionMode;
   changedFileCount: number;
+  documentQueueCount: number;
   ocrQueueCount: number;
 }
 

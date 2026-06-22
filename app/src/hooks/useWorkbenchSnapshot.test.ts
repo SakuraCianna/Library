@@ -25,6 +25,7 @@ const realSnapshot: WorkbenchSnapshot = {
       path: "D:\\知识库\\真实",
       defaultPermission: "approval",
       changedFileCount: 0,
+      documentQueueCount: 0,
       ocrQueueCount: 0,
     },
   ],
@@ -129,14 +130,19 @@ describe("useWorkbenchSnapshot", () => {
 
   it("读取失败时返回中文错误且不泄漏原始路径", async () => {
     vi.doMock("../lib/tauriClient", () => ({
+      askAgent: vi.fn(),
+      cancelParseJob: vi.fn(),
       createKnowledgeSpace: vi.fn(),
+      enqueueOcrParseJob: vi.fn(),
       getWorkbenchSnapshot: vi.fn(async () => {
         throw new Error("C:\\Users\\Sakura_Cianna\\secret.db");
       }),
+      indexKnowledgeSpace: vi.fn(),
       requestSessionPermission: vi.fn(),
       scanKnowledgeSpace: vi.fn(),
       selectKnowledgeFolder: vi.fn(),
       setDefaultPermission: vi.fn(),
+      startOcrWorker: vi.fn(),
     }));
 
     const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
@@ -216,17 +222,22 @@ describe("useWorkbenchSnapshot", () => {
     let cleanupEffect: (() => void) | undefined;
 
     vi.doMock("../lib/tauriClient", () => ({
+      askAgent: vi.fn(),
+      cancelParseJob: vi.fn(),
       createKnowledgeSpace: vi.fn(),
+      enqueueOcrParseJob: vi.fn(),
       getWorkbenchSnapshot: vi.fn(
         () =>
           new Promise<WorkbenchSnapshot>((resolve) => {
             resolveSnapshot = resolve;
           }),
       ),
+      indexKnowledgeSpace: vi.fn(),
       requestSessionPermission: vi.fn(),
       scanKnowledgeSpace: vi.fn(),
       selectKnowledgeFolder: vi.fn(),
       setDefaultPermission: vi.fn(),
+      startOcrWorker: vi.fn(),
     }));
     vi.doMock("react", async () => {
       const actual = await vi.importActual<typeof import("react")>("react");
