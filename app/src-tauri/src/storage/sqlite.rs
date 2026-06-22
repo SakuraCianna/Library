@@ -11,6 +11,8 @@ use crate::models::{
 
 const DOCUMENT_PARSE_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
 const AUTO_OCR_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"];
+const KNOWLEDGE_BLOCK_MAX_CHARS: usize = 1_800;
+const KNOWLEDGE_BLOCK_MIN_SPLIT_CHARS: usize = 900;
 const FOUNDATION_SCHEMA: &str = include_str!("../../migrations/001_foundation.sql");
 const FOUNDATION_TABLES: [&str; 6] = [
     "knowledge_spaces",
@@ -28,6 +30,13 @@ pub struct SpaceRoot {
 
 pub struct SqliteStore {
     connection: Connection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DocumentKnowledgeBlock {
+    title: String,
+    body: String,
+    source_locator: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1471,22 +1480,25 @@ fn replace_file_knowledge_block_in_tx(
         params![now, space_id, file_id],
     )?;
 
-    tx.execute(
-        "INSERT INTO knowledge_blocks (
-            id, space_id, file_id, title, body, source_kind, source_locator,
-            searchable, created_at, updated_at
-         )
-         VALUES (?1, ?2, ?3, ?4, ?5, 'original_file', ?6, 1, ?7, ?7)",
-        params![
-            Uuid::new_v4().to_string(),
-            space_id,
-            file_id,
-            document.title,
-            format!("{}\n\n{}", document.summary, document.body),
-            document.source_locator,
-            now
-        ],
-    )?;
+    let blocks = document_knowledge_blocks(document);
+    for block in blocks.iter().rev() {
+        tx.execute(
+            "INSERT INTO knowledge_blocks (
+                id, space_id, file_id, title, body, source_kind, source_locator,
+                searchable, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, 'original_file', ?6, 1, ?7, ?7)",
+            params![
+                Uuid::new_v4().to_string(),
+                space_id,
+                file_id,
+                block.title,
+                block.body,
+                block.source_locator,
+                now
+            ],
+        )?;
+    }
 
     tx.execute(
         "UPDATE files
@@ -1496,6 +1508,103 @@ fn replace_file_knowledge_block_in_tx(
     )?;
 
     Ok(())
+}
+
+fn document_knowledge_blocks(document: &ParsedDocument) -> Vec<DocumentKnowledgeBlock> {
+    let chunks = split_knowledge_block_body(&document.body);
+    let total = chunks.len();
+
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, body)| {
+            let block_number = index + 1;
+            let title = if total == 1 {
+                document.title.clone()
+            } else {
+                format!("{} · 片段 {block_number}/{total}", document.title)
+            };
+            let source_locator = if total == 1 {
+                document.source_locator.clone()
+            } else {
+                append_source_block_locator(&document.source_locator, block_number)
+            };
+
+            DocumentKnowledgeBlock {
+                title,
+                body: body.trim().to_string(),
+                source_locator,
+            }
+        })
+        .collect()
+}
+
+fn split_knowledge_block_body(body: &str) -> Vec<String> {
+    let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= KNOWLEDGE_BLOCK_MAX_CHARS {
+        return vec![normalized];
+    }
+
+    let characters = normalized.chars().collect::<Vec<_>>();
+    let mut chunks = Vec::new();
+    let mut start = 0_usize;
+    while start < characters.len() {
+        let target_end = (start + KNOWLEDGE_BLOCK_MAX_CHARS).min(characters.len());
+        let end = if target_end >= characters.len() {
+            target_end
+        } else {
+            find_chunk_boundary(&characters, start, target_end)
+        };
+        let chunk = characters[start..end]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .to_string();
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+
+        start = end;
+        while start < characters.len() && characters[start].is_whitespace() {
+            start += 1;
+        }
+    }
+
+    if chunks.is_empty() {
+        vec![normalized]
+    } else {
+        chunks
+    }
+}
+
+fn find_chunk_boundary(characters: &[char], start: usize, target_end: usize) -> usize {
+    let min_end = (start + KNOWLEDGE_BLOCK_MIN_SPLIT_CHARS).min(target_end);
+    for index in (min_end..target_end).rev() {
+        if is_chunk_boundary(characters[index]) {
+            return index + 1;
+        }
+    }
+
+    target_end
+}
+
+fn is_chunk_boundary(character: char) -> bool {
+    character.is_whitespace()
+        || matches!(
+            character,
+            '。' | '！' | '？' | '；' | '.' | '!' | '?' | ';' | '\n' | '\r'
+        )
+}
+
+fn append_source_block_locator(source_locator: &str, block_number: usize) -> String {
+    let fragment = if source_locator.trim().ends_with("#ocr") {
+        format!("ocr-block-{block_number:03}")
+    } else {
+        format!("block-{block_number:03}")
+    };
+    let source_path = strip_known_source_fragment(source_locator);
+
+    format!("{source_path}#{fragment}")
 }
 
 fn mark_file_parse_failed_in_tx(
@@ -1689,10 +1798,34 @@ fn display_file_name(relative_path: &str) -> String {
 }
 
 fn display_source_file_name(source_locator: &str) -> String {
-    let source_path = source_locator
-        .strip_suffix("#ocr")
-        .unwrap_or(source_locator);
+    let source_path = strip_known_source_fragment(source_locator);
     display_file_name(source_path)
+}
+
+fn strip_known_source_fragment(source_locator: &str) -> &str {
+    let mut source_path = source_locator.trim();
+
+    while let Some((path, fragment)) = source_path.rsplit_once('#') {
+        if !is_known_source_fragment(fragment) {
+            break;
+        }
+        source_path = path.trim();
+    }
+
+    source_path
+}
+
+fn is_known_source_fragment(fragment: &str) -> bool {
+    fragment == "ocr"
+        || numbered_fragment(fragment, "block-")
+        || numbered_fragment(fragment, "ocr-block-")
+}
+
+fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
+    fragment
+        .strip_prefix(prefix)
+        .map(|value| !value.is_empty() && value.chars().all(|character| character.is_ascii_digit()))
+        .unwrap_or(false)
 }
 
 fn display_extension(extension: String) -> String {
@@ -1999,10 +2132,95 @@ mod tests {
     }
 
     #[test]
+    fn stores_long_parsed_document_as_chunked_searchable_blocks() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("面试", "D:\\知识库\\Redis", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-redis", &space_id, "Redis面试.md", "queued")
+            .expect("file is inserted");
+        let document = ParsedDocument {
+            title: "Redis面试.md".to_string(),
+            body: format!(
+                "{}。{}",
+                "缓存预热和键空间检查".repeat(130),
+                "布隆过滤器可以拦截不存在的键".repeat(100)
+            ),
+            summary: "Redis 缓存穿透资料。".to_string(),
+            source_locator: "Redis面试.md".to_string(),
+        };
+
+        store
+            .replace_file_knowledge_block(&space_id, "file-redis", &document)
+            .expect("knowledge blocks are stored");
+
+        let block_count: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_blocks WHERE file_id = ?1 AND searchable = 1",
+                ["file-redis"],
+                |row| row.get(0),
+            )
+            .expect("block count query works");
+        let hits = store
+            .search_knowledge_blocks(&space_id, "布隆过滤器", 3)
+            .expect("search succeeds");
+
+        assert_eq!(block_count, 2);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_locator, "Redis面试.md#block-002");
+        assert_eq!(hits[0].source_file_name, "Redis面试.md");
+        assert!(hits[0].title.contains("片段 2/2"));
+        assert!(hits[0].excerpt.contains("布隆过滤器"));
+    }
+
+    #[test]
+    fn stores_long_ocr_document_with_ocr_chunk_locators() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("OCR", "D:\\知识库\\OCR", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-scan", &space_id, "scan.pdf", "queued")
+            .expect("file is inserted");
+        let document = ParsedDocument {
+            title: "scan.pdf".to_string(),
+            body: format!(
+                "{}。{}",
+                "扫描版第一页内容".repeat(160),
+                "扫描版第二页包含发票金额".repeat(120)
+            ),
+            summary: "扫描版 PDF OCR 结果。".to_string(),
+            source_locator: "scan.pdf#ocr".to_string(),
+        };
+
+        store
+            .replace_file_knowledge_block(&space_id, "file-scan", &document)
+            .expect("knowledge blocks are stored");
+
+        let hits = store
+            .search_knowledge_blocks(&space_id, "发票金额", 3)
+            .expect("search succeeds");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_locator, "scan.pdf#ocr-block-002");
+        assert_eq!(hits[0].source_file_name, "scan.pdf");
+        assert!(hits[0].title.contains("片段 2/2"));
+        assert!(hits[0].excerpt.contains("发票金额"));
+    }
+
+    #[test]
     fn source_file_name_hides_ocr_locator_suffix() {
         assert_eq!(
             display_source_file_name("扫描资料\\scan.pdf#ocr"),
             "scan.pdf"
+        );
+        assert_eq!(
+            display_source_file_name("扫描资料\\scan.pdf#ocr-block-002"),
+            "scan.pdf"
+        );
+        assert_eq!(
+            display_source_file_name("docs\\Redis面试.md#block-001"),
+            "Redis面试.md"
         );
         assert_eq!(display_source_file_name("Redis面试.md"), "Redis面试.md");
     }
