@@ -111,6 +111,16 @@ export interface ParseJobSummary {
   phase: string;
 }
 
+export interface BackupExportResult {
+  path: string;
+  fileName: string;
+  sizeBytes: number;
+  exportedAt: string;
+  fileCount: number;
+  knowledgeBlockCount: number;
+  parseJobCount: number;
+}
+
 export interface WorkbenchSnapshot {
   spaces: KnowledgeSpace[];
   activeSpaceId: string;

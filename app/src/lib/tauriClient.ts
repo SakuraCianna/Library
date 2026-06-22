@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import type {
+  BackupExportResult,
   KnowledgeBlockContext,
   OcrEnvironmentReport,
   PermissionMode,
@@ -45,9 +46,11 @@ const browserOcrEnvironmentReport: OcrEnvironmentReport = {
 };
 
 function isTauriRuntime() {
-  const tauriInternals = (globalThis as {
-    __TAURI_INTERNALS__?: { invoke?: unknown };
-  }).__TAURI_INTERNALS__;
+  const tauriInternals = (
+    globalThis as {
+      __TAURI_INTERNALS__?: { invoke?: unknown };
+    }
+  ).__TAURI_INTERNALS__;
 
   return isTauri() || typeof tauriInternals?.invoke === "function";
 }
@@ -311,5 +314,17 @@ export async function setDefaultPermission(
 
   return invoke<WorkbenchSnapshot>("set_default_permission", {
     request: { spaceId, permission },
+  });
+}
+
+export async function exportSpaceBackup(
+  spaceId: string,
+): Promise<BackupExportResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器预览无法导出本地备份，请在桌面应用中运行。");
+  }
+
+  return invoke<BackupExportResult>("export_space_backup", {
+    request: { spaceId, fileName: null },
   });
 }

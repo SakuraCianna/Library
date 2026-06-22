@@ -1,14 +1,17 @@
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
+use time::OffsetDateTime;
+
 use crate::error::AppError;
 use crate::models::{
-    can_request_session_permission, ChatMessage, ChatMessageSource, ChatRole, ChatScope,
-    KnowledgeBlockContext, KnowledgeBlockPreview, KnowledgeBlockSearchHit, KnowledgeSpace,
-    OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode, ScanSummary,
-    ScannedFile, TableInsightPreview, WorkbenchSnapshot,
+    can_request_session_permission, BackupExportResult, ChatMessage, ChatMessageSource, ChatRole,
+    ChatScope, KnowledgeBlockContext, KnowledgeBlockPreview, KnowledgeBlockSearchHit,
+    KnowledgeSpace, OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode,
+    ScanSummary, ScannedFile, TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
 use crate::parser::parse_file;
@@ -1115,6 +1118,65 @@ impl AppState {
         self.snapshot()
     }
 
+    pub fn export_space_backup(
+        &self,
+        space_id: String,
+        file_name: Option<String>,
+    ) -> Result<BackupExportResult, AppError> {
+        let backup = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            match store.export_space_backup(&space_id) {
+                Ok(backup) => backup,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    return Err(AppError::Storage("找不到要导出的知识库".to_string()));
+                }
+                Err(error) => {
+                    return Err(AppError::Storage(format!("无法读取备份数据：{error}")));
+                }
+            }
+        };
+        let file_name = resolve_backup_file_name(file_name, &backup.space.id)?;
+        let backup_dir = self.app_data_dir.join("backups");
+        fs::create_dir_all(&backup_dir)
+            .map_err(|error| AppError::Filesystem(format!("无法创建备份目录：{error}")))?;
+        let backup_path = backup_dir.join(&file_name);
+        let body = serde_json::to_vec_pretty(&backup)
+            .map_err(|error| AppError::Storage(format!("无法生成备份 JSON：{error}")))?;
+        let mut backup_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup_path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    AppError::Filesystem("备份文件已存在，请换一个文件名".to_string())
+                } else {
+                    AppError::Filesystem(format!("无法写入备份文件：{error}"))
+                }
+            })?;
+        backup_file
+            .write_all(&body)
+            .map_err(|error| AppError::Filesystem(format!("无法写入备份文件：{error}")))?;
+        let size_bytes = fs::metadata(&backup_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(body.len() as u64);
+
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
+        self.push_system_message(format!("备份已导出：{file_name}。"));
+
+        Ok(BackupExportResult {
+            path: backup_path.to_string_lossy().to_string(),
+            file_name,
+            size_bytes,
+            exported_at: backup.exported_at,
+            file_count: backup.files.len() as u32,
+            knowledge_block_count: backup.knowledge_blocks.len() as u32,
+            parse_job_count: backup.parse_jobs.len() as u32,
+        })
+    }
+
     pub fn request_session_permission(
         &self,
         requested: PermissionMode,
@@ -1311,6 +1373,87 @@ fn validate_folder_path(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+fn resolve_backup_file_name(
+    requested_file_name: Option<String>,
+    space_id: &str,
+) -> Result<String, AppError> {
+    let requested = requested_file_name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| default_backup_file_name(space_id));
+    let mut components = Path::new(&requested).components();
+    let Some(Component::Normal(file_name)) = components.next() else {
+        return Err(AppError::PermissionDenied(
+            "备份文件名不能包含路径或上级目录".to_string(),
+        ));
+    };
+
+    if components.next().is_some() {
+        return Err(AppError::PermissionDenied(
+            "备份文件名不能包含路径或上级目录".to_string(),
+        ));
+    }
+
+    let file_name = file_name.to_string_lossy().trim().to_string();
+    if file_name.is_empty() || file_name == "." || file_name == ".." {
+        return Err(AppError::PermissionDenied(
+            "备份文件名不能包含路径或上级目录".to_string(),
+        ));
+    }
+
+    if file_name.chars().any(is_windows_file_name_forbidden) {
+        return Err(AppError::PermissionDenied(
+            "备份文件名包含 Windows 不支持的字符".to_string(),
+        ));
+    }
+
+    let extension = Path::new(&file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("json") {
+        return Err(AppError::PermissionDenied(
+            "备份文件名必须使用 .json 后缀".to_string(),
+        ));
+    }
+
+    Ok(file_name)
+}
+
+fn default_backup_file_name(space_id: &str) -> String {
+    let timestamp = OffsetDateTime::now_utc().unix_timestamp_nanos();
+    let space_token = sanitize_backup_file_token(space_id);
+    format!("library-backup-{space_token}-{timestamp}.json")
+}
+
+fn sanitize_backup_file_token(value: &str) -> String {
+    let token = value
+        .chars()
+        .filter_map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                Some(character)
+            } else {
+                None
+            }
+        })
+        .take(32)
+        .collect::<String>();
+
+    if token.is_empty() {
+        "space".to_string()
+    } else {
+        token
+    }
+}
+
+fn is_windows_file_name_forbidden(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+        )
+}
+
 fn scan_filesystem_error(error: std::io::Error) -> AppError {
     AppError::Filesystem(format!("无法扫描文件夹：{error}"))
 }
@@ -1456,6 +1599,129 @@ mod tests {
             && job.file_name == "image.png"));
         assert_eq!(scanned.spaces[0].document_queue_count, 1);
         assert_eq!(scanned.spaces[0].ocr_queue_count, 1);
+    }
+
+    #[test]
+    fn export_space_backup_writes_json_under_app_data_backups() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("README.md"), "hello").expect("write md");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "备份空间".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        state
+            .scan_knowledge_space(created.active_space_id.clone())
+            .expect("space scanned");
+
+        let exported = state
+            .export_space_backup(
+                created.active_space_id.clone(),
+                Some("library-backup.json".to_string()),
+            )
+            .expect("backup exported");
+        let backup_path = app_data_dir
+            .path()
+            .join("backups")
+            .join("library-backup.json");
+        let body = fs::read_to_string(&backup_path).expect("backup file is readable");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("backup is json");
+
+        assert_eq!(exported.file_name, "library-backup.json");
+        assert_eq!(exported.path, backup_path.to_string_lossy());
+        assert!(exported.size_bytes > 0);
+        assert_eq!(json["format"], "library.backup.v1");
+        assert_eq!(json["space"]["id"], created.active_space_id);
+        assert_eq!(json["files"][0]["relativePath"], "README.md");
+        assert!(!body.contains("DEEPSEEK_API_KEY"));
+        assert!(!body.contains(".env"));
+        assert!(!body.contains("models\\ocr"));
+    }
+
+    #[test]
+    fn export_space_backup_rejects_path_traversal_file_name() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "备份空间".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let result =
+            state.export_space_backup(created.active_space_id, Some("..\\secret.json".to_string()));
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::PermissionDenied(_))
+        ));
+        assert!(!app_data_dir.path().join("secret.json").exists());
+    }
+
+    #[test]
+    fn export_space_backup_rejects_existing_backup_file_name() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "备份空间".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        fs::create_dir_all(app_data_dir.path().join("backups")).expect("backup dir");
+        let backup_path = app_data_dir
+            .path()
+            .join("backups")
+            .join("library-backup.json");
+        fs::write(&backup_path, "existing backup").expect("existing backup");
+
+        let result = state.export_space_backup(
+            created.active_space_id,
+            Some("library-backup.json".to_string()),
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Filesystem(message)) if message.contains("备份文件已存在")
+        ));
+        assert_eq!(
+            fs::read_to_string(&backup_path).expect("existing backup is readable"),
+            "existing backup"
+        );
+    }
+
+    #[test]
+    fn export_space_backup_rejects_missing_workspace() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+
+        let result = state.export_space_backup("missing-space".to_string(), None);
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::Storage(message)) if message.contains("找不到要导出的知识库")
+        ));
     }
 
     #[test]

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import type {
+  BackupExportResult,
   OcrEnvironmentReport,
   ParseJobSummary,
   WorkbenchSnapshot,
@@ -82,6 +83,16 @@ const ocrEnvironmentReport: OcrEnvironmentReport = {
       message: "paddleocr installed",
     },
   ],
+};
+
+const backupExportResult: BackupExportResult = {
+  path: "E:\\Library\\backups\\library-backup.json",
+  fileName: "library-backup.json",
+  sizeBytes: 512,
+  exportedAt: "2026-06-23T00:00:00Z",
+  fileCount: 2,
+  knowledgeBlockCount: 1,
+  parseJobCount: 0,
 };
 
 const answeredSnapshot: WorkbenchSnapshot = {
@@ -194,13 +205,19 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { name: "知识库" })).toBeInTheDocument();
     expect(await screen.findByText("暂无知识库文件夹")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "未选择文件夹" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "未选择文件夹" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("请先添加一个真实文件夹")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /面试/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /面试/ }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("待批准操作")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    expect(await screen.findByRole("dialog", { name: "常规" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("dialog", { name: "常规" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("当前知识库")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "模型与 OCR" }));
     expect(await screen.findByText("DeepSeek")).toBeInTheDocument();
@@ -213,7 +230,9 @@ describe("App", () => {
 
     expect(await screen.findByLabelText("切换文件夹默认权限")).toBeDisabled();
     expect(screen.getByRole("button", { name: "打开设置" })).toBeEnabled();
-    expect(screen.getByRole("combobox", { name: "切换会话权限" })).toBeDisabled();
+    expect(
+      screen.getByRole("combobox", { name: "切换会话权限" }),
+    ).toBeDisabled();
   });
 
   it("opens the default permission explanation from the gear button", async () => {
@@ -238,13 +257,19 @@ describe("App", () => {
 
     fireEvent.click(gearButton);
 
-    expect(await screen.findByRole("dialog", { name: "常规" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("dialog", { name: "常规" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "关闭设置" })).toHaveFocus();
     expect(screen.getAllByText("文件夹默认权限").length).toBeGreaterThan(0);
     expect(screen.getByText(/长期保存在本地 SQLite/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "权限" }));
-    expect(await screen.findByRole("dialog", { name: "权限" })).toBeInTheDocument();
-    expect(screen.getByText(/会话权限不能超过文件夹默认权限/)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("dialog", { name: "权限" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/会话权限不能超过文件夹默认权限/),
+    ).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -315,6 +340,42 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("exports a local backup from the folder toolbar", async () => {
+    const invocations: Array<{ cmd: string; args?: unknown }> = [];
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd, args) => {
+      invocations.push({ cmd, args });
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "export_space_backup") {
+        return backupExportResult;
+      }
+      return snapshotWithSpace;
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "真实知识库" });
+    fireEvent.click(screen.getByRole("button", { name: "导出备份" }));
+
+    expect(
+      await screen.findByText(/备份已导出 library-backup\.json/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/2 个文件 · 1 个知识块/)).toBeInTheDocument();
+    expect(invocations).toContainEqual({
+      cmd: "export_space_backup",
+      args: {
+        request: {
+          spaceId: "space-real",
+          fileName: null,
+        },
+      },
+    });
+  });
+
   it("sends a sidebar question through the agent command and renders the answer", async () => {
     const invocations: Array<{ cmd: string; args?: unknown }> = [];
     Object.defineProperty(globalThis, "isTauri", {
@@ -353,8 +414,12 @@ describe("App", () => {
     expect(screen.getByLabelText("回答来源")).toBeInTheDocument();
     expect(screen.getByText("Redis面试.md")).toBeInTheDocument();
     expect(screen.getByText("原始文件")).toBeInTheDocument();
-    expect(screen.getByText("定位：Redis面试.md#block-001")).toBeInTheDocument();
-    expect(screen.getByText("缓存穿透需要空值缓存和布隆过滤器。")).toBeInTheDocument();
+    expect(
+      screen.getByText("定位：Redis面试.md#block-001"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("缓存穿透需要空值缓存和布隆过滤器。"),
+    ).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", {
@@ -370,9 +435,13 @@ describe("App", () => {
     expect(
       within(sourcePanel).getByText("缓存穿透需要空值缓存和布隆过滤器。"),
     ).toBeInTheDocument();
-    expect(await within(sourcePanel).findByText("片段 1/2")).toBeInTheDocument();
+    expect(
+      await within(sourcePanel).findByText("片段 1/2"),
+    ).toBeInTheDocument();
 
-    fireEvent.click(within(sourcePanel).getByRole("button", { name: "下一片段" }));
+    fireEvent.click(
+      within(sourcePanel).getByRole("button", { name: "下一片段" }),
+    );
     expect(
       within(sourcePanel).getByText("Redis 缓存穿透 · 片段 2/2"),
     ).toBeInTheDocument();
@@ -381,11 +450,13 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(within(sourcePanel).getByText("片段 2/2")).toBeInTheDocument();
 
-    fireEvent.click(within(sourcePanel).getByRole("button", { name: "打开文件" }));
+    fireEvent.click(
+      within(sourcePanel).getByRole("button", { name: "打开文件" }),
+    );
     await waitFor(() =>
-      expect(invocations.some((invocation) => invocation.cmd === "open_source_file")).toBe(
-        true,
-      ),
+      expect(
+        invocations.some((invocation) => invocation.cmd === "open_source_file"),
+      ).toBe(true),
     );
     expect(invocations).toContainEqual({
       cmd: "open_source_file",
@@ -397,8 +468,12 @@ describe("App", () => {
       },
     });
 
-    fireEvent.click(within(sourcePanel).getByRole("button", { name: "查看最新" }));
-    expect(screen.getByRole("article", { name: "知识块预览" })).toBeInTheDocument();
+    fireEvent.click(
+      within(sourcePanel).getByRole("button", { name: "查看最新" }),
+    );
+    expect(
+      screen.getByRole("article", { name: "知识块预览" }),
+    ).toBeInTheDocument();
   });
 
   it("labels table insight sources in assistant answers", async () => {
@@ -426,16 +501,18 @@ describe("App", () => {
 
     expect(await screen.findByText("表格洞察")).toBeInTheDocument();
     expect(screen.getByText("经营报表.xlsx")).toBeInTheDocument();
-    expect(screen.getByText("定位：经营报表.xlsx#sheet-001")).toBeInTheDocument();
-    expect(screen.getAllByText(/2026-06 \| 120 \| 70/).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("定位：经营报表.xlsx#sheet-001"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/2026-06 \| 120 \| 70/).length).toBeGreaterThan(
+      0,
+    );
   });
 
   it("renders parse queue status when jobs exist", async () => {
     const snapshotWithJob = {
       ...snapshotWithSpace,
-      parseJobs: [
-        parseJob({ id: "job-1", fileId: "file-scan" }),
-      ],
+      parseJobs: [parseJob({ id: "job-1", fileId: "file-scan" })],
     };
     Object.defineProperty(globalThis, "isTauri", {
       configurable: true,
@@ -512,7 +589,9 @@ describe("App", () => {
     });
     render(<App />);
 
-    expect(await screen.findByText("本地 OCR · 已识别第 1/2 页")).toBeInTheDocument();
+    expect(
+      await screen.findByText("本地 OCR · 已识别第 1/2 页"),
+    ).toBeInTheDocument();
     expect(screen.getByText("1/2")).toBeInTheDocument();
   });
 
@@ -531,9 +610,7 @@ describe("App", () => {
     };
     const queuedSnapshot = {
       ...snapshotWithPdf,
-      parseJobs: [
-        parseJob(),
-      ],
+      parseJobs: [parseJob()],
     };
     Object.defineProperty(globalThis, "isTauri", {
       configurable: true,
@@ -554,7 +631,9 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "排队 OCR scan.pdf" }));
 
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "排队 OCR scan.pdf" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "排队 OCR scan.pdf" }),
+    ).toBeDisabled();
   });
 
   it("queues an image file for OCR through the desktop command", async () => {
@@ -598,7 +677,9 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "排队 OCR scan.png" }));
 
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "排队 OCR scan.png" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "排队 OCR scan.png" }),
+    ).toBeDisabled();
   });
 
   it("starts folder scanning through the scan command", async () => {
@@ -643,7 +724,9 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "扫描" }));
 
     expect(await screen.findByText("文件夹扫描")).toBeInTheDocument();
-    expect(screen.getByText("文件夹扫描 · 正在扫描 README.md")).toBeInTheDocument();
+    expect(
+      screen.getByText("文件夹扫描 · 正在扫描 README.md"),
+    ).toBeInTheDocument();
     expect(screen.getByText("已处理 3")).toBeInTheDocument();
     expect(commands).toContain("scan_knowledge_space");
 
@@ -657,9 +740,7 @@ describe("App", () => {
   it("starts the OCR worker through the desktop command", async () => {
     const snapshotWithJob = {
       ...snapshotWithSpace,
-      parseJobs: [
-        parseJob(),
-      ],
+      parseJobs: [parseJob()],
     };
     const finishedSnapshot = {
       ...snapshotWithJob,
@@ -764,7 +845,9 @@ describe("App", () => {
     });
     render(<App />);
 
-    expect(await screen.findByText("本地 OCR · 正在执行本地 OCR")).toBeInTheDocument();
+    expect(
+      await screen.findByText("本地 OCR · 正在执行本地 OCR"),
+    ).toBeInTheDocument();
     await waitFor(() =>
       expect(eventListenMock).toHaveBeenCalledWith(
         "workbench-updated",
@@ -775,7 +858,9 @@ describe("App", () => {
     currentSnapshot = snapshotAfterEvent;
     emitWorkbenchUpdate?.();
 
-    expect(await screen.findByText("事件刷新后的 OCR 文本")).toBeInTheDocument();
+    expect(
+      await screen.findByText("事件刷新后的 OCR 文本"),
+    ).toBeInTheDocument();
     expect(
       commands.filter((command) => command === "get_workbench_snapshot").length,
     ).toBeGreaterThan(1);
@@ -845,7 +930,9 @@ describe("App", () => {
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "启动文档" }));
 
-    expect(await screen.findByText("缓存穿透需要空值缓存和布隆过滤器。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("缓存穿透需要空值缓存和布隆过滤器。"),
+    ).toBeInTheDocument();
     expect(screen.getByText("文档解析 · 已完成")).toBeInTheDocument();
   });
 
@@ -895,9 +982,7 @@ describe("App", () => {
   it("shows an error when running a queued OCR job fails", async () => {
     const snapshotWithJob = {
       ...snapshotWithSpace,
-      parseJobs: [
-        parseJob(),
-      ],
+      parseJobs: [parseJob()],
     };
     Object.defineProperty(globalThis, "isTauri", {
       configurable: true,
