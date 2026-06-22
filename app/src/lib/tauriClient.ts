@@ -45,7 +45,11 @@ const browserOcrEnvironmentReport: OcrEnvironmentReport = {
 };
 
 function isTauriRuntime() {
-  return isTauri();
+  const tauriInternals = (globalThis as {
+    __TAURI_INTERNALS__?: { invoke?: unknown };
+  }).__TAURI_INTERNALS__;
+
+  return isTauri() || typeof tauriInternals?.invoke === "function";
 }
 
 function deriveSpaceName(rootPath: string) {

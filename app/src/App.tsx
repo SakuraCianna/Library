@@ -1,6 +1,5 @@
 import bookmarkPlusIcon from "@iconify-icons/lucide/bookmark-plus";
 import checkIcon from "@iconify-icons/lucide/check";
-import chevronDownIcon from "@iconify-icons/lucide/chevron-down";
 import chevronLeftIcon from "@iconify-icons/lucide/chevron-left";
 import chevronRightIcon from "@iconify-icons/lucide/chevron-right";
 import eyeIcon from "@iconify-icons/lucide/eye";
@@ -12,7 +11,7 @@ import sendIcon from "@iconify-icons/lucide/send";
 import settingsIcon from "@iconify-icons/lucide/settings";
 import xIcon from "@iconify-icons/lucide/x";
 import { Icon } from "@iconify/react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
@@ -42,9 +41,20 @@ const scopeLabel: Record<ChatScope, string> = {
   all: "全库",
 };
 
-const tabs = ["总览", "文件", "知识块", "表格", "回收站"];
+const tabs = ["总览", "文件", "知识块", "表格", "回收站"] as const;
 const scopes = Object.keys(scopeLabel) as ChatScope[];
 const permissionOptions = Object.keys(permissionLabel) as PermissionMode[];
+type WorkbenchTab = (typeof tabs)[number];
+type SettingsSection = "general" | "runtime" | "permissions";
+const settingsSections: ReadonlyArray<{
+  id: SettingsSection;
+  label: string;
+  icon: typeof settingsIcon;
+}> = [
+  { id: "general", label: "常规", icon: settingsIcon },
+  { id: "runtime", label: "模型与 OCR", icon: fileSearchIcon },
+  { id: "permissions", label: "权限", icon: eyeIcon },
+];
 const jobStatusLabel: Record<string, string> = {
   queued: "等待中",
   running: "运行中",
@@ -136,8 +146,13 @@ function sourceKindLabel(sourceKind?: string) {
 }
 
 export default function App() {
-  const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
-    useState(false);
+  const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const settingsModalRef = useRef<HTMLElement | null>(null);
+  const settingsOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const [activeTab, setActiveTab] = useState<WorkbenchTab>("总览");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeSettingsSection, setActiveSettingsSection] =
+    useState<SettingsSection>("general");
   const [selectedSource, setSelectedSource] =
     useState<ChatMessageSource | null>(null);
   const [sourceContext, setSourceContext] =
@@ -233,6 +248,20 @@ export default function App() {
     canShowSourceContext &&
     sourceContextIndex !== null &&
     sourceContextIndex < sourceContext.blocks.length - 1;
+  const activeSettingsTitle =
+    settingsSections.find((section) => section.id === activeSettingsSection)?.label ??
+    "常规";
+
+  function closeSettings() {
+    setSettingsOpen(false);
+    window.setTimeout(() => settingsOpenerRef.current?.focus(), 0);
+  }
+
+  function openSettings(event: MouseEvent<HTMLButtonElement>) {
+    settingsOpenerRef.current = event.currentTarget;
+    setActiveSettingsSection("general");
+    setSettingsOpen(true);
+  }
 
   useEffect(() => {
     const hasActivePollingWindow = Date.now() < queuePollingUntil;
@@ -251,6 +280,62 @@ export default function App() {
 
     return () => window.clearInterval(timer);
   }, [hasRunningParseJob, queuePollingUntil, refreshSnapshot]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+
+    settingsCloseButtonRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeSettings();
+        return;
+      }
+
+      if (event.key !== "Tab" || !settingsModalRef.current) {
+        return;
+      }
+
+      const focusableElements = Array.from(
+        settingsModalRef.current.querySelectorAll<HTMLElement>(
+          [
+            "button:not([disabled])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            "input:not([disabled])",
+            "a[href]",
+            '[tabindex]:not([tabindex="-1"])',
+          ].join(","),
+        ),
+      ).filter(
+        (element) =>
+          !element.hasAttribute("disabled") &&
+          element.getAttribute("aria-hidden") !== "true",
+      );
+
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const firstFocusable = focusableElements[0];
+      const lastFocusable = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+
+      if (event.shiftKey && activeElement === firstFocusable) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && activeElement === lastFocusable) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [settingsOpen]);
 
   useEffect(() => {
     setSelectedSource(null);
@@ -342,6 +427,14 @@ export default function App() {
     }
   }
 
+  function handleAddFocusedSourceToReview() {
+    if (!canOpenFocusedSource) {
+      return;
+    }
+
+    setSourceOpenError("复习队列还未接入，当前可以先查看或打开这个来源。");
+  }
+
   function selectSourceContextBlock(nextIndex: number) {
     if (!sourceContext || nextIndex < 0 || nextIndex >= sourceContext.blocks.length) {
       return;
@@ -403,13 +496,10 @@ export default function App() {
           <div className={styles.defaultPermissionHeader}>
             <span>默认权限</span>
             <button
-              aria-label="打开默认权限设置"
+              aria-label="打开设置"
               className={styles.iconButton}
-              aria-expanded={showDefaultPermissionHelp}
-              onClick={() =>
-                setShowDefaultPermissionHelp((currentValue) => !currentValue)
-              }
-              title="默认权限设置"
+              onClick={openSettings}
+              title="打开设置"
               type="button"
             >
               <Icon aria-hidden icon={settingsIcon} />
@@ -430,87 +520,6 @@ export default function App() {
               </option>
             ))}
           </select>
-          {showDefaultPermissionHelp ? (
-            <div className={styles.permissionHelp}>
-              <strong>默认权限</strong>
-              <p>
-                默认权限是这个文件夹长期保存的 Agent 操作边界；右侧会话权限只影响当前聊天。
-              </p>
-              <div className={styles.runtimeStatus}>
-                <div className={styles.runtimeRow}>
-                  <span>DeepSeek</span>
-                  <strong>
-                    {runtimeStatus?.deepseek.model ?? "deepseek-v4-flash"}
-                  </strong>
-                </div>
-                <div className={styles.runtimeMeta}>
-                  {runtimeStatus?.deepseek.configured
-                    ? `密钥 ${runtimeStatus.deepseek.keyHint}`
-                    : "密钥未配置"}
-                </div>
-                <div className={styles.runtimeRow}>
-                  <span>本地 OCR</span>
-                  <strong>{runtimeStatus?.ocr.configured ? "已就绪" : "未就绪"}</strong>
-                </div>
-                <div className={styles.runtimeMeta}>
-                  {runtimeStatusError ??
-                    (runtimeStatus?.ocr.configured
-                      ? `模型目录 ${runtimeStatus.ocr.modelDir}`
-                      : `缺少 ${
-                          runtimeStatus?.ocr.missingModels.join("、") ?? "OCR 模型"
-                        }`)}
-                </div>
-                <div className={styles.runtimeActions}>
-                  <button
-                    className={styles.plainButton}
-                    disabled={checkingOcrEnvironment}
-                    onClick={() => void checkOcrEnvironment()}
-                    type="button"
-                  >
-                    <Icon aria-hidden icon={refreshCwIcon} />
-                    <span>{checkingOcrEnvironment ? "自检中" : "自检"}</span>
-                  </button>
-                  {ocrEnvironmentReport ? (
-                    <span
-                      className={
-                        ocrEnvironmentReport.ok
-                          ? styles.runtimeCheckOk
-                          : styles.runtimeCheckFailed
-                      }
-                    >
-                      {ocrEnvironmentReport.ok ? "通过" : "未通过"}
-                    </span>
-                  ) : null}
-                </div>
-                {ocrEnvironmentError ? (
-                  <div className={styles.runtimeIssue}>{ocrEnvironmentError}</div>
-                ) : null}
-                {ocrEnvironmentReport ? (
-                  <div className={styles.runtimeChecks}>
-                    {ocrEnvironmentReport.checks.map((check) => (
-                      <div className={styles.runtimeCheckRow} key={check.name}>
-                        <span className={ocrCheckStatusClass(check)}>
-                          {check.ok ? "OK" : "FAIL"}
-                        </span>
-                        <div>
-                          <strong>{check.name}</strong>
-                          <span>{ocrCheckDetail(check)}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <button
-                className={styles.helpToggle}
-                onClick={() => setShowDefaultPermissionHelp(false)}
-                type="button"
-              >
-                <span>收起说明</span>
-                <Icon aria-hidden icon={chevronDownIcon} />
-              </button>
-            </div>
-          ) : null}
         </section>
       </aside>
 
@@ -551,11 +560,12 @@ export default function App() {
         </header>
 
         <nav className={styles.tabs} aria-label="内容标签">
-          {tabs.map((tab, index) => (
+          {tabs.map((tab) => (
             <button
-              aria-current={index === 0 ? "page" : undefined}
-              className={index === 0 ? styles.tabActive : styles.tab}
+              aria-current={activeTab === tab ? "page" : undefined}
+              className={activeTab === tab ? styles.tabActive : styles.tab}
               key={tab}
+              onClick={() => setActiveTab(tab)}
               type="button"
             >
               {tab}
@@ -693,7 +703,17 @@ export default function App() {
                     <span>查看最新</span>
                   </button>
                 ) : null}
-                <button className={styles.plainButton} type="button">
+                <button
+                  className={styles.plainButton}
+                  disabled={!canOpenFocusedSource}
+                  onClick={handleAddFocusedSourceToReview}
+                  title={
+                    canOpenFocusedSource
+                      ? "复习队列还未接入"
+                      : "先选择一个可用来源"
+                  }
+                  type="button"
+                >
                   <Icon aria-hidden icon={bookmarkPlusIcon} />
                   <span>加入复习</span>
                 </button>
@@ -845,11 +865,12 @@ export default function App() {
                 aria-pressed={snapshot.activeScope === scope}
                 className={
                   snapshot.activeScope === scope
-                    ? styles.scopeActive
+                    ? styles.scopeDisabledActive
                     : styles.scope
                 }
-                disabled={!hasActiveSpace}
+                disabled
                 key={scope}
+                title="范围切换将在后续检索范围模块接入"
                 type="button"
               >
                 {scopeLabel[scope]}
@@ -930,6 +951,255 @@ export default function App() {
           </div>
         </form>
       </aside>
+
+      {settingsOpen ? (
+        <div
+          className={styles.settingsBackdrop}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeSettings();
+            }
+          }}
+        >
+          <section
+            aria-labelledby="settings-modal-title"
+            aria-modal="true"
+            className={styles.settingsModal}
+            ref={settingsModalRef}
+            role="dialog"
+          >
+            <aside className={styles.settingsSidebar} aria-label="设置分类">
+              <button
+                aria-label="关闭设置"
+                className={styles.settingsClose}
+                onClick={closeSettings}
+                ref={settingsCloseButtonRef}
+                type="button"
+              >
+                <Icon aria-hidden icon={xIcon} />
+              </button>
+              <nav className={styles.settingsNav}>
+                {settingsSections.map((section) => (
+                  <button
+                    aria-current={
+                      activeSettingsSection === section.id ? "page" : undefined
+                    }
+                    className={
+                      activeSettingsSection === section.id
+                        ? styles.settingsNavItemActive
+                        : styles.settingsNavItem
+                    }
+                    key={section.id}
+                    onClick={() => setActiveSettingsSection(section.id)}
+                    type="button"
+                  >
+                    <Icon aria-hidden icon={section.icon} />
+                    <span>{section.label}</span>
+                  </button>
+                ))}
+              </nav>
+            </aside>
+
+            <div className={styles.settingsContent}>
+              <h2 className={styles.settingsTitle} id="settings-modal-title">
+                {activeSettingsTitle}
+              </h2>
+              <div className={styles.settingsDivider} />
+
+              {activeSettingsSection === "general" ? (
+                <div className={styles.settingList}>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>当前知识库</strong>
+                      <span>{activeSpace?.path ?? "尚未选择真实文件夹"}</span>
+                    </div>
+                    <span className={styles.settingValue}>
+                      {activeSpace?.name ?? "未选择"}
+                    </span>
+                  </div>
+                  <label className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>文件夹默认权限</strong>
+                      <span>长期保存在本地 SQLite 中的 Agent 操作边界</span>
+                    </div>
+                    <select
+                      aria-label="设置中的文件夹默认权限"
+                      className={styles.settingInlineSelect}
+                      disabled={!hasActiveSpace}
+                      value={defaultPermission}
+                      onChange={(event) =>
+                        void setFolderDefaultPermission(
+                          event.target.value as PermissionMode,
+                        )
+                      }
+                    >
+                      {permissionOptions.map((permission) => (
+                        <option key={permission} value={permission}>
+                          {permissionLabel[permission]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>当前视图</strong>
+                      <span>中间工作区的内容标签</span>
+                    </div>
+                    <span className={styles.settingValue}>{activeTab}</span>
+                  </div>
+                </div>
+              ) : null}
+
+              {activeSettingsSection === "runtime" ? (
+                <div className={styles.settingList}>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>DeepSeek</strong>
+                      <span>
+                        {runtimeStatus?.deepseek.configured
+                          ? `密钥 ${runtimeStatus.deepseek.keyHint}`
+                          : "密钥未配置"}
+                      </span>
+                    </div>
+                    <span className={styles.settingValue}>
+                      {runtimeStatus?.deepseek.model ?? "deepseek-v4-flash"}
+                    </span>
+                  </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>本地 OCR</strong>
+                      <span>
+                        {runtimeStatusError ??
+                          (runtimeStatus?.ocr.configured
+                            ? `模型目录 ${runtimeStatus.ocr.modelDir}`
+                            : `缺少 ${
+                                runtimeStatus?.ocr.missingModels.join("、") ??
+                                "OCR 模型"
+                              }`)}
+                      </span>
+                    </div>
+                    <span
+                      className={
+                        runtimeStatus?.ocr.configured
+                          ? styles.runtimeCheckOk
+                          : styles.runtimeCheckFailed
+                      }
+                    >
+                      {runtimeStatus?.ocr.configured ? "已就绪" : "未就绪"}
+                    </span>
+                  </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>OCR 环境自检</strong>
+                      <span>检查模型文件、sidecar 和本地 Python 依赖</span>
+                    </div>
+                    <div className={styles.settingControl}>
+                      <button
+                        className={styles.plainButton}
+                        disabled={checkingOcrEnvironment}
+                        onClick={() => void checkOcrEnvironment()}
+                        type="button"
+                      >
+                        <Icon aria-hidden icon={refreshCwIcon} />
+                        <span>{checkingOcrEnvironment ? "自检中" : "自检"}</span>
+                      </button>
+                      {ocrEnvironmentReport ? (
+                        <span
+                          className={
+                            ocrEnvironmentReport.ok
+                              ? styles.runtimeCheckOk
+                              : styles.runtimeCheckFailed
+                          }
+                        >
+                          {ocrEnvironmentReport.ok ? "通过" : "未通过"}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  {ocrEnvironmentError ? (
+                    <div className={styles.runtimeIssue}>{ocrEnvironmentError}</div>
+                  ) : null}
+                  {ocrEnvironmentReport ? (
+                    <div className={styles.runtimeChecks}>
+                      {ocrEnvironmentReport.checks.map((check) => (
+                        <div className={styles.runtimeCheckRow} key={check.name}>
+                          <span className={ocrCheckStatusClass(check)}>
+                            {check.ok ? "OK" : "FAIL"}
+                          </span>
+                          <div>
+                            <strong>{check.name}</strong>
+                            <span>{ocrCheckDetail(check)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {activeSettingsSection === "permissions" ? (
+                <div className={styles.settingList}>
+                  <label className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>文件夹默认权限</strong>
+                      <span>影响当前文件夹后续会话的默认上限</span>
+                    </div>
+                    <select
+                      aria-label="设置中的默认权限"
+                      className={styles.settingInlineSelect}
+                      disabled={!hasActiveSpace}
+                      value={defaultPermission}
+                      onChange={(event) =>
+                        void setFolderDefaultPermission(
+                          event.target.value as PermissionMode,
+                        )
+                      }
+                    >
+                      {permissionOptions.map((permission) => (
+                        <option key={permission} value={permission}>
+                          {permissionLabel[permission]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>当前会话权限</strong>
+                      <span>只作用于右侧智能助手的本次聊天</span>
+                    </div>
+                    <select
+                      aria-label="设置中的会话权限"
+                      className={styles.settingInlineSelect}
+                      disabled={!hasActiveSpace}
+                      value={snapshot.sessionPermission}
+                      onChange={(event) =>
+                        void setSessionPermission(
+                          event.target.value as PermissionMode,
+                        )
+                      }
+                    >
+                      {permissionOptions.map((permission) => (
+                        <option key={permission} value={permission}>
+                          {permissionLabel[permission]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>权限边界</strong>
+                      <span>会话权限不能超过文件夹默认权限允许的上限</span>
+                    </div>
+                    <span className={styles.settingValue}>
+                      {hasActiveSpace ? "已约束" : "等待文件夹"}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
