@@ -64,7 +64,7 @@ async fn call_deepseek(
         messages: vec![
             ChatMessagePayload {
                 role: "system".to_string(),
-                content: "你是本地优先桌面知识库助手。只能基于给定本地索引内容回答；回答要简洁，并在末尾列出来源文件。".to_string(),
+                content: "你是本地优先桌面知识库助手。只能基于给定本地索引内容回答；回答要简洁，不要编造来源，并在末尾列出用到的来源编号和来源文件。".to_string(),
             },
             ChatMessagePayload {
                 role: "user".to_string(),
@@ -97,14 +97,18 @@ async fn call_deepseek(
 fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {
     let mut context = String::new();
 
-    for hit in hits {
+    for (index, hit) in hits.iter().enumerate() {
         if context.chars().count() >= MAX_CONTEXT_CHARS {
             break;
         }
 
         context.push_str(&format!(
-            "来源文件：{}\n标题：{}\n内容：{}\n\n",
-            hit.source_file_name, hit.title, hit.excerpt
+            "[来源 {}]\n来源文件：{}\n来源定位：{}\n标题：{}\n内容：{}\n\n",
+            index + 1,
+            hit.source_file_name,
+            hit.source_locator,
+            hit.title,
+            hit.excerpt
         ));
     }
 

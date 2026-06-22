@@ -735,6 +735,65 @@
   background: #e9f2ff;
 }
 
+.messageContent {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.messageSources {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+  border-top: 1px solid rgba(91, 122, 161, 0.26);
+  padding-top: 8px;
+}
+
+.messageSourcesTitle {
+  color: #49627f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.messageSourceList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.messageSourceItem {
+  display: grid;
+  gap: 2px;
+  border: 1px solid #cdddf0;
+  border-radius: var(--radius-control);
+  background: rgba(255, 255, 255, 0.58);
+  padding: 7px;
+}
+
+.messageSourceItem strong,
+.messageSourceItem span,
+.messageSourceItem p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.messageSourceItem strong {
+  color: #24384f;
+  font-size: 12px;
+}
+
+.messageSourceItem span {
+  color: #51657d;
+  font-size: 11px;
+}
+
+.messageSourceItem p {
+  margin: 2px 0 0;
+  color: #334862;
+  font-size: 12px;
+}
+
 .messageSystem {
   color: var(--color-muted);
 }

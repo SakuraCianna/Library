@@ -1573,7 +1573,7 @@ fn row_to_search_hit(row: &Row<'_>, term: &str) -> rusqlite::Result<KnowledgeBlo
         id: row.get(0)?,
         title: row.get(1)?,
         excerpt: build_excerpt(&body, term),
-        source_file_name: display_file_name(&source_locator),
+        source_file_name: display_source_file_name(&source_locator),
         source_locator,
     })
 }
@@ -1688,6 +1688,13 @@ fn display_file_name(relative_path: &str) -> String {
         .to_string()
 }
 
+fn display_source_file_name(source_locator: &str) -> String {
+    let source_path = source_locator
+        .strip_suffix("#ocr")
+        .unwrap_or(source_locator);
+    display_file_name(source_path)
+}
+
 fn display_extension(extension: String) -> String {
     if extension.starts_with('.') {
         extension
@@ -1698,7 +1705,7 @@ fn display_extension(extension: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::SqliteStore;
+    use super::{display_source_file_name, SqliteStore};
     use crate::models::{ParsedDocument, PermissionMode, ScannedFile};
     use rusqlite::{params, Connection};
 
@@ -1989,6 +1996,15 @@ mod tests {
         assert_eq!(hits[0].source_file_name, "Redis面试.md");
         assert!(hits[0].excerpt.contains("缓存穿透"));
         assert_eq!(files[0].status, crate::models::ParseStatus::Indexed);
+    }
+
+    #[test]
+    fn source_file_name_hides_ocr_locator_suffix() {
+        assert_eq!(
+            display_source_file_name("扫描资料\\scan.pdf#ocr"),
+            "scan.pdf"
+        );
+        assert_eq!(display_source_file_name("Redis面试.md"), "Redis面试.md");
     }
 
     #[test]

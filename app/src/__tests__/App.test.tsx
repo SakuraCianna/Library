@@ -82,11 +82,21 @@ const answeredSnapshot: WorkbenchSnapshot = {
       id: "msg-user-redis",
       role: "user",
       content: "缓存穿透怎么处理？",
+      sources: [],
     },
     {
       id: "msg-assistant-redis",
       role: "assistant",
       content: "缓存穿透可以用空值缓存、布隆过滤器和参数校验处理。",
+      sources: [
+        {
+          id: "block-redis",
+          title: "Redis 缓存穿透",
+          excerpt: "缓存穿透需要空值缓存和布隆过滤器。",
+          sourceFileName: "Redis面试.md",
+          sourceLocator: "Redis面试.md",
+        },
+      ],
     },
   ],
 };
@@ -236,6 +246,10 @@ describe("App", () => {
     fireEvent.click(within(composer).getByRole("button", { name: "发送" }));
 
     expect(await screen.findByText(/空值缓存、布隆过滤器/)).toBeInTheDocument();
+    expect(screen.getByLabelText("回答来源")).toBeInTheDocument();
+    expect(screen.getByText("Redis面试.md")).toBeInTheDocument();
+    expect(screen.getByText("定位：Redis面试.md")).toBeInTheDocument();
+    expect(screen.getByText("缓存穿透需要空值缓存和布隆过滤器。")).toBeInTheDocument();
   });
 
   it("renders parse queue status when jobs exist", async () => {

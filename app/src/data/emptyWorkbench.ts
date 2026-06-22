@@ -23,6 +23,7 @@ export const emptyWorkbench: WorkbenchSnapshot = {
       id: "msg-empty",
       role: "system",
       content: "请点击新建选择一个真实文件夹。",
+      sources: [],
     },
   ],
   pendingAction: null,
