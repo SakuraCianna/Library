@@ -124,10 +124,13 @@ $env:DEEPSEEK_MODEL = "deepseek-v4-flash"
 $env:DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 ```
 
-OCR 模型默认使用 PP-OCRv6 medium。模型文件默认下载到 `models/ocr/pp-ocrv6`，该目录已被 Git 忽略。
+OCR 模型默认使用 PP-OCRv6 medium。先准备项目本地 Python 环境，避免把下载依赖安装到全局 Python。模型文件默认下载到 `models/ocr/pp-ocrv6`，该目录已被 Git 忽略。
 
 ```powershell
-.\scripts\下载OCR模型.ps1 -Tier medium
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\sidecars\ocr\requirements.txt
+.\scripts\下载OCR模型.ps1 -Tier medium -PythonPath .\.venv\Scripts\python.exe -SkipExisting
+.\scripts\检查OCR环境.ps1 -Tier medium
 $env:OCR_MODEL_DIR = "E:\CodeHome\Library\models\ocr\pp-ocrv6"
 $env:OCR_MAX_PDF_PAGES = "12"
 ```
@@ -135,15 +138,14 @@ $env:OCR_MAX_PDF_PAGES = "12"
 如果希望放到其他目录：
 
 ```powershell
-.\scripts\下载OCR模型.ps1 -Tier medium -TargetDir "D:\AIModels\Library\ocr\pp-ocrv6"
+.\scripts\下载OCR模型.ps1 -Tier medium -PythonPath .\.venv\Scripts\python.exe -TargetDir "D:\AIModels\Library\ocr\pp-ocrv6"
 $env:OCR_MODEL_DIR = "D:\AIModels\Library\ocr\pp-ocrv6"
 ```
 
-真实 OCR 运行依赖通过 Python sidecar 安装：
+如果已经安装依赖和下载模型，可随时单独运行自检：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r .\sidecars\ocr\requirements.txt
+.\scripts\检查OCR环境.ps1 -Tier medium
 ```
 
 桌面构建会把 `sidecars/ocr/ocr_sidecar.py` 和 `requirements.txt` 作为 Tauri resource 打包。开发态优先使用仓库根目录下的 `.venv\Scripts\python.exe`，打包后可通过本机环境变量显式指定：
@@ -225,7 +227,8 @@ cargo check
 │   ├── ci-cd.md
 │   └── superpowers
 ├── scripts
-│   └── 下载OCR模型.ps1
+│   ├── 下载OCR模型.ps1
+│   └── 检查OCR环境.ps1
 ├── sidecars
 │   └── ocr
 ├── README.md
