@@ -412,10 +412,12 @@
 }
 
 .panelTitle {
+  min-width: 0;
   margin: 4px 0 0;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .panelText {
@@ -509,6 +511,19 @@
   color: #374151;
   font-size: 13px;
   line-height: 1.5;
+}
+
+.sourceMetaLine {
+  display: grid;
+  gap: 2px;
+  margin-top: 7px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.sourceMetaLine span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .buttonRow {
@@ -763,32 +778,45 @@
 }
 
 .messageSourceItem {
+  min-width: 0;
+}
+
+.messageSourceButton {
   display: grid;
   gap: 2px;
+  width: 100%;
   border: 1px solid #cdddf0;
   border-radius: var(--radius-control);
   background: rgba(255, 255, 255, 0.58);
   padding: 7px;
+  color: inherit;
+  text-align: left;
 }
 
-.messageSourceItem strong,
-.messageSourceItem span,
-.messageSourceItem p {
+.messageSourceButton:hover,
+.messageSourceButton:focus-visible {
+  border-color: #a8c2e1;
+  background: #ffffff;
+}
+
+.messageSourceButton strong,
+.messageSourceButton span,
+.messageSourceExcerpt {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.messageSourceItem strong {
+.messageSourceButton strong {
   color: #24384f;
   font-size: 12px;
 }
 
-.messageSourceItem span {
+.messageSourceButton span {
   color: #51657d;
   font-size: 11px;
 }
 
-.messageSourceItem p {
+.messageSourceExcerpt {
   margin: 2px 0 0;
   color: #334862;
   font-size: 12px;

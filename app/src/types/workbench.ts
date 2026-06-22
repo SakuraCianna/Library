@@ -28,6 +28,7 @@ export interface KnowledgeBlockPreview {
   title: string;
   excerpt: string;
   sourceFileName: string;
+  sourceLocator: string;
 }
 
 export interface TableInsightPreview {

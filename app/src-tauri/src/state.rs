@@ -1188,6 +1188,7 @@ fn build_snapshot(
                 title: block.title,
                 excerpt: block.excerpt,
                 source_file_name: block.source_file_name,
+                source_locator: block.source_locator,
             })
             .unwrap_or_else(|| KnowledgeBlockPreview {
                 id: "block-empty".to_string(),
@@ -1204,7 +1205,12 @@ fn build_snapshot(
                 } else {
                     "请先添加一个真实文件夹作为知识库。".to_string()
                 },
-                source_file_name: first_file_name,
+                source_file_name: first_file_name.clone(),
+                source_locator: if has_files {
+                    first_file_name
+                } else {
+                    "暂无来源定位".to_string()
+                },
             }),
         table_preview: TableInsightPreview {
             id: "table-empty".to_string(),
@@ -2005,6 +2011,8 @@ mod tests {
             )
             .expect("ocr job runs");
         let indexed = state.snapshot().expect("snapshot builds");
+        assert_eq!(indexed.block_preview.source_file_name, "scan.pdf");
+        assert_eq!(indexed.block_preview.source_locator, "scan.pdf#ocr");
 
         let answered = state
             .ask_agent(indexed.active_space_id, "扫描版".to_string())

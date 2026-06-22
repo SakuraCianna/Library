@@ -16,6 +16,7 @@ import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
 import type {
   ChatMessage,
+  ChatMessageSource,
   ChatScope,
   KnowledgeFile,
   OcrEnvironmentCheck,
@@ -126,6 +127,8 @@ function ocrCheckDetail(check: OcrEnvironmentCheck) {
 export default function App() {
   const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
     useState(false);
+  const [selectedSource, setSelectedSource] =
+    useState<ChatMessageSource | null>(null);
   const [question, setQuestion] = useState("");
   const [queuePollingUntil, setQueuePollingUntil] = useState(0);
   const {
@@ -191,6 +194,7 @@ export default function App() {
   const hasRunningParseJob =
     hasRunningScanJob || hasRunningDocumentJob || hasRunningOcrJob;
   const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
+  const focusedBlock = selectedSource ?? snapshot.blockPreview;
 
   useEffect(() => {
     const hasActivePollingWindow = Date.now() < queuePollingUntil;
@@ -209,6 +213,10 @@ export default function App() {
 
     return () => window.clearInterval(timer);
   }, [hasRunningParseJob, queuePollingUntil, refreshSnapshot]);
+
+  useEffect(() => {
+    setSelectedSource(null);
+  }, [snapshot.activeSpaceId]);
 
   function keepQueuePollingWarm() {
     setQueuePollingUntil(Date.now() + 15000);
@@ -495,21 +503,30 @@ export default function App() {
           </div>
 
           <div className={styles.rightContent}>
-            <article className={`${styles.panel} ${styles.panelPadded}`}>
+            <article
+              className={`${styles.panel} ${styles.panelPadded}`}
+              aria-label={selectedSource ? "聊天来源详情" : "知识块预览"}
+            >
               <div className={styles.panelKicker}>
-                {snapshot.blockPreview.sourceFileName}
+                {selectedSource ? "聊天来源预览" : "最新知识块"}
               </div>
-              <h3 className={styles.panelTitle}>
-                {snapshot.blockPreview.title}
-              </h3>
-              <p className={styles.blockExcerpt}>
-                {snapshot.blockPreview.excerpt}
-              </p>
+              <div className={styles.sourceMetaLine}>
+                <span>{focusedBlock.sourceFileName}</span>
+                <span>定位：{focusedBlock.sourceLocator}</span>
+              </div>
+              <h3 className={styles.panelTitle}>{focusedBlock.title}</h3>
+              <p className={styles.blockExcerpt}>{focusedBlock.excerpt}</p>
               <div className={styles.buttonRow}>
-                <button className={styles.plainButton} type="button">
-                  <Icon aria-hidden icon={eyeIcon} />
-                  <span>查看来源</span>
-                </button>
+                {selectedSource ? (
+                  <button
+                    className={styles.plainButton}
+                    onClick={() => setSelectedSource(null)}
+                    type="button"
+                  >
+                    <Icon aria-hidden icon={eyeIcon} />
+                    <span>查看最新</span>
+                  </button>
+                ) : null}
                 <button className={styles.plainButton} type="button">
                   <Icon aria-hidden icon={bookmarkPlusIcon} />
                   <span>加入复习</span>
@@ -682,10 +699,19 @@ export default function App() {
                   <ul className={styles.messageSourceList}>
                     {message.sources.map((source) => (
                       <li className={styles.messageSourceItem} key={source.id}>
-                        <strong>{source.sourceFileName}</strong>
-                        <span>{source.title}</span>
-                        <span>定位：{source.sourceLocator}</span>
-                        <p>{source.excerpt}</p>
+                        <button
+                          className={styles.messageSourceButton}
+                          onClick={() => setSelectedSource(source)}
+                          type="button"
+                          aria-label={`查看来源 ${source.sourceFileName} ${source.title}`}
+                        >
+                          <strong>{source.sourceFileName}</strong>
+                          <span>{source.title}</span>
+                          <span>定位：{source.sourceLocator}</span>
+                          <span className={styles.messageSourceExcerpt}>
+                            {source.excerpt}
+                          </span>
+                        </button>
                       </li>
                     ))}
                   </ul>

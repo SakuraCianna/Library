@@ -112,6 +112,8 @@ pub struct KnowledgeBlockPreview {
     pub title: String,
     pub excerpt: String,
     pub source_file_name: String,
+    #[serde(default)]
+    pub source_locator: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
