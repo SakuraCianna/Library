@@ -28,7 +28,7 @@ interface WorkbenchSnapshotResult extends WorkbenchSnapshotState {
   createSpaceFromFolder: (permission: PermissionMode) => Promise<void>;
   enqueueOcrJob: (fileId: string) => Promise<void>;
   indexActiveSpace: () => Promise<void>;
-  refreshSnapshot: () => Promise<void>;
+  refreshSnapshot: (options?: { silent?: boolean }) => Promise<void>;
   scanActiveSpace: () => Promise<void>;
   setFolderDefaultPermission: (permission: PermissionMode) => Promise<void>;
   setSessionPermission: (permission: PermissionMode) => Promise<void>;
@@ -61,8 +61,10 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     });
   }, []);
 
-  const refreshSnapshot = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true, error: null }));
+  const refreshSnapshot = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) {
+      setState((current) => ({ ...current, loading: true, error: null }));
+    }
     try {
       const snapshot = await getWorkbenchSnapshot();
       commitSnapshot(snapshot);

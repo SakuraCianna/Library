@@ -10,7 +10,7 @@ import sendIcon from "@iconify-icons/lucide/send";
 import settingsIcon from "@iconify-icons/lucide/settings";
 import xIcon from "@iconify-icons/lucide/x";
 import { Icon } from "@iconify/react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
@@ -44,6 +44,10 @@ const jobStatusLabel: Record<string, string> = {
   succeeded: "已完成",
   failed: "失败",
   cancelled: "已取消",
+};
+const jobTypeLabel: Record<string, string> = {
+  document: "文档解析",
+  ocr: "本地 OCR",
 };
 
 function fileStatusClass(file: KnowledgeFile) {
@@ -79,6 +83,7 @@ export default function App() {
   const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
     useState(false);
   const [question, setQuestion] = useState("");
+  const [queuePollingUntil, setQueuePollingUntil] = useState(0);
   const {
     snapshot,
     error,
@@ -102,24 +107,53 @@ export default function App() {
   const hasActiveSpace = activeSpace !== null;
   const defaultPermission = activeSpace?.defaultPermission ?? "readonly";
   const changedFileCount = activeSpace?.changedFileCount ?? 0;
+  const documentQueueCount = activeSpace?.documentQueueCount ?? 0;
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
+  const hasQueuedDocumentJob = snapshot.parseJobs.some(
+    (job) => job.jobType === "document" && job.status === "queued",
+  );
+  const hasRunningDocumentJob = snapshot.parseJobs.some(
+    (job) => job.jobType === "document" && job.status === "running",
+  );
   const hasQueuedOcrJob = snapshot.parseJobs.some(
     (job) => job.jobType === "ocr" && job.status === "queued",
   );
   const hasRunningOcrJob = snapshot.parseJobs.some(
     (job) => job.jobType === "ocr" && job.status === "running",
   );
-  const activeOcrFileIds = new Set(
+  const activeParseFileIds = new Set(
     snapshot.parseJobs
       .filter(
         (job) =>
-          job.jobType === "ocr" &&
           (job.status === "queued" || job.status === "running") &&
           Boolean(job.fileId),
       )
       .flatMap((job) => (job.fileId ? [job.fileId] : [])),
   );
+  const hasRunningParseJob = hasRunningDocumentJob || hasRunningOcrJob;
   const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
+
+  useEffect(() => {
+    const hasActivePollingWindow = Date.now() < queuePollingUntil;
+    if (!hasRunningParseJob && !hasActivePollingWindow) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      if (!hasRunningParseJob && Date.now() >= queuePollingUntil) {
+        window.clearInterval(timer);
+        return;
+      }
+
+      void refreshSnapshot({ silent: true });
+    }, 1500);
+
+    return () => window.clearInterval(timer);
+  }, [hasRunningParseJob, queuePollingUntil, refreshSnapshot]);
+
+  function keepQueuePollingWarm() {
+    setQueuePollingUntil(Date.now() + 15000);
+  }
 
   function handleAskAgent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -170,7 +204,8 @@ export default function App() {
                   <span className={styles.spaceName}>{space.name}</span>
                   <span className={styles.spacePath}>{space.path}</span>
                   <span className={styles.spaceMeta}>
-                    变更 {space.changedFileCount} · OCR 队列 {space.ocrQueueCount}
+                    变更 {space.changedFileCount} · 文档队列{" "}
+                    {space.documentQueueCount} · OCR 队列 {space.ocrQueueCount}
                   </span>
                 </button>
               ))
@@ -276,7 +311,10 @@ export default function App() {
             <button
               className={styles.plainButton}
               disabled={!hasActiveSpace || loading}
-              onClick={() => void indexActiveSpace()}
+              onClick={() => {
+                keepQueuePollingWarm();
+                void indexActiveSpace();
+              }}
               type="button"
             >
               <Icon aria-hidden icon={fileSearchIcon} />
@@ -303,6 +341,7 @@ export default function App() {
             <div className={styles.statusLine}>
               <span>已索引 {snapshot.files.length} 个文件</span>
               <span>已变更 {changedFileCount} 个文件</span>
+              <span>文档队列 {documentQueueCount} 个</span>
               <span>OCR 队列 {ocrQueueCount} 个</span>
               {loading ? <span>处理中</span> : null}
               {error ? <span>{error}</span> : null}
@@ -334,7 +373,7 @@ export default function App() {
                         <button
                           aria-label={`排队 OCR ${file.name}`}
                           className={styles.queueButton}
-                          disabled={loading || activeOcrFileIds.has(file.id)}
+                          disabled={loading || activeParseFileIds.has(file.id)}
                           onClick={() => void enqueueOcrJob(file.id)}
                           title="排队 OCR"
                           type="button"
@@ -400,8 +439,23 @@ export default function App() {
                   <div className={styles.queueHeaderActions}>
                     <button
                       className={styles.plainButton}
+                      disabled={loading || !hasQueuedDocumentJob || hasRunningDocumentJob}
+                      onClick={() => {
+                        keepQueuePollingWarm();
+                        void indexActiveSpace();
+                      }}
+                      type="button"
+                    >
+                      <Icon aria-hidden icon={fileSearchIcon} />
+                      <span>启动文档</span>
+                    </button>
+                    <button
+                      className={styles.plainButton}
                       disabled={loading || !hasQueuedOcrJob || hasRunningOcrJob}
-                      onClick={() => void startOcrWorker()}
+                      onClick={() => {
+                        keepQueuePollingWarm();
+                        void startOcrWorker();
+                      }}
                       type="button"
                     >
                       <Icon aria-hidden icon={playIcon} />
@@ -423,7 +477,10 @@ export default function App() {
                     <div className={styles.queueRow} key={job.id}>
                       <div className={styles.queueInfo}>
                         <strong>{job.fileName}</strong>
-                        <span>{job.phase || job.jobType}</span>
+                        <span>
+                          {jobTypeLabel[job.jobType] ?? job.jobType} ·{" "}
+                          {job.phase || "等待执行"}
+                        </span>
                         {job.errorMessage ? (
                           <span className={styles.queueError}>{job.errorMessage}</span>
                         ) : null}

@@ -29,10 +29,16 @@ pub struct SqliteStore {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OcrJobWriteOutcome {
+pub enum ParseJobWriteOutcome {
     Updated,
     Cancelled,
     NotRunning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnqueueParseJobResult {
+    pub id: String,
+    pub inserted: bool,
 }
 
 impl SqliteStore {
@@ -125,7 +131,8 @@ impl SqliteStore {
                 space.root_path,
                 space.default_permission,
                 COALESCE(changed.changed_count, 0) AS changed_count,
-                COALESCE(queued.queued_count, 0) AS queued_count
+                COALESCE(document_queue.queued_count, 0) AS document_queue_count,
+                COALESCE(ocr_queue.queued_count, 0) AS ocr_queue_count
              FROM knowledge_spaces space
              LEFT JOIN (
                 SELECT space_id, COUNT(*) AS changed_count
@@ -136,9 +143,15 @@ impl SqliteStore {
              LEFT JOIN (
                 SELECT space_id, COUNT(*) AS queued_count
                 FROM parse_jobs
+                WHERE job_type = 'document' AND status IN ('queued', 'running')
+                GROUP BY space_id
+             ) document_queue ON document_queue.space_id = space.id
+             LEFT JOIN (
+                SELECT space_id, COUNT(*) AS queued_count
+                FROM parse_jobs
                 WHERE job_type = 'ocr' AND status IN ('queued', 'running')
                 GROUP BY space_id
-             ) queued ON queued.space_id = space.id
+             ) ocr_queue ON ocr_queue.space_id = space.id
              WHERE space.deleted_at IS NULL
              ORDER BY space.updated_at DESC, space.name COLLATE NOCASE",
         )?;
@@ -153,7 +166,8 @@ impl SqliteStore {
                     default_permission: PermissionMode::from_db(&permission)
                         .unwrap_or(PermissionMode::Readonly),
                     changed_file_count: row.get(4)?,
-                    ocr_queue_count: row.get(5)?,
+                    document_queue_count: row.get(5)?,
+                    ocr_queue_count: row.get(6)?,
                 })
             })?
             .collect();
@@ -279,19 +293,19 @@ impl SqliteStore {
         tx.commit()
     }
 
-    pub fn complete_ocr_job_if_running(
+    pub fn complete_parse_job_if_running(
         &mut self,
         space_id: &str,
         file_id: &str,
         job_id: &str,
         document: &ParsedDocument,
-    ) -> rusqlite::Result<OcrJobWriteOutcome> {
+    ) -> rusqlite::Result<ParseJobWriteOutcome> {
         let now = OffsetDateTime::now_utc().to_string();
         let tx = self.connection.transaction()?;
         match parse_job_status_in_tx(&tx, job_id)?.as_deref() {
             Some("running") => {}
-            Some("cancelled") => return Ok(OcrJobWriteOutcome::Cancelled),
-            _ => return Ok(OcrJobWriteOutcome::NotRunning),
+            Some("cancelled") => return Ok(ParseJobWriteOutcome::Cancelled),
+            _ => return Ok(ParseJobWriteOutcome::NotRunning),
         }
 
         replace_file_knowledge_block_in_tx(&tx, space_id, file_id, document, &now)?;
@@ -308,7 +322,7 @@ impl SqliteStore {
             params![now, job_id],
         )?;
         tx.commit()?;
-        Ok(OcrJobWriteOutcome::Updated)
+        Ok(ParseJobWriteOutcome::Updated)
     }
 
     pub fn mark_file_parse_failed(&self, file_id: &str) -> rusqlite::Result<()> {
@@ -317,18 +331,18 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn fail_ocr_job_if_running(
+    pub fn fail_parse_job_if_running(
         &mut self,
         file_id: &str,
         job_id: &str,
         error_message: &str,
-    ) -> rusqlite::Result<OcrJobWriteOutcome> {
+    ) -> rusqlite::Result<ParseJobWriteOutcome> {
         let now = OffsetDateTime::now_utc().to_string();
         let tx = self.connection.transaction()?;
         match parse_job_status_in_tx(&tx, job_id)?.as_deref() {
             Some("running") => {}
-            Some("cancelled") => return Ok(OcrJobWriteOutcome::Cancelled),
-            _ => return Ok(OcrJobWriteOutcome::NotRunning),
+            Some("cancelled") => return Ok(ParseJobWriteOutcome::Cancelled),
+            _ => return Ok(ParseJobWriteOutcome::NotRunning),
         }
 
         mark_file_parse_failed_in_tx(&tx, file_id, &now)?;
@@ -343,7 +357,7 @@ impl SqliteStore {
             params![error_message, now, job_id],
         )?;
         tx.commit()?;
-        Ok(OcrJobWriteOutcome::Updated)
+        Ok(ParseJobWriteOutcome::Updated)
     }
 
     pub fn latest_knowledge_block(
@@ -408,6 +422,17 @@ impl SqliteStore {
         file_id: &str,
         job_type: &str,
     ) -> rusqlite::Result<String> {
+        Ok(self
+            .enqueue_parse_job_with_status(space_id, file_id, job_type)?
+            .id)
+    }
+
+    pub fn enqueue_parse_job_with_status(
+        &self,
+        space_id: &str,
+        file_id: &str,
+        job_type: &str,
+    ) -> rusqlite::Result<EnqueueParseJobResult> {
         if let Some(existing_id) = self
             .connection
             .query_row(
@@ -424,7 +449,10 @@ impl SqliteStore {
             )
             .optional()?
         {
-            return Ok(existing_id);
+            return Ok(EnqueueParseJobResult {
+                id: existing_id,
+                inserted: false,
+            });
         }
 
         let id = Uuid::new_v4().to_string();
@@ -437,7 +465,35 @@ impl SqliteStore {
              VALUES (?1, ?2, ?3, ?4, 'queued', '等待执行', 0, 1, ?5, ?5)",
             params![id, space_id, file_id, job_type, now],
         )?;
-        Ok(id)
+        Ok(EnqueueParseJobResult { id, inserted: true })
+    }
+
+    pub fn enqueue_document_parse_jobs(&self, space_id: &str) -> rusqlite::Result<u32> {
+        let candidates = self.list_parse_candidates(space_id)?;
+        let mut inserted_count = 0_u32;
+
+        for candidate in candidates {
+            if self
+                .enqueue_parse_job_with_status(space_id, &candidate.file_id, "document")?
+                .inserted
+            {
+                inserted_count += 1;
+            }
+        }
+
+        Ok(inserted_count)
+    }
+
+    pub fn has_queued_parse_job(&self, space_id: &str, job_type: &str) -> rusqlite::Result<bool> {
+        self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM parse_jobs
+                WHERE space_id = ?1 AND job_type = ?2 AND status = 'queued'
+            )",
+            params![space_id, job_type],
+            |row| row.get::<_, bool>(0),
+        )
     }
 
     pub fn list_parse_jobs(&self, space_id: &str) -> rusqlite::Result<Vec<ParseJobSummary>> {
@@ -509,6 +565,62 @@ impl SqliteStore {
                 },
             )
             .optional()
+    }
+
+    pub fn claim_next_queued_parse_job(
+        &mut self,
+        space_id: &str,
+        job_type: &str,
+    ) -> rusqlite::Result<Option<ParseJobCandidate>> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let tx = self.connection.transaction()?;
+        let candidate = tx
+            .query_row(
+                "SELECT job.id, file.id, file.relative_path, file.extension
+                 FROM parse_jobs job
+                 JOIN files file ON file.id = job.file_id
+                 WHERE job.space_id = ?1
+                   AND job.job_type = ?2
+                   AND job.status = 'queued'
+                   AND file.deleted_at IS NULL
+                 ORDER BY job.created_at ASC
+                 LIMIT 1",
+                params![space_id, job_type],
+                |row| {
+                    Ok(ParseJobCandidate {
+                        job_id: row.get(0)?,
+                        file_id: row.get(1)?,
+                        relative_path: row.get(2)?,
+                        extension: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(candidate) = candidate else {
+            tx.commit()?;
+            return Ok(None);
+        };
+
+        let updated = tx.execute(
+            "UPDATE parse_jobs
+             SET status = 'running',
+                 error_message = NULL,
+                 started_at = COALESCE(started_at, ?1),
+                 finished_at = NULL,
+                 phase = '正在准备',
+                 progress_current = 0,
+                 progress_total = CASE WHEN progress_total > 0 THEN progress_total ELSE 1 END,
+                 updated_at = ?1
+             WHERE id = ?2 AND status = 'queued'",
+            params![now, candidate.job_id],
+        )?;
+        tx.commit()?;
+
+        if updated > 0 {
+            Ok(Some(candidate))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn cancel_parse_job(&self, job_id: &str) -> rusqlite::Result<bool> {
@@ -788,6 +900,15 @@ impl SqliteStore {
                 "UPDATE files
                  SET deleted_at = ?1, updated_at = ?1
                  WHERE id = ?2",
+                params![now, existing.id],
+            )?;
+            tx.execute(
+                "UPDATE parse_jobs
+                 SET status = 'cancelled',
+                     phase = '已取消',
+                     finished_at = ?1,
+                     updated_at = ?1
+                 WHERE file_id = ?2 AND status IN ('queued', 'running')",
                 params![now, existing.id],
             )?;
         }
@@ -1390,6 +1511,40 @@ mod tests {
             .any(|file| file.name == "README.md"
                 && file.status == crate::models::ParseStatus::Changed));
         assert!(files.iter().all(|file| file.name != "Redis.pdf"));
+    }
+
+    #[test]
+    fn enqueues_document_parse_jobs_for_scanned_candidates_without_duplicates() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("文档", "D:\\知识库\\文档", PermissionMode::Approval)
+            .expect("space is inserted");
+        let scanned = vec![
+            scanned_file("README.md", "md", 10, "hash-a"),
+            scanned_file("资料\\Redis.docx", "docx", 20, "hash-b"),
+        ];
+        store
+            .apply_scan_results(&space_id, &scanned)
+            .expect("scan applies");
+
+        let inserted = store
+            .enqueue_document_parse_jobs(&space_id)
+            .expect("document jobs enqueue");
+        let inserted_again = store
+            .enqueue_document_parse_jobs(&space_id)
+            .expect("document jobs dedupe");
+        let jobs = store.list_parse_jobs(&space_id).expect("jobs list");
+        let spaces = store.list_knowledge_spaces().expect("spaces list");
+
+        assert_eq!(inserted, 2);
+        assert_eq!(inserted_again, 0);
+        assert_eq!(
+            jobs.iter()
+                .filter(|job| job.job_type == "document" && job.status == "queued")
+                .count(),
+            2
+        );
+        assert_eq!(spaces[0].document_queue_count, 2);
     }
 
     #[test]

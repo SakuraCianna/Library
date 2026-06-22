@@ -47,12 +47,24 @@ pub fn scan_knowledge_space(
 
 #[tauri::command]
 pub fn index_knowledge_space(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: IndexKnowledgeSpaceRequest,
 ) -> Result<WorkbenchSnapshot, ErrorResponse> {
-    state
-        .index_knowledge_space(request.space_id)
-        .map_err(Into::into)
+    let space_id = request.space_id;
+    let should_spawn = state
+        .prepare_document_indexing(space_id.clone())
+        .map_err(ErrorResponse::from)?;
+
+    if should_spawn {
+        let app_for_worker = app.clone();
+        std::thread::spawn(move || {
+            let worker_state = app_for_worker.state::<AppState>();
+            worker_state.run_document_worker(space_id);
+        });
+    }
+
+    state.snapshot().map_err(Into::into)
 }
 
 #[tauri::command]

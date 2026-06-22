@@ -17,6 +17,7 @@ const snapshotWithSpace: WorkbenchSnapshot = {
       path: "D:\\知识库\\真实",
       defaultPermission: "approval",
       changedFileCount: 0,
+      documentQueueCount: 0,
       ocrQueueCount: 0,
     },
   ],
@@ -280,6 +281,116 @@ describe("App", () => {
 
     expect((await screen.findAllByText("已完成")).length).toBeGreaterThan(0);
     expect(screen.getByText("扫描版 PDF 的本地 OCR 文本")).toBeInTheDocument();
+  });
+
+  it("starts document parsing through the index command", async () => {
+    const snapshotWithJob = {
+      ...snapshotWithSpace,
+      spaces: [
+        {
+          ...snapshotWithSpace.spaces[0],
+          documentQueueCount: 1,
+        },
+      ],
+      parseJobs: [
+        parseJob({
+          id: "job-doc",
+          fileId: "file-md",
+          fileName: "Redis面试.md",
+          jobType: "document",
+        }),
+      ],
+    };
+    const finishedSnapshot = {
+      ...snapshotWithJob,
+      spaces: [
+        {
+          ...snapshotWithSpace.spaces[0],
+          documentQueueCount: 0,
+        },
+      ],
+      parseJobs: [
+        parseJob({
+          id: "job-doc",
+          fileId: "file-md",
+          fileName: "Redis面试.md",
+          jobType: "document",
+          status: "succeeded",
+          phase: "已完成",
+          progressCurrent: 2,
+          progressTotal: 2,
+        }),
+      ],
+      blockPreview: {
+        id: "block-doc",
+        title: "Redis面试.md",
+        excerpt: "缓存穿透需要空值缓存和布隆过滤器。",
+        sourceFileName: "Redis面试.md",
+      },
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "index_knowledge_space") {
+        return finishedSnapshot;
+      }
+      return snapshotWithJob;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("解析队列")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "启动文档" }));
+
+    expect(await screen.findByText("缓存穿透需要空值缓存和布隆过滤器。")).toBeInTheDocument();
+    expect(screen.getByText("文档解析 · 已完成")).toBeInTheDocument();
+  });
+
+  it("keeps polling briefly after toolbar index starts before running appears", async () => {
+    const commands: string[] = [];
+    const snapshotWithJob = {
+      ...snapshotWithSpace,
+      spaces: [
+        {
+          ...snapshotWithSpace.spaces[0],
+          documentQueueCount: 1,
+        },
+      ],
+      parseJobs: [
+        parseJob({
+          id: "job-doc",
+          fileId: "file-md",
+          fileName: "Redis面试.md",
+          jobType: "document",
+        }),
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      commands.push(cmd);
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return snapshotWithJob;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("解析队列")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "建索引/摘要" }));
+    expect(commands).toContain("index_knowledge_space");
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1700));
+
+    expect(
+      commands.filter((command) => command === "get_workbench_snapshot").length,
+    ).toBeGreaterThan(1);
   });
 
   it("shows an error when running a queued OCR job fails", async () => {
