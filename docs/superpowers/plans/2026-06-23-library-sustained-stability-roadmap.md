@@ -163,7 +163,7 @@ Set-Location E:\CodeHome\Library
 - [x] Do not allow the parser sidecar to download models or send file contents to cloud services.
 - [x] Add a development README that states required Python packages and local-only behavior.
 - [x] Run parser tests, the full verification gate, and a manual smoke test with local fixtures.
-- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+- [x] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 5: Backup Restore Foundation
 
