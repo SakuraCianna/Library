@@ -1,6 +1,9 @@
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+use std::{env, io::Write};
 
 use crate::error::AppError;
 use crate::models::{FileParseCandidate, ParsedDocument, ParsedTableInsight};
@@ -9,6 +12,21 @@ const MAX_BODY_CHARS: usize = 60_000;
 const SUMMARY_CHARS: usize = 180;
 const MAX_TABLE_CELL_CHARS: usize = 80;
 const TABLE_SAMPLE_ROWS: usize = 3;
+const PARSER_SIDECAR_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_PARSER_INPUT_BYTES: u64 = 50 * 1024 * 1024;
+
+#[derive(Debug, serde::Deserialize)]
+struct ParserSidecarEnvelope {
+    ok: bool,
+    result: Option<ParsedDocument>,
+    error: Option<ParserSidecarError>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ParserSidecarError {
+    code: String,
+    message: String,
+}
 
 pub fn parse_file(
     root_path: &Path,
@@ -49,6 +67,33 @@ pub fn parse_file(
         source_locator: candidate.relative_path.clone(),
         table_insights,
     })
+}
+
+pub fn parse_file_with_sidecar(
+    root_path: &Path,
+    candidate: &FileParseCandidate,
+    resource_script_path: Option<&Path>,
+) -> Result<ParsedDocument, AppError> {
+    let file_path = resolve_file_path(root_path, &candidate.relative_path)?;
+    let script_path = match resolve_parser_sidecar_script(resource_script_path) {
+        Ok(script_path) => script_path,
+        Err(error) => {
+            if parser_sidecar_path_is_explicit() {
+                return Err(error);
+            }
+            return parse_file(root_path, candidate);
+        }
+    };
+    let project_root = discover_project_root().ok();
+    let python_path = discover_python_executable(project_root.as_deref())?;
+
+    run_parser_sidecar_with_paths(
+        &file_path,
+        &candidate.relative_path,
+        &python_path,
+        &script_path,
+        PARSER_SIDECAR_TIMEOUT,
+    )
 }
 
 #[derive(Debug)]
@@ -396,6 +441,203 @@ fn open_zip(path: &Path) -> Result<zip::ZipArchive<File>, AppError> {
         .map_err(|error| AppError::Filesystem(format!("无法读取压缩文档结构：{error}")))
 }
 
+fn run_parser_sidecar_with_paths(
+    file_path: &Path,
+    relative_path: &str,
+    python_path: &Path,
+    script_path: &Path,
+    timeout: Duration,
+) -> Result<ParsedDocument, AppError> {
+    if !script_path.is_file() {
+        return Err(AppError::Filesystem(format!(
+            "找不到文档解析 sidecar：{}",
+            script_path.display()
+        )));
+    }
+
+    let mut child = Command::new(python_path)
+        .arg(script_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| AppError::Filesystem(format!("无法启动文档解析 sidecar：{error}")))?;
+    let stdout_handle = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Filesystem("无法读取文档解析 sidecar stdout".to_string()))
+        .map(read_output_pipe)?;
+    let stderr_handle = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Filesystem("无法读取文档解析 sidecar stderr".to_string()))
+        .map(read_output_pipe)?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::Filesystem("无法写入文档解析 sidecar stdin".to_string()))?;
+        let payload = serde_json::json!({
+            "filePath": file_path.to_string_lossy(),
+            "relativePath": relative_path,
+            "maxInputBytes": MAX_PARSER_INPUT_BYTES,
+        });
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .map_err(|error| AppError::Filesystem(format!("无法发送文档解析请求：{error}")))?;
+    }
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| AppError::Filesystem(format!("无法等待文档解析 sidecar：{error}")))?
+        {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Filesystem(
+                "PARSER_TIMEOUT：文档解析 sidecar 执行超时".to_string(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let stdout = join_output_reader(stdout_handle, "文档解析输出")?;
+    let stderr = join_output_reader(stderr_handle, "文档解析日志")?;
+
+    if !status.success() {
+        return Err(AppError::Filesystem(format!(
+            "文档解析 sidecar 退出失败：{}",
+            truncate_chars(stderr.trim(), 500)
+        )));
+    }
+
+    parse_parser_sidecar_stdout(&stdout)
+}
+
+fn read_output_pipe<R>(mut reader: R) -> std::thread::JoinHandle<std::io::Result<String>>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output)?;
+        Ok(output)
+    })
+}
+
+fn join_output_reader(
+    handle: std::thread::JoinHandle<std::io::Result<String>>,
+    label: &str,
+) -> Result<String, AppError> {
+    handle
+        .join()
+        .map_err(|_| AppError::Filesystem(format!("{label}读取线程异常退出")))?
+        .map_err(|error| AppError::Filesystem(format!("无法读取{label}：{error}")))
+}
+
+fn parse_parser_sidecar_stdout(stdout: &str) -> Result<ParsedDocument, AppError> {
+    let envelope: ParserSidecarEnvelope = serde_json::from_str(stdout.trim()).map_err(|error| {
+        AppError::Filesystem(format!("文档解析 sidecar 返回了无效 JSON：{error}"))
+    })?;
+
+    if envelope.ok {
+        return envelope
+            .result
+            .ok_or_else(|| AppError::Filesystem("文档解析 sidecar 缺少 result".to_string()));
+    }
+
+    let error = envelope.error.ok_or_else(|| {
+        AppError::Filesystem("文档解析 sidecar 返回失败但缺少错误信息".to_string())
+    })?;
+    Err(AppError::Filesystem(format!(
+        "{}：{}",
+        error.code, error.message
+    )))
+}
+
+pub fn resolve_parser_sidecar_script(
+    resource_script_path: Option<&Path>,
+) -> Result<PathBuf, AppError> {
+    if let Ok(explicit_path) = env::var("PARSER_SIDECAR_PATH") {
+        let trimmed = explicit_path.trim();
+        if !trimmed.is_empty() {
+            let explicit_path = PathBuf::from(trimmed);
+            if explicit_path.is_file() {
+                return Ok(explicit_path);
+            }
+            return Err(AppError::Filesystem(format!(
+                "PARSER_SIDECAR_PATH 指向的 sidecar 不存在：{}",
+                explicit_path.display()
+            )));
+        }
+    }
+
+    if let Some(resource_script_path) = resource_script_path.filter(|path| path.is_file()) {
+        return Ok(resource_script_path.to_path_buf());
+    }
+
+    let project_root = discover_project_root()?;
+    Ok(project_root
+        .join("sidecars")
+        .join("parser")
+        .join("parser_sidecar.py"))
+}
+
+fn parser_sidecar_path_is_explicit() -> bool {
+    env::var("PARSER_SIDECAR_PATH")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn discover_project_root() -> Result<PathBuf, AppError> {
+    let current_dir = env::current_dir()
+        .map_err(|error| AppError::Filesystem(format!("无法读取当前目录：{error}")))?;
+    current_dir
+        .ancestors()
+        .find(|path| {
+            path.join("sidecars")
+                .join("parser")
+                .join("parser_sidecar.py")
+                .is_file()
+        })
+        .map(Path::to_path_buf)
+        .ok_or_else(|| AppError::Filesystem("找不到项目根目录下的文档解析 sidecar".to_string()))
+}
+
+fn discover_python_executable(project_root: Option<&Path>) -> Result<PathBuf, AppError> {
+    if let Ok(explicit_path) = env::var("PARSER_PYTHON_PATH") {
+        let trimmed = explicit_path.trim();
+        if !trimmed.is_empty() {
+            let explicit_path = PathBuf::from(trimmed);
+            if explicit_path.is_file() {
+                return Ok(explicit_path);
+            }
+            return Err(AppError::Filesystem(format!(
+                "PARSER_PYTHON_PATH 指向的 Python 不存在：{}",
+                explicit_path.display()
+            )));
+        }
+    }
+
+    if let Some(project_root) = project_root {
+        let local_python = project_root
+            .join(".venv")
+            .join("Scripts")
+            .join("python.exe");
+        if local_python.is_file() {
+            return Ok(local_python);
+        }
+    }
+
+    Ok(PathBuf::from("python"))
+}
+
 fn read_pdf_text_lossy(path: &Path) -> Result<String, AppError> {
     let bytes = fs::read(path)
         .map_err(|error| AppError::Filesystem(format!("无法读取 PDF 文件：{error}")))?;
@@ -553,11 +795,16 @@ fn display_file_name(relative_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
 
-    use super::parse_file;
+    use super::{
+        discover_python_executable, parse_file, parse_file_with_sidecar,
+        parse_parser_sidecar_stdout, resolve_parser_sidecar_script, run_parser_sidecar_with_paths,
+    };
     use crate::models::FileParseCandidate;
 
     #[test]
@@ -630,6 +877,141 @@ mod tests {
         assert_eq!(insight.source_locator, "经营报表.xlsx#sheet-001");
         assert!(insight.summary.contains("3 行、3 列"));
         assert!(insight.body.contains("可问答字段：月份、营收、成本"));
+    }
+
+    #[test]
+    fn parses_successful_parser_sidecar_stdout() {
+        let document = parse_parser_sidecar_stdout(
+            r#"{"ok":true,"result":{"title":"Redis.md","body":"缓存穿透","summary":"缓存穿透","sourceLocator":"Redis.md","tableInsights":[]}}"#,
+        )
+        .expect("parser sidecar stdout parses");
+
+        assert_eq!(document.title, "Redis.md");
+        assert_eq!(document.source_locator, "Redis.md");
+        assert!(document.body.contains("缓存穿透"));
+    }
+
+    #[test]
+    fn rejects_malformed_parser_sidecar_stdout() {
+        let error = parse_parser_sidecar_stdout("not-json")
+            .expect_err("malformed parser sidecar output is rejected");
+
+        assert!(error
+            .to_string()
+            .contains("文档解析 sidecar 返回了无效 JSON"));
+    }
+
+    #[test]
+    fn parser_sidecar_timeout_is_reported() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let input = temp_dir.path().join("Redis.md");
+        let script = temp_dir.path().join("sleep_parser.py");
+        fs::write(&input, "# Redis").expect("input");
+        fs::write(
+            &script,
+            "import time\nimport sys\nsys.stdin.read()\ntime.sleep(2)\n",
+        )
+        .expect("script");
+
+        let error = run_parser_sidecar_with_paths(
+            &input,
+            "Redis.md",
+            Path::new("python"),
+            &script,
+            std::time::Duration::from_millis(50),
+        )
+        .expect_err("timeout is reported");
+
+        assert!(error.to_string().contains("PARSER_TIMEOUT"));
+    }
+
+    #[test]
+    fn explicit_parser_sidecar_path_wins_over_resource_path() {
+        let _guard = parser_env_lock().lock().expect("parser env lock");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let explicit_script = temp_dir.path().join("explicit_parser.py");
+        let resource_script = temp_dir.path().join("resource_parser.py");
+        fs::write(&explicit_script, "# explicit").expect("explicit script");
+        fs::write(&resource_script, "# resource").expect("resource script");
+        let _env = ScopedEnvVar::set("PARSER_SIDECAR_PATH", &explicit_script);
+
+        let resolved = resolve_parser_sidecar_script(Some(&resource_script))
+            .expect("explicit parser sidecar path resolves");
+
+        assert_eq!(resolved, explicit_script);
+    }
+
+    #[test]
+    fn invalid_explicit_parser_python_path_is_reported() {
+        let _guard = parser_env_lock().lock().expect("parser env lock");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let missing_python = temp_dir.path().join("missing-python.exe");
+        let _env = ScopedEnvVar::set("PARSER_PYTHON_PATH", &missing_python);
+
+        let error = discover_python_executable(None)
+            .expect_err("invalid explicit parser Python path is rejected");
+
+        assert!(error.to_string().contains("PARSER_PYTHON_PATH"));
+    }
+
+    #[test]
+    fn parse_file_with_sidecar_handles_missing_resource_path() {
+        let _guard = parser_env_lock().lock().expect("parser env lock");
+        let _sidecar_env = ScopedEnvVar::remove("PARSER_SIDECAR_PATH");
+        let _python_env = ScopedEnvVar::remove("PARSER_PYTHON_PATH");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(
+            temp_dir.path().join("Redis.md"),
+            "# Redis\n\n缓存穿透需要空值缓存。",
+        )
+        .expect("write md");
+
+        let document = parse_file_with_sidecar(
+            temp_dir.path(),
+            &FileParseCandidate {
+                file_id: "file-redis".to_string(),
+                relative_path: "Redis.md".to_string(),
+                extension: "md".to_string(),
+            },
+            Some(&temp_dir.path().join("missing_parser.py")),
+        )
+        .expect("fallback parser succeeds");
+
+        assert!(document.body.contains("缓存穿透"));
+    }
+
+    struct ScopedEnvVar {
+        name: &'static str,
+        previous: Option<String>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(name: &'static str, value: &Path) -> Self {
+            let previous = env::var(name).ok();
+            env::set_var(name, value);
+            Self { name, previous }
+        }
+
+        fn remove(name: &'static str) -> Self {
+            let previous = env::var(name).ok();
+            env::remove_var(name);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                env::set_var(self.name, previous);
+            } else {
+                env::remove_var(self.name);
+            }
+        }
+    }
+
+    fn parser_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     fn write_test_xlsx(path: &Path) {

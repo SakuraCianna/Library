@@ -395,7 +395,8 @@ pub struct ParseJobCandidate {
     pub extension: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ParsedDocument {
     pub title: String,
     pub body: String,
@@ -404,7 +405,8 @@ pub struct ParsedDocument {
     pub table_insights: Vec<ParsedTableInsight>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ParsedTableInsight {
     pub title: String,
     pub body: String,
