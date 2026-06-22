@@ -131,11 +131,11 @@ Set-Location E:\CodeHome\Library
 - Modify: `app/src/__tests__/App.test.tsx`
 - Modify: `README.md`
 
-- [ ] Add a local export command for metadata, knowledge blocks, and workspace settings.
-- [ ] Keep secrets, `.env`, model folders, and temporary files out of exports.
-- [ ] Add tests for export shape, path traversal rejection, and missing workspace behavior.
-- [ ] Add a simple UI entry for export status without adding restore yet.
-- [ ] Run the full verification gate.
+- [x] Add a local export command for metadata, knowledge blocks, and workspace settings.
+- [x] Keep secrets, `.env`, model folders, and temporary files out of exports.
+- [x] Add tests for export shape, path traversal rejection, and missing workspace behavior.
+- [x] Add a simple UI entry for export status without adding restore yet.
+- [x] Run the full verification gate.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 4: Document Parser Sidecar Foundation

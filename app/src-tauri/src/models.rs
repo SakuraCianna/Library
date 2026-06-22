@@ -237,6 +237,132 @@ pub struct DefaultPermissionRequest {
     pub permission: PermissionMode,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSpaceBackupRequest {
+    pub space_id: String,
+    pub file_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportResult {
+    pub path: String,
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub exported_at: String,
+    pub file_count: u32,
+    pub knowledge_block_count: u32,
+    pub parse_job_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExport {
+    pub format: String,
+    pub schema_version: u32,
+    pub exported_at: String,
+    pub space: BackupExportSpace,
+    pub workspace: BackupExportWorkspace,
+    pub files: Vec<BackupExportFile>,
+    pub markdown_notes: Vec<BackupExportMarkdownNote>,
+    pub knowledge_blocks: Vec<BackupExportKnowledgeBlock>,
+    pub parse_jobs: Vec<BackupExportParseJob>,
+    pub trash_entries: Vec<BackupExportTrashEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportSpace {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+    pub default_permission: PermissionMode,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportWorkspace {
+    pub active_space_id: String,
+    pub default_permission: PermissionMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportFile {
+    pub id: String,
+    pub relative_path: String,
+    pub extension: String,
+    pub content_hash: Option<String>,
+    pub size_bytes: i64,
+    pub modified_at: Option<String>,
+    pub parse_status: String,
+    pub last_scanned_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportMarkdownNote {
+    pub id: String,
+    pub file_id: Option<String>,
+    pub relative_path: String,
+    pub user_editable: bool,
+    pub last_generated_hash: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportKnowledgeBlock {
+    pub id: String,
+    pub file_id: Option<String>,
+    pub note_id: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub source_kind: String,
+    pub source_locator: String,
+    pub searchable: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportParseJob {
+    pub id: String,
+    pub file_id: Option<String>,
+    pub job_type: String,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub progress_current: u32,
+    pub progress_total: u32,
+    pub phase: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExportTrashEntry {
+    pub id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub display_name: String,
+    pub original_locator: String,
+    pub deleted_at: String,
+    pub restored_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedFile {
     pub relative_path: String,

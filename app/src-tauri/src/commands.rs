@@ -3,10 +3,11 @@ use tauri::{path::BaseDirectory, Manager, State};
 use crate::error::ErrorResponse;
 use crate::events::emit_workbench_updated;
 use crate::models::{
-    AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
-    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, KnowledgeBlockContext,
-    KnowledgeBlockContextRequest, OcrEnvironmentReport, OpenSourceFileRequest, PermissionRequest,
-    RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
+    AskAgentRequest, BackupExportResult, CancelParseJobRequest, CreateKnowledgeSpaceRequest,
+    DefaultPermissionRequest, EnqueueOcrJobRequest, ExportSpaceBackupRequest,
+    IndexKnowledgeSpaceRequest, KnowledgeBlockContext, KnowledgeBlockContextRequest,
+    OcrEnvironmentReport, OpenSourceFileRequest, PermissionRequest, RuntimeStatus,
+    ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
 };
 use crate::state::AppState;
 use tauri_plugin_opener::OpenerExt;
@@ -187,6 +188,16 @@ pub fn set_default_permission(
 ) -> Result<WorkbenchSnapshot, ErrorResponse> {
     state
         .update_default_permission(request.space_id, request.permission)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn export_space_backup(
+    state: State<'_, AppState>,
+    request: ExportSpaceBackupRequest,
+) -> Result<BackupExportResult, ErrorResponse> {
+    state
+        .export_space_backup(request.space_id, request.file_name)
         .map_err(Into::into)
 }
 

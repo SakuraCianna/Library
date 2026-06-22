@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
@@ -5,6 +6,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::models::{
+    BackupExport, BackupExportFile, BackupExportKnowledgeBlock, BackupExportMarkdownNote,
+    BackupExportParseJob, BackupExportSpace, BackupExportTrashEntry, BackupExportWorkspace,
     FileParseCandidate, KnowledgeBlockContext, KnowledgeBlockSearchHit, KnowledgeFile,
     KnowledgeSpace, ParseJobCandidate, ParseJobSummary, ParseStatus, ParsedDocument,
     PermissionMode, ScanSummary, ScannedFile, TableInsightPreview,
@@ -221,6 +224,62 @@ impl SqliteStore {
             .optional()
     }
 
+    pub fn export_space_backup(&self, space_id: &str) -> rusqlite::Result<BackupExport> {
+        let space = self.connection.query_row(
+            "SELECT id, name, root_path, default_permission, created_at, updated_at
+             FROM knowledge_spaces
+             WHERE id = ?1 AND deleted_at IS NULL",
+            [space_id],
+            |row| {
+                let permission: String = row.get(3)?;
+                Ok(BackupExportSpace {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    root_path: row.get(2)?,
+                    default_permission: PermissionMode::from_db(&permission)
+                        .unwrap_or(PermissionMode::Readonly),
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        )?;
+        let files = self.export_backup_files(space_id)?;
+        let file_ids = files
+            .iter()
+            .map(|file| file.id.clone())
+            .collect::<HashSet<_>>();
+        let markdown_notes = self.export_backup_markdown_notes(space_id, &file_ids)?;
+        let note_ids = markdown_notes
+            .iter()
+            .map(|note| note.id.clone())
+            .collect::<HashSet<_>>();
+        let knowledge_blocks =
+            self.export_backup_knowledge_blocks(space_id, &file_ids, &note_ids)?;
+        let knowledge_block_ids = knowledge_blocks
+            .iter()
+            .map(|block| block.id.clone())
+            .collect::<HashSet<_>>();
+        let parse_jobs = self.export_backup_parse_jobs(space_id)?;
+        let trash_entries =
+            self.export_backup_trash_entries(space_id, &file_ids, &note_ids, &knowledge_block_ids)?;
+
+        Ok(BackupExport {
+            format: "library.backup.v1".to_string(),
+            schema_version: 1,
+            exported_at: OffsetDateTime::now_utc().to_string(),
+            workspace: BackupExportWorkspace {
+                active_space_id: space.id.clone(),
+                default_permission: space.default_permission.clone(),
+            },
+            space,
+            files,
+            markdown_notes,
+            knowledge_blocks,
+            parse_jobs,
+            trash_entries,
+        })
+    }
+
     pub fn update_knowledge_space_permission(
         &self,
         space_id: &str,
@@ -295,6 +354,205 @@ impl SqliteStore {
             .collect();
 
         candidates
+    }
+
+    fn export_backup_files(&self, space_id: &str) -> rusqlite::Result<Vec<BackupExportFile>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, relative_path, extension, content_hash, size_bytes, modified_at,
+                    parse_status, last_scanned_at, created_at, updated_at, deleted_at
+             FROM files
+             WHERE space_id = ?1
+             ORDER BY relative_path COLLATE NOCASE, created_at",
+        )?;
+
+        let files: rusqlite::Result<Vec<_>> = statement
+            .query_map([space_id], |row| {
+                Ok(BackupExportFile {
+                    id: row.get(0)?,
+                    relative_path: row.get(1)?,
+                    extension: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    size_bytes: row.get(4)?,
+                    modified_at: row.get(5)?,
+                    parse_status: row.get(6)?,
+                    last_scanned_at: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    deleted_at: row.get(10)?,
+                })
+            })?
+            .collect();
+
+        Ok(files?
+            .into_iter()
+            .filter(|file| !is_sensitive_backup_locator(&file.relative_path))
+            .collect())
+    }
+
+    fn export_backup_markdown_notes(
+        &self,
+        space_id: &str,
+        exported_file_ids: &HashSet<String>,
+    ) -> rusqlite::Result<Vec<BackupExportMarkdownNote>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, file_id, relative_path, user_editable, last_generated_hash,
+                    created_at, updated_at, deleted_at
+             FROM markdown_notes
+             WHERE space_id = ?1
+             ORDER BY relative_path COLLATE NOCASE, created_at",
+        )?;
+
+        let markdown_notes: rusqlite::Result<Vec<_>> = statement
+            .query_map([space_id], |row| {
+                Ok(BackupExportMarkdownNote {
+                    id: row.get(0)?,
+                    file_id: row.get(1)?,
+                    relative_path: row.get(2)?,
+                    user_editable: row.get::<_, i64>(3)? != 0,
+                    last_generated_hash: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    deleted_at: row.get(7)?,
+                })
+            })?
+            .collect();
+
+        Ok(markdown_notes?
+            .into_iter()
+            .filter(|note| !is_sensitive_backup_locator(&note.relative_path))
+            .filter(|note| {
+                note.file_id
+                    .as_ref()
+                    .map(|file_id| exported_file_ids.contains(file_id))
+                    .unwrap_or(true)
+            })
+            .collect())
+    }
+
+    fn export_backup_knowledge_blocks(
+        &self,
+        space_id: &str,
+        exported_file_ids: &HashSet<String>,
+        exported_note_ids: &HashSet<String>,
+    ) -> rusqlite::Result<Vec<BackupExportKnowledgeBlock>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, file_id, note_id, title, body, source_kind, source_locator,
+                    searchable, created_at, updated_at, deleted_at
+             FROM knowledge_blocks
+             WHERE space_id = ?1
+             ORDER BY created_at, fts_rowid",
+        )?;
+
+        let knowledge_blocks: rusqlite::Result<Vec<_>> = statement
+            .query_map([space_id], |row| {
+                Ok(BackupExportKnowledgeBlock {
+                    id: row.get(0)?,
+                    file_id: row.get(1)?,
+                    note_id: row.get(2)?,
+                    title: row.get(3)?,
+                    body: row.get(4)?,
+                    source_kind: row.get(5)?,
+                    source_locator: row.get(6)?,
+                    searchable: row.get::<_, i64>(7)? != 0,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    deleted_at: row.get(10)?,
+                })
+            })?
+            .collect();
+
+        Ok(knowledge_blocks?
+            .into_iter()
+            .filter(|block| !is_sensitive_backup_locator(&block.source_locator))
+            .filter(|block| {
+                block
+                    .file_id
+                    .as_ref()
+                    .map(|file_id| exported_file_ids.contains(file_id))
+                    .unwrap_or(true)
+            })
+            .filter(|block| {
+                block
+                    .note_id
+                    .as_ref()
+                    .map(|note_id| exported_note_ids.contains(note_id))
+                    .unwrap_or(true)
+            })
+            .collect())
+    }
+
+    fn export_backup_parse_jobs(
+        &self,
+        space_id: &str,
+    ) -> rusqlite::Result<Vec<BackupExportParseJob>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, file_id, job_type, status, NULL AS error_message, started_at, finished_at,
+                    progress_current, progress_total, phase, created_at, updated_at
+             FROM parse_jobs
+             WHERE space_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+
+        let parse_jobs = statement
+            .query_map([space_id], |row| {
+                Ok(BackupExportParseJob {
+                    id: row.get(0)?,
+                    file_id: row.get(1)?,
+                    job_type: row.get(2)?,
+                    status: row.get(3)?,
+                    error_message: row.get(4)?,
+                    started_at: row.get(5)?,
+                    finished_at: row.get(6)?,
+                    progress_current: row.get(7)?,
+                    progress_total: row.get(8)?,
+                    phase: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            })?
+            .collect();
+
+        parse_jobs
+    }
+
+    fn export_backup_trash_entries(
+        &self,
+        space_id: &str,
+        exported_file_ids: &HashSet<String>,
+        exported_note_ids: &HashSet<String>,
+        exported_knowledge_block_ids: &HashSet<String>,
+    ) -> rusqlite::Result<Vec<BackupExportTrashEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, entity_kind, entity_id, display_name, original_locator, deleted_at, restored_at
+             FROM trash_entries
+             WHERE space_id = ?1
+             ORDER BY deleted_at DESC, display_name COLLATE NOCASE",
+        )?;
+
+        let trash_entries: rusqlite::Result<Vec<_>> = statement
+            .query_map([space_id], |row| {
+                Ok(BackupExportTrashEntry {
+                    id: row.get(0)?,
+                    entity_kind: row.get(1)?,
+                    entity_id: row.get(2)?,
+                    display_name: row.get(3)?,
+                    original_locator: row.get(4)?,
+                    deleted_at: row.get(5)?,
+                    restored_at: row.get(6)?,
+                })
+            })?
+            .collect();
+
+        Ok(trash_entries?
+            .into_iter()
+            .filter(|entry| !is_sensitive_backup_locator(&entry.original_locator))
+            .filter(|entry| match entry.entity_kind.as_str() {
+                "file" => exported_file_ids.contains(&entry.entity_id),
+                "markdown_note" => exported_note_ids.contains(&entry.entity_id),
+                "knowledge_block" => exported_knowledge_block_ids.contains(&entry.entity_id),
+                _ => false,
+            })
+            .collect())
     }
 
     pub fn get_file_parse_candidate(
@@ -1957,6 +2215,34 @@ fn display_source_file_name(source_locator: &str) -> String {
     display_file_name(source_path)
 }
 
+fn is_sensitive_backup_locator(locator: &str) -> bool {
+    let source_path = strip_known_source_fragment(locator).trim();
+    if source_path.is_empty() {
+        return false;
+    }
+
+    let normalized = source_path.replace('/', "\\").to_lowercase();
+    let parts = normalized
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    if parts
+        .iter()
+        .any(|part| *part == ".env" || part.starts_with(".env."))
+    {
+        return true;
+    }
+
+    if parts.iter().any(|part| *part == "library-ocr-runs") {
+        return true;
+    }
+
+    parts
+        .windows(2)
+        .any(|window| window[0] == "models" && window[1] == "ocr")
+}
+
 fn strip_known_source_fragment(source_locator: &str) -> &str {
     let mut source_path = source_locator.trim();
 
@@ -2287,6 +2573,158 @@ mod tests {
         assert_eq!(hits[0].source_kind, "original_file");
         assert!(hits[0].excerpt.contains("缓存穿透"));
         assert_eq!(files[0].status, crate::models::ParseStatus::Indexed);
+    }
+
+    #[test]
+    fn exports_space_backup_with_metadata_blocks_jobs_and_workspace_settings() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("面试", "D:\\知识库\\Redis", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-redis", &space_id, "Redis面试.md", "queued")
+            .expect("file is inserted");
+        let document = ParsedDocument {
+            title: "Redis面试.md".to_string(),
+            body: "缓存穿透需要空值缓存和布隆过滤器。".to_string(),
+            summary: "Redis 缓存穿透资料。".to_string(),
+            source_locator: "Redis面试.md".to_string(),
+            table_insights: Vec::new(),
+        };
+        store
+            .replace_file_knowledge_block(&space_id, "file-redis", &document)
+            .expect("knowledge block is stored");
+        let job_id = store
+            .enqueue_parse_job(&space_id, "file-redis", "document")
+            .expect("parse job is inserted");
+        store
+            .mark_parse_job_running(&job_id)
+            .expect("parse job is running");
+        store
+            .mark_parse_job_failed(
+                &job_id,
+                "OCR_RUNTIME_ERROR：DEEPSEEK_API_KEY .env E:\\CodeHome\\Library\\models\\ocr\\pp-ocrv6\\library-ocr-runs\\page.png",
+            )
+            .expect("parse job failure is recorded");
+        store
+            .connection
+            .execute(
+                "INSERT INTO markdown_notes (
+                    id, file_id, space_id, relative_path, user_editable, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
+                params![
+                    "note-safe",
+                    "file-redis",
+                    space_id,
+                    "Redis面试.note.md",
+                    TEST_TIME
+                ],
+            )
+            .expect("safe note is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO trash_entries (
+                    id, space_id, entity_kind, entity_id, display_name, original_locator, deleted_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    "trash-safe",
+                    space_id,
+                    "file",
+                    "file-redis",
+                    "Redis面试.md",
+                    "Redis面试.md",
+                    TEST_TIME
+                ],
+            )
+            .expect("safe trash entry is inserted");
+        insert_file(&store, "file-env", &space_id, ".env", "queued")
+            .expect("sensitive file is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO markdown_notes (
+                    id, file_id, space_id, relative_path, user_editable, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
+                params![
+                    "note-sensitive",
+                    "file-env",
+                    space_id,
+                    "models\\ocr\\pp-ocrv6\\secret-note.md",
+                    TEST_TIME
+                ],
+            )
+            .expect("sensitive note is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO knowledge_blocks (
+                    id, space_id, file_id, title, body, source_kind, source_locator, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                params![
+                    "block-sensitive",
+                    space_id,
+                    "file-env",
+                    "敏感配置",
+                    "should-not-export",
+                    "original_file",
+                    ".env#block-001",
+                    TEST_TIME
+                ],
+            )
+            .expect("sensitive block is inserted");
+        store
+            .connection
+            .execute(
+                "INSERT INTO trash_entries (
+                    id, space_id, entity_kind, entity_id, display_name, original_locator, deleted_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    "trash-sensitive",
+                    space_id,
+                    "file",
+                    "file-env",
+                    "page.png",
+                    "library-ocr-runs\\page.png",
+                    TEST_TIME
+                ],
+            )
+            .expect("sensitive trash entry is inserted");
+
+        let backup = store
+            .export_space_backup(&space_id)
+            .expect("backup export is built");
+        let serialized = serde_json::to_string(&backup).expect("backup serializes");
+
+        assert_eq!(backup.format, "library.backup.v1");
+        assert_eq!(backup.space.id, space_id);
+        assert_eq!(backup.space.name, "面试");
+        assert_eq!(
+            backup.workspace.default_permission,
+            PermissionMode::Approval
+        );
+        assert_eq!(backup.files.len(), 1);
+        assert_eq!(backup.files[0].relative_path, "Redis面试.md");
+        assert_eq!(backup.markdown_notes.len(), 1);
+        assert_eq!(backup.markdown_notes[0].relative_path, "Redis面试.note.md");
+        assert_eq!(backup.knowledge_blocks.len(), 1);
+        assert!(backup.knowledge_blocks[0].body.contains("布隆过滤器"));
+        assert_eq!(backup.parse_jobs.len(), 1);
+        assert_eq!(backup.parse_jobs[0].job_type, "document");
+        assert_eq!(backup.parse_jobs[0].status, "failed");
+        assert!(backup.parse_jobs[0].error_message.is_none());
+        assert_eq!(backup.trash_entries.len(), 1);
+        assert_eq!(backup.trash_entries[0].original_locator, "Redis面试.md");
+        assert!(!serialized.contains("DEEPSEEK_API_KEY"));
+        assert!(!serialized.contains(".env"));
+        assert!(!serialized.contains("models"));
+        assert!(!serialized.contains("secret-note"));
+        assert!(!serialized.contains("library-ocr-runs"));
+        assert!(!serialized.contains("should-not-export"));
     }
 
     #[test]

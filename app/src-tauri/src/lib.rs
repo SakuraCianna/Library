@@ -37,6 +37,7 @@ pub fn run() {
             commands::open_source_file,
             commands::get_knowledge_block_context,
             commands::set_default_permission,
+            commands::export_space_backup,
             commands::get_runtime_status,
             commands::check_ocr_environment
         ])

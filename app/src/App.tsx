@@ -2,6 +2,7 @@ import bookmarkPlusIcon from "@iconify-icons/lucide/bookmark-plus";
 import checkIcon from "@iconify-icons/lucide/check";
 import chevronLeftIcon from "@iconify-icons/lucide/chevron-left";
 import chevronRightIcon from "@iconify-icons/lucide/chevron-right";
+import downloadIcon from "@iconify-icons/lucide/download";
 import eyeIcon from "@iconify-icons/lucide/eye";
 import fileSearchIcon from "@iconify-icons/lucide/file-search";
 import folderPlusIcon from "@iconify-icons/lucide/folder-plus";
@@ -11,7 +12,13 @@ import sendIcon from "@iconify-icons/lucide/send";
 import settingsIcon from "@iconify-icons/lucide/settings";
 import xIcon from "@iconify-icons/lucide/x";
 import { Icon } from "@iconify/react";
-import { type FormEvent, type MouseEvent, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type MouseEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
@@ -95,7 +102,11 @@ function queueStatusClass(status: string) {
 }
 
 function queueProgressText(job: ParseJobSummary) {
-  if (job.status === "succeeded" && job.progressTotal <= 0 && job.progressCurrent === 0) {
+  if (
+    job.status === "succeeded" &&
+    job.progressTotal <= 0 &&
+    job.progressCurrent === 0
+  ) {
     return "完成";
   }
 
@@ -132,9 +143,16 @@ function cancelJobLabel(job: ParseJobSummary) {
 }
 
 function isOcrSupportedFile(file: KnowledgeFile) {
-  return [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"].includes(
-    file.extension.toLowerCase(),
-  );
+  return [
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+  ].includes(file.extension.toLowerCase());
 }
 
 function ocrCheckStatusClass(check: OcrEnvironmentCheck) {
@@ -179,22 +197,27 @@ export default function App() {
     useState<ChatMessageSource | null>(null);
   const [sourceContext, setSourceContext] =
     useState<KnowledgeBlockContext | null>(null);
-  const [sourceContextIndex, setSourceContextIndex] =
-    useState<number | null>(null);
+  const [sourceContextIndex, setSourceContextIndex] = useState<number | null>(
+    null,
+  );
   const [loadingSourceContext, setLoadingSourceContext] = useState(false);
-  const [sourceContextError, setSourceContextError] = useState<string | null>(null);
+  const [sourceContextError, setSourceContextError] = useState<string | null>(
+    null,
+  );
   const [openingSource, setOpeningSource] = useState(false);
   const [sourceOpenError, setSourceOpenError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
   const [queuePollingUntil, setQueuePollingUntil] = useState(0);
   const {
     snapshot,
+    backupExport,
     error,
     loading,
     askAgentQuestion,
     cancelJob,
     createSpaceFromFolder,
     enqueueOcrJob,
+    exportActiveSpaceBackup,
     indexActiveSpace,
     refreshSnapshot,
     scanActiveSpace,
@@ -252,7 +275,7 @@ export default function App() {
   const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
   const selectedContextBlock =
     selectedSource && sourceContext && sourceContextIndex !== null
-      ? sourceContext.blocks[sourceContextIndex] ?? null
+      ? (sourceContext.blocks[sourceContextIndex] ?? null)
       : null;
   const focusedBlock: KnowledgeBlockPreview | ChatMessageSource =
     selectedContextBlock ?? selectedSource ?? snapshot.blockPreview;
@@ -261,18 +284,23 @@ export default function App() {
     hasActiveSpace &&
     focusedSourceLocator.length > 0 &&
     focusedSourceLocator !== "暂无来源定位";
-  const sourceContextCurrent = sourceContextIndex === null ? 0 : sourceContextIndex + 1;
+  const sourceContextCurrent =
+    sourceContextIndex === null ? 0 : sourceContextIndex + 1;
   const canShowSourceContext =
-    selectedSource !== null && sourceContext !== null && sourceContext.totalCount > 1;
+    selectedSource !== null &&
+    sourceContext !== null &&
+    sourceContext.totalCount > 1;
   const canSelectPreviousSourceBlock =
-    canShowSourceContext && sourceContextIndex !== null && sourceContextIndex > 0;
+    canShowSourceContext &&
+    sourceContextIndex !== null &&
+    sourceContextIndex > 0;
   const canSelectNextSourceBlock =
     canShowSourceContext &&
     sourceContextIndex !== null &&
     sourceContextIndex < sourceContext.blocks.length - 1;
   const activeSettingsTitle =
-    settingsSections.find((section) => section.id === activeSettingsSection)?.label ??
-    "常规";
+    settingsSections.find((section) => section.id === activeSettingsSection)
+      ?.label ?? "常规";
 
   function closeSettings() {
     setSettingsOpen(false);
@@ -402,7 +430,9 @@ export default function App() {
         }
 
         setSourceContextError(
-          caughtError instanceof Error ? caughtError.message : "无法读取来源上下文",
+          caughtError instanceof Error
+            ? caughtError.message
+            : "无法读取来源上下文",
         );
       })
       .finally(() => {
@@ -458,7 +488,11 @@ export default function App() {
   }
 
   function selectSourceContextBlock(nextIndex: number) {
-    if (!sourceContext || nextIndex < 0 || nextIndex >= sourceContext.blocks.length) {
+    if (
+      !sourceContext ||
+      nextIndex < 0 ||
+      nextIndex >= sourceContext.blocks.length
+    ) {
       return;
     }
 
@@ -503,8 +537,9 @@ export default function App() {
                   <span className={styles.spaceName}>{space.name}</span>
                   <span className={styles.spacePath}>{space.path}</span>
                   <span className={styles.spaceMeta}>
-                    变更 {space.changedFileCount} · 扫描队列 {space.scanQueueCount} · 文档队列{" "}
-                    {space.documentQueueCount} · OCR 队列 {space.ocrQueueCount}
+                    变更 {space.changedFileCount} · 扫描队列{" "}
+                    {space.scanQueueCount} · 文档队列 {space.documentQueueCount}{" "}
+                    · OCR 队列 {space.ocrQueueCount}
                   </span>
                 </button>
               ))
@@ -533,7 +568,9 @@ export default function App() {
             disabled={!hasActiveSpace}
             value={defaultPermission}
             onChange={(event) =>
-              void setFolderDefaultPermission(event.target.value as PermissionMode)
+              void setFolderDefaultPermission(
+                event.target.value as PermissionMode,
+              )
             }
           >
             {permissionOptions.map((permission) => (
@@ -548,7 +585,9 @@ export default function App() {
       <main className={styles.main}>
         <header className={styles.folderHeader}>
           <div className={styles.folderTitleRow}>
-            <h2 className={styles.folderName}>{activeSpace?.name ?? "未选择文件夹"}</h2>
+            <h2 className={styles.folderName}>
+              {activeSpace?.name ?? "未选择文件夹"}
+            </h2>
             <span className={styles.folderPath}>
               {activeSpace?.path ?? "请先添加一个真实文件夹"}
             </span>
@@ -578,6 +617,15 @@ export default function App() {
               <Icon aria-hidden icon={fileSearchIcon} />
               <span>建索引/摘要</span>
             </button>
+            <button
+              className={styles.plainButton}
+              disabled={!hasActiveSpace || loading}
+              onClick={() => void exportActiveSpaceBackup()}
+              type="button"
+            >
+              <Icon aria-hidden icon={downloadIcon} />
+              <span>导出备份</span>
+            </button>
           </div>
         </header>
 
@@ -603,6 +651,12 @@ export default function App() {
               <span>扫描队列 {scanQueueCount} 个</span>
               <span>文档队列 {documentQueueCount} 个</span>
               <span>OCR 队列 {ocrQueueCount} 个</span>
+              {backupExport ? (
+                <span>
+                  备份已导出 {backupExport.fileName} · {backupExport.fileCount}{" "}
+                  个文件 · {backupExport.knowledgeBlockCount} 个知识块
+                </span>
+              ) : null}
               {loading ? <span>处理中</span> : null}
               {error ? <span>{error}</span> : null}
             </div>
@@ -610,7 +664,9 @@ export default function App() {
             <article className={`${styles.panel} ${styles.panelPadded}`}>
               <div className={styles.panelKicker}>文件夹总览 README.md</div>
               <h3 className={styles.panelTitle}>
-                {activeSpace ? `${activeSpace.name} 知识库总览` : "等待添加知识库"}
+                {activeSpace
+                  ? `${activeSpace.name} 知识库总览`
+                  : "等待添加知识库"}
               </h3>
               <p className={styles.panelText}>
                 {activeSpace
@@ -641,7 +697,9 @@ export default function App() {
                           OCR
                         </button>
                       ) : null}
-                      <span className={fileStatusClass(file)}>{file.statusLabel}</span>
+                      <span className={fileStatusClass(file)}>
+                        {file.statusLabel}
+                      </span>
                     </div>
                   </div>
                 ))
@@ -703,7 +761,9 @@ export default function App() {
                 </div>
               ) : null}
               {sourceContextError ? (
-                <div className={styles.sourceActionError}>{sourceContextError}</div>
+                <div className={styles.sourceActionError}>
+                  {sourceContextError}
+                </div>
               ) : null}
               <div className={styles.buttonRow}>
                 <button
@@ -741,7 +801,9 @@ export default function App() {
                 </button>
               </div>
               {sourceOpenError ? (
-                <div className={styles.sourceActionError}>{sourceOpenError}</div>
+                <div className={styles.sourceActionError}>
+                  {sourceOpenError}
+                </div>
               ) : null}
             </article>
 
@@ -761,7 +823,10 @@ export default function App() {
             </article>
 
             {snapshot.parseJobs.length > 0 ? (
-              <section className={`${styles.panel} ${styles.panelPadded}`} aria-label="解析队列">
+              <section
+                className={`${styles.panel} ${styles.panelPadded}`}
+                aria-label="解析队列"
+              >
                 <div className={styles.queueHeader}>
                   <div>
                     <div className={styles.panelKicker}>后台任务</div>
@@ -770,7 +835,9 @@ export default function App() {
                   <div className={styles.queueHeaderActions}>
                     <button
                       className={styles.plainButton}
-                      disabled={loading || !hasQueuedScanJob || hasRunningScanJob}
+                      disabled={
+                        loading || !hasQueuedScanJob || hasRunningScanJob
+                      }
                       onClick={() => {
                         keepQueuePollingWarm();
                         void scanActiveSpace();
@@ -782,7 +849,11 @@ export default function App() {
                     </button>
                     <button
                       className={styles.plainButton}
-                      disabled={loading || !hasQueuedDocumentJob || hasRunningDocumentJob}
+                      disabled={
+                        loading ||
+                        !hasQueuedDocumentJob ||
+                        hasRunningDocumentJob
+                      }
                       onClick={() => {
                         keepQueuePollingWarm();
                         void indexActiveSpace();
@@ -871,7 +942,9 @@ export default function App() {
                 disabled={!hasActiveSpace}
                 value={snapshot.sessionPermission}
                 onChange={(event) =>
-                  void setSessionPermission(event.target.value as PermissionMode)
+                  void setSessionPermission(
+                    event.target.value as PermissionMode,
+                  )
                 }
               >
                 {permissionOptions.map((permission) => (
@@ -963,12 +1036,18 @@ export default function App() {
             <textarea
               aria-label="向智能助手提问"
               className={styles.composerBox}
-              placeholder={hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"}
+              placeholder={
+                hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"
+              }
               rows={3}
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
             />
-            <button className={styles.sendButton} disabled={!canAskAgent} type="submit">
+            <button
+              className={styles.sendButton}
+              disabled={!canAskAgent}
+              type="submit"
+            >
               <Icon aria-hidden icon={sendIcon} />
               <span>发送</span>
             </button>
@@ -1125,7 +1204,9 @@ export default function App() {
                         type="button"
                       >
                         <Icon aria-hidden icon={refreshCwIcon} />
-                        <span>{checkingOcrEnvironment ? "自检中" : "自检"}</span>
+                        <span>
+                          {checkingOcrEnvironment ? "自检中" : "自检"}
+                        </span>
                       </button>
                       {ocrEnvironmentReport ? (
                         <span
@@ -1141,12 +1222,17 @@ export default function App() {
                     </div>
                   </div>
                   {ocrEnvironmentError ? (
-                    <div className={styles.runtimeIssue}>{ocrEnvironmentError}</div>
+                    <div className={styles.runtimeIssue}>
+                      {ocrEnvironmentError}
+                    </div>
                   ) : null}
                   {ocrEnvironmentReport ? (
                     <div className={styles.runtimeChecks}>
                       {ocrEnvironmentReport.checks.map((check) => (
-                        <div className={styles.runtimeCheckRow} key={check.name}>
+                        <div
+                          className={styles.runtimeCheckRow}
+                          key={check.name}
+                        >
                           <span className={ocrCheckStatusClass(check)}>
                             {check.ok ? "OK" : "FAIL"}
                           </span>
