@@ -733,6 +733,7 @@ pub fn build_ocr_document(
         summary: truncate_chars(&body, SUMMARY_CHARS),
         body: truncate_chars(&body, MAX_OCR_BODY_CHARS),
         source_locator: format!("{relative_path}#ocr"),
+        table_insights: Vec::new(),
     })
 }
 
