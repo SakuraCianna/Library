@@ -202,10 +202,10 @@ Set-Location E:\CodeHome\Library
 - Modify: `app/src/__tests__/App.test.tsx`
 - Modify: `README.md`
 
-- [ ] Add tests for multi-block context selection, table source ranking, OCR source ranking, and no-result answers.
-- [ ] Keep DeepSeek API key redaction in Rust and never expose raw keys to the frontend.
-- [ ] Add UI controls for source visibility and source-type filtering if tests show ranking ambiguity.
-- [ ] Make local fallback answers clearly source-grounded and honest about missing evidence.
+- [x] Add tests for multi-block context selection, table source ranking, OCR source ranking, and no-result answers.
+- [x] Keep DeepSeek API key redaction in Rust and never expose raw keys to the frontend.
+- [x] Add UI controls for source visibility and source-type filtering if tests show ranking ambiguity.
+- [x] Make local fallback answers clearly source-grounded and honest about missing evidence.
 - [ ] Run the full verification gate.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
@@ -228,4 +228,4 @@ Set-Location E:\CodeHome\Library
 
 ## Next Immediate Target
 
-After Module 5 is delivered and merged, start Module 6: Agent Answer Reliability And Source Controls. The durable target is source-grounded answers with clearer evidence ranking across text, table, and OCR sources, plus tests that prevent no-evidence answers from sounding more certain than the local index supports.
+After Module 6 is delivered and merged, start Module 7: Release Readiness. The durable target is predictable Windows release artifacts, documented unsigned-build limitations, and a release workflow that remains aligned with the current Node, Rust, and `protoc` setup.

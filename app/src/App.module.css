@@ -826,6 +826,63 @@
   font-weight: 700;
 }
 
+.messageSourcesHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.sourceToggleButton,
+.sourceFilterButton,
+.sourceFilterActive {
+  border: 1px solid #c7d8eb;
+  border-radius: var(--radius-control);
+  background: rgba(255, 255, 255, 0.72);
+  color: #405973;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.sourceToggleButton {
+  padding: 2px 7px;
+}
+
+.sourceFilterGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.sourceFilterButton,
+.sourceFilterActive {
+  padding: 2px 6px;
+}
+
+.sourceFilterActive {
+  border-color: #8fb1d6;
+  background: #e9f2ff;
+  color: #24476b;
+}
+
+.sourceToggleButton:hover,
+.sourceToggleButton:focus-visible,
+.sourceFilterButton:hover,
+.sourceFilterButton:focus-visible,
+.sourceFilterActive:hover,
+.sourceFilterActive:focus-visible {
+  border-color: #8fb1d6;
+  background: #ffffff;
+}
+
+.sourceEmpty {
+  border: 1px dashed #c7d8eb;
+  border-radius: var(--radius-control);
+  padding: 7px;
+  color: #60758c;
+  font-size: 11px;
+}
+
 .messageSourceList {
   display: grid;
   gap: 6px;

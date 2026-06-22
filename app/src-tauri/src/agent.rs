@@ -22,7 +22,7 @@ fn build_local_answer(question: &str, hits: &[KnowledgeBlockSearchHit]) -> Strin
 
     if hits.is_empty() {
         return format!(
-            "本地索引里暂时没有找到与“{}”直接相关的内容。请先扫描并建索引/摘要，或换一个更具体的问题。",
+            "本地索引里暂时没有找到与“{}”直接相关的内容；没有足够本地证据时我不会编造答案。请先扫描并建索引/摘要，或换一个更具体的问题。",
             normalized_question
         );
     }
@@ -128,6 +128,7 @@ fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {
 
 fn source_kind_label(source_kind: &str) -> &'static str {
     match source_kind {
+        "ocr" => "本地 OCR",
         "table" => "表格洞察",
         "markdown_note" => "Markdown 笔记",
         _ => "原始文件",
@@ -204,5 +205,32 @@ mod tests {
         assert!(answer.contains("[表格洞察]"));
         assert!(answer.contains("2026-06 | 120 | 70"));
         assert!(answer.contains("经营报表.xlsx（表格洞察）"));
+    }
+
+    #[test]
+    fn local_answer_labels_ocr_sources() {
+        let answer = build_local_answer(
+            "扫描版发票",
+            &[KnowledgeBlockSearchHit {
+                id: "ocr-1".to_string(),
+                title: "scan.pdf · OCR 片段 1/1".to_string(),
+                excerpt: "扫描版发票金额为 120 元。".to_string(),
+                source_file_name: "scan.pdf".to_string(),
+                source_locator: "scan.pdf#ocr-block-001".to_string(),
+                source_kind: "ocr".to_string(),
+            }],
+        );
+
+        assert!(answer.contains("[本地 OCR]"));
+        assert!(answer.contains("scan.pdf（本地 OCR）"));
+    }
+
+    #[test]
+    fn local_answer_without_hits_is_explicitly_evidence_bounded() {
+        let answer = build_local_answer("不存在的问题", &[]);
+
+        assert!(answer.contains("没有足够本地证据"));
+        assert!(answer.contains("不会编造"));
+        assert!(answer.contains("请先扫描并建索引/摘要"));
     }
 }

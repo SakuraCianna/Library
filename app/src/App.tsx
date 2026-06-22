@@ -52,8 +52,16 @@ const scopeLabel: Record<ChatScope, string> = {
 const tabs = ["总览", "文件", "知识块", "表格", "回收站"] as const;
 const scopes = Object.keys(scopeLabel) as ChatScope[];
 const permissionOptions = Object.keys(permissionLabel) as PermissionMode[];
+const sourceFilterOptions = [
+  { value: "all", label: "全部来源" },
+  { value: "original_file", label: "原始文件" },
+  { value: "markdown_note", label: "Markdown 笔记" },
+  { value: "table", label: "表格洞察" },
+  { value: "ocr", label: "本地 OCR" },
+] as const;
 type WorkbenchTab = (typeof tabs)[number];
 type SettingsSection = "general" | "runtime" | "permissions";
+type SourceFilter = (typeof sourceFilterOptions)[number]["value"];
 const settingsSections: ReadonlyArray<{
   id: SettingsSection;
   label: string;
@@ -181,6 +189,7 @@ function ocrCheckDetail(check: OcrEnvironmentCheck) {
 }
 
 function sourceKindLabel(sourceKind?: string) {
+  if (sourceKind === "ocr") return "本地 OCR";
   if (sourceKind === "table") return "表格洞察";
   if (sourceKind === "markdown_note") return "Markdown 笔记";
   return "原始文件";
@@ -209,6 +218,8 @@ export default function App() {
   const [sourceOpenError, setSourceOpenError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
   const [queuePollingUntil, setQueuePollingUntil] = useState(0);
+  const [sourcesVisible, setSourcesVisible] = useState(true);
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const {
     snapshot,
     backupExport,
@@ -502,6 +513,14 @@ export default function App() {
     }
 
     setSourceContextIndex(nextIndex);
+  }
+
+  function filteredSources(sources: ChatMessageSource[]) {
+    if (sourceFilter === "all") {
+      return sources;
+    }
+
+    return sources.filter((source) => source.sourceKind === sourceFilter);
   }
 
   return (
@@ -1019,29 +1038,69 @@ export default function App() {
               <div className={styles.messageContent}>{message.content}</div>
               {message.role === "assistant" && message.sources.length > 0 ? (
                 <div className={styles.messageSources} aria-label="回答来源">
-                  <div className={styles.messageSourcesTitle}>来源</div>
-                  <ul className={styles.messageSourceList}>
-                    {message.sources.map((source) => (
-                      <li className={styles.messageSourceItem} key={source.id}>
-                        <button
-                          className={styles.messageSourceButton}
-                          onClick={() => setSelectedSource(source)}
-                          type="button"
-                          aria-label={`查看来源 ${source.sourceFileName} ${source.title}`}
-                        >
-                          <span className={styles.messageSourceHeader}>
-                            <strong>{source.sourceFileName}</strong>
-                            <span>{sourceKindLabel(source.sourceKind)}</span>
-                          </span>
-                          <span>{source.title}</span>
-                          <span>定位：{source.sourceLocator}</span>
-                          <span className={styles.messageSourceExcerpt}>
-                            {source.excerpt}
-                          </span>
-                        </button>
-                      </li>
+                  <div className={styles.messageSourcesHeader}>
+                    <div className={styles.messageSourcesTitle}>来源</div>
+                    <button
+                      className={styles.sourceToggleButton}
+                      onClick={() => setSourcesVisible((visible) => !visible)}
+                      type="button"
+                    >
+                      {sourcesVisible ? "隐藏来源" : "显示来源"}
+                    </button>
+                  </div>
+                  <div
+                    className={styles.sourceFilterGroup}
+                    aria-label="来源类型筛选"
+                  >
+                    {sourceFilterOptions.map((option) => (
+                      <button
+                        aria-pressed={sourceFilter === option.value}
+                        className={
+                          sourceFilter === option.value
+                            ? styles.sourceFilterActive
+                            : styles.sourceFilterButton
+                        }
+                        key={option.value}
+                        onClick={() => setSourceFilter(option.value)}
+                        type="button"
+                      >
+                        {option.label}
+                      </button>
                     ))}
-                  </ul>
+                  </div>
+                  {sourcesVisible ? (
+                    filteredSources(message.sources).length > 0 ? (
+                      <ul className={styles.messageSourceList}>
+                        {filteredSources(message.sources).map((source) => (
+                          <li
+                            className={styles.messageSourceItem}
+                            key={source.id}
+                          >
+                            <button
+                              className={styles.messageSourceButton}
+                              onClick={() => setSelectedSource(source)}
+                              type="button"
+                              aria-label={`查看来源 ${source.sourceFileName} ${source.title}`}
+                            >
+                              <span className={styles.messageSourceHeader}>
+                                <strong>{source.sourceFileName}</strong>
+                                <span>{sourceKindLabel(source.sourceKind)}</span>
+                              </span>
+                              <span>{source.title}</span>
+                              <span>定位：{source.sourceLocator}</span>
+                              <span className={styles.messageSourceExcerpt}>
+                                {source.excerpt}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className={styles.sourceEmpty}>
+                        没有匹配的来源
+                      </div>
+                    )
+                  ) : null}
                 </div>
               ) : null}
             </article>
