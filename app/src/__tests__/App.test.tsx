@@ -148,4 +148,85 @@ describe("App", () => {
 
     expect(await screen.findByText(/空值缓存、布隆过滤器/)).toBeInTheDocument();
   });
+
+  it("renders parse queue status when jobs exist", async () => {
+    const snapshotWithJob = {
+      ...snapshotWithSpace,
+      parseJobs: [
+        {
+          id: "job-1",
+          fileId: "file-scan",
+          fileName: "scan.pdf",
+          jobType: "ocr",
+          status: "queued",
+          errorMessage: null,
+        },
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return snapshotWithJob;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("解析队列")).toBeInTheDocument();
+    expect(screen.getByText("scan.pdf")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "取消解析任务 scan.pdf" }),
+    ).toBeInTheDocument();
+  });
+
+  it("queues a PDF file for OCR through the desktop command", async () => {
+    const snapshotWithPdf = {
+      ...snapshotWithSpace,
+      files: [
+        {
+          id: "file-pdf",
+          name: "scan.pdf",
+          extension: ".pdf",
+          status: "queued" as const,
+          statusLabel: "待解析",
+        },
+      ],
+    };
+    const queuedSnapshot = {
+      ...snapshotWithPdf,
+      parseJobs: [
+        {
+          id: "job-ocr",
+          fileId: "file-pdf",
+          fileName: "scan.pdf",
+          jobType: "ocr",
+          status: "queued",
+          errorMessage: null,
+        },
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "enqueue_ocr_parse_job") {
+        return queuedSnapshot;
+      }
+      return snapshotWithPdf;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("scan.pdf")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "排队 OCR scan.pdf" }));
+
+    expect(await screen.findByText("解析队列")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "排队 OCR scan.pdf" })).toBeDisabled();
+  });
 });

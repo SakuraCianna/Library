@@ -5,8 +5,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::models::{
-    FileParseCandidate, KnowledgeBlockSearchHit, KnowledgeFile, KnowledgeSpace, ParseStatus,
-    ParsedDocument, PermissionMode, ScanSummary, ScannedFile,
+    FileParseCandidate, KnowledgeBlockSearchHit, KnowledgeFile, KnowledgeSpace, ParseJobSummary,
+    ParseStatus, ParsedDocument, PermissionMode, ScanSummary, ScannedFile,
 };
 
 const FOUNDATION_SCHEMA: &str = include_str!("../../migrations/001_foundation.sql");
@@ -101,8 +101,8 @@ impl SqliteStore {
              ) changed ON changed.space_id = space.id
              LEFT JOIN (
                 SELECT space_id, COUNT(*) AS queued_count
-                FROM files
-                WHERE deleted_at IS NULL AND parse_status = 'queued'
+                FROM parse_jobs
+                WHERE job_type = 'ocr' AND status IN ('queued', 'running')
                 GROUP BY space_id
              ) queued ON queued.space_id = space.id
              WHERE space.deleted_at IS NULL
@@ -209,6 +209,28 @@ impl SqliteStore {
             .collect();
 
         candidates
+    }
+
+    pub fn get_file_parse_candidate(
+        &self,
+        space_id: &str,
+        file_id: &str,
+    ) -> rusqlite::Result<Option<FileParseCandidate>> {
+        self.connection
+            .query_row(
+                "SELECT id, relative_path, extension
+                 FROM files
+                 WHERE space_id = ?1 AND id = ?2 AND deleted_at IS NULL",
+                params![space_id, file_id],
+                |row| {
+                    Ok(FileParseCandidate {
+                        file_id: row.get(0)?,
+                        relative_path: row.get(1)?,
+                        extension: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
     }
 
     pub fn replace_file_knowledge_block(
@@ -319,6 +341,85 @@ impl SqliteStore {
         }
 
         Ok(hits)
+    }
+
+    pub fn enqueue_parse_job(
+        &self,
+        space_id: &str,
+        file_id: &str,
+        job_type: &str,
+    ) -> rusqlite::Result<String> {
+        if let Some(existing_id) = self
+            .connection
+            .query_row(
+                "SELECT id
+                 FROM parse_jobs
+                 WHERE space_id = ?1
+                   AND file_id = ?2
+                   AND job_type = ?3
+                   AND status IN ('queued', 'running')
+                 ORDER BY created_at DESC
+                 LIMIT 1",
+                params![space_id, file_id, job_type],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(existing_id);
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let now = OffsetDateTime::now_utc().to_string();
+        self.connection.execute(
+            "INSERT INTO parse_jobs (id, space_id, file_id, job_type, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?5)",
+            params![id, space_id, file_id, job_type, now],
+        )?;
+        Ok(id)
+    }
+
+    pub fn list_parse_jobs(&self, space_id: &str) -> rusqlite::Result<Vec<ParseJobSummary>> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+                job.id,
+                job.file_id,
+                COALESCE(file.relative_path, '未知文件') AS file_name,
+                job.job_type,
+                job.status,
+                job.error_message
+             FROM parse_jobs job
+             LEFT JOIN files file ON file.id = job.file_id
+             WHERE job.space_id = ?1
+             ORDER BY job.created_at DESC",
+        )?;
+
+        let jobs = statement
+            .query_map([space_id], |row| {
+                let relative_path: String = row.get(2)?;
+                Ok(ParseJobSummary {
+                    id: row.get(0)?,
+                    file_id: row.get(1)?,
+                    file_name: display_file_name(&relative_path),
+                    job_type: row.get(3)?,
+                    status: row.get(4)?,
+                    error_message: row.get(5)?,
+                })
+            })?
+            .collect();
+
+        jobs
+    }
+
+    pub fn cancel_parse_job(&self, job_id: &str) -> rusqlite::Result<bool> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let updated = self.connection.execute(
+            "UPDATE parse_jobs
+             SET status = 'cancelled', updated_at = ?1
+             WHERE id = ?2 AND status = 'queued'",
+            params![now, job_id],
+        )?;
+
+        Ok(updated > 0)
     }
 
     pub fn count_knowledge_spaces(&self) -> rusqlite::Result<u32> {
@@ -1099,6 +1200,36 @@ mod tests {
         assert_eq!(hits[0].source_file_name, "Redis面试.md");
         assert!(hits[0].excerpt.contains("缓存穿透"));
         assert_eq!(files[0].status, crate::models::ParseStatus::Indexed);
+    }
+
+    #[test]
+    fn enqueues_and_cancels_parse_job() {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("OCR", "D:\\知识库\\OCR", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-scan", &space_id, "scan.pdf", "queued")
+            .expect("file is inserted");
+
+        let job_id = store
+            .enqueue_parse_job(&space_id, "file-scan", "ocr")
+            .expect("job enqueued");
+        let duplicate_job_id = store
+            .enqueue_parse_job(&space_id, "file-scan", "ocr")
+            .expect("existing active job reused");
+        let cancelled = store.cancel_parse_job(&job_id).expect("job cancelled");
+        let retried_job_id = store
+            .enqueue_parse_job(&space_id, "file-scan", "ocr")
+            .expect("cancelled job can be retried");
+        let jobs = store.list_parse_jobs(&space_id).expect("jobs list");
+
+        assert_eq!(duplicate_job_id, job_id);
+        assert!(cancelled);
+        assert_ne!(retried_job_id, job_id);
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].file_id.as_deref(), Some("file-scan"));
+        assert_eq!(jobs[0].status, "queued");
+        assert_eq!(jobs[1].status, "cancelled");
     }
 
     #[test]

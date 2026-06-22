@@ -153,6 +153,31 @@ export async function indexKnowledgeSpace(
   });
 }
 
+export async function enqueueOcrParseJob(
+  spaceId: string,
+  fileId: string,
+): Promise<WorkbenchSnapshot> {
+  if (!isTauriRuntime()) {
+    return emptyWorkbench;
+  }
+
+  return invoke<WorkbenchSnapshot>("enqueue_ocr_parse_job", {
+    request: { spaceId, fileId },
+  });
+}
+
+export async function cancelParseJob(
+  jobId: string,
+): Promise<WorkbenchSnapshot> {
+  if (!isTauriRuntime()) {
+    return emptyWorkbench;
+  }
+
+  return invoke<WorkbenchSnapshot>("cancel_parse_job", {
+    request: { jobId },
+  });
+}
+
 export async function askAgent(
   spaceId: string,
   question: string,

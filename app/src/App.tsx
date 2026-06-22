@@ -59,7 +59,9 @@ export default function App() {
     error,
     loading,
     askAgentQuestion,
+    cancelJob,
     createSpaceFromFolder,
+    enqueueOcrJob,
     indexActiveSpace,
     scanActiveSpace,
     setFolderDefaultPermission,
@@ -74,6 +76,16 @@ export default function App() {
   const defaultPermission = activeSpace?.defaultPermission ?? "readonly";
   const changedFileCount = activeSpace?.changedFileCount ?? 0;
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
+  const activeOcrFileIds = new Set(
+    snapshot.parseJobs
+      .filter(
+        (job) =>
+          job.jobType === "ocr" &&
+          (job.status === "queued" || job.status === "running") &&
+          Boolean(job.fileId),
+      )
+      .flatMap((job) => (job.fileId ? [job.fileId] : [])),
+  );
   const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
 
   function handleAskAgent(event: FormEvent<HTMLFormElement>) {
@@ -284,7 +296,21 @@ export default function App() {
                       <strong>{file.name}</strong>
                       <span>{file.extension}</span>
                     </div>
-                    <span className={fileStatusClass(file)}>{file.statusLabel}</span>
+                    <div className={styles.fileActions}>
+                      {file.extension.toLowerCase() === ".pdf" ? (
+                        <button
+                          aria-label={`排队 OCR ${file.name}`}
+                          className={styles.queueButton}
+                          disabled={loading || activeOcrFileIds.has(file.id)}
+                          onClick={() => void enqueueOcrJob(file.id)}
+                          title="排队 OCR"
+                          type="button"
+                        >
+                          OCR
+                        </button>
+                      ) : null}
+                      <span className={fileStatusClass(file)}>{file.statusLabel}</span>
+                    </div>
                   </div>
                 ))
               ) : (
@@ -330,6 +356,38 @@ export default function App() {
                 <div>可问答指标</div>
               </div>
             </article>
+
+            {snapshot.parseJobs.length > 0 ? (
+              <section className={`${styles.panel} ${styles.panelPadded}`} aria-label="解析队列">
+                <div className={styles.panelKicker}>后台任务</div>
+                <h3 className={styles.panelTitle}>解析队列</h3>
+                <div className={styles.queueList}>
+                  {snapshot.parseJobs.map((job) => (
+                    <div className={styles.queueRow} key={job.id}>
+                      <div>
+                        <strong>{job.fileName}</strong>
+                        <span>{job.jobType}</span>
+                      </div>
+                      <div className={styles.queueActions}>
+                        <span className={styles.queueStatus}>{job.status}</span>
+                        {job.status === "queued" ? (
+                          <button
+                            aria-label={`取消解析任务 ${job.fileName}`}
+                            className={styles.iconButton}
+                            disabled={loading}
+                            onClick={() => void cancelJob(job.id)}
+                            title="取消解析任务"
+                            type="button"
+                          >
+                            <Icon aria-hidden icon={xIcon} />
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
           </div>
         </section>
       </main>

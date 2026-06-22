@@ -169,6 +169,7 @@ pub struct WorkbenchSnapshot {
     pub active_scope: ChatScope,
     pub session_permission: PermissionMode,
     pub files: Vec<KnowledgeFile>,
+    pub parse_jobs: Vec<ParseJobSummary>,
     pub block_preview: KnowledgeBlockPreview,
     pub table_preview: TableInsightPreview,
     pub messages: Vec<ChatMessage>,
@@ -255,6 +256,38 @@ pub struct IndexKnowledgeSpaceRequest {
 pub struct AskAgentRequest {
     pub space_id: String,
     pub question: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnqueueOcrJobRequest {
+    pub space_id: String,
+    pub file_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelParseJobRequest {
+    pub job_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrSidecarRequest {
+    pub file_path: String,
+    pub model_dir: String,
+    pub tier: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseJobSummary {
+    pub id: String,
+    pub file_id: Option<String>,
+    pub file_name: String,
+    pub job_type: String,
+    pub status: String,
+    pub error_message: Option<String>,
 }
 
 pub fn can_request_session_permission(

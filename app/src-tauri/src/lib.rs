@@ -2,6 +2,7 @@ mod agent;
 mod commands;
 mod error;
 mod models;
+mod ocr;
 mod parser;
 mod runtime;
 mod scanner;
@@ -28,6 +29,8 @@ pub fn run() {
             commands::create_knowledge_space,
             commands::scan_knowledge_space,
             commands::index_knowledge_space,
+            commands::enqueue_ocr_parse_job,
+            commands::cancel_parse_job,
             commands::ask_agent,
             commands::set_default_permission,
             commands::get_runtime_status

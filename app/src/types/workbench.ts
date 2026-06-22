@@ -65,12 +65,22 @@ export interface OcrRuntimeStatus {
   missingModels: string[];
 }
 
+export interface ParseJobSummary {
+  id: string;
+  fileId: string | null;
+  fileName: string;
+  jobType: string;
+  status: string;
+  errorMessage: string | null;
+}
+
 export interface WorkbenchSnapshot {
   spaces: KnowledgeSpace[];
   activeSpaceId: string;
   activeScope: ChatScope;
   sessionPermission: PermissionMode;
   files: KnowledgeFile[];
+  parseJobs: ParseJobSummary[];
   blockPreview: KnowledgeBlockPreview;
   tablePreview: TableInsightPreview;
   messages: ChatMessage[];
