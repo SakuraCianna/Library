@@ -55,7 +55,7 @@ def smoke_test_sidecar(
     timeout_seconds: int,
 ) -> dict[str, Any]:
     if not smoke_pdf.is_file():
-        return make_check("smoke", False, "smoke PDF not found", path=str(smoke_pdf))
+        return make_check("smoke", False, "smoke file not found", path=str(smoke_pdf))
 
     payload = {
         "filePath": str(smoke_pdf),
@@ -195,6 +195,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tier", default="medium", choices=("tiny", "small", "medium"))
     parser.add_argument("--sidecar", default=str(Path(__file__).with_name("ocr_sidecar.py")))
     parser.add_argument("--require-runtime", action="store_true")
+    parser.add_argument("--smoke-file")
     parser.add_argument("--smoke-pdf")
     parser.add_argument("--max-pdf-pages", type=int, default=12)
     parser.add_argument("--timeout-seconds", type=int, default=180)
@@ -214,12 +215,13 @@ def print_human(report: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+    smoke_input = args.smoke_file or args.smoke_pdf
     report = build_report(
         model_dir=Path(args.model_dir),
         tier=args.tier,
         sidecar_path=Path(args.sidecar),
         require_runtime=args.require_runtime,
-        smoke_pdf=Path(args.smoke_pdf) if args.smoke_pdf else None,
+        smoke_pdf=Path(smoke_input) if smoke_input else None,
         max_pdf_pages=args.max_pdf_pages,
         timeout_seconds=args.timeout_seconds,
     )

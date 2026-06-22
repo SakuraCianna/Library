@@ -562,7 +562,7 @@ impl AppState {
         };
         if !is_ocr_supported_extension(&candidate.extension) {
             return Err(AppError::Storage(
-                "当前 OCR 队列仅支持 PDF 文件".to_string(),
+                "当前 OCR 队列仅支持 PDF 或图片文件".to_string(),
             ));
         }
         let config = ocr_config(&self.app_data_dir);
@@ -705,7 +705,7 @@ impl AppState {
         let file_name = display_relative_file_name(&candidate.relative_path);
         if !is_ocr_supported_extension(&candidate.extension) {
             return Err(AppError::Storage(
-                "当前 OCR 队列仅支持 PDF 文件".to_string(),
+                "当前 OCR 队列仅支持 PDF 或图片文件".to_string(),
             ));
         }
 
@@ -1138,9 +1138,10 @@ fn display_relative_file_name(relative_path: &str) -> String {
 }
 
 fn is_ocr_supported_extension(extension: &str) -> bool {
-    extension
-        .trim_start_matches('.')
-        .eq_ignore_ascii_case("pdf")
+    matches!(
+        extension.trim_start_matches('.').to_lowercase().as_str(),
+        "pdf" | "png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff" | "webp"
+    )
 }
 
 #[cfg(test)]
@@ -1168,7 +1169,7 @@ mod tests {
     fn creates_scans_and_updates_real_space_state() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         fs::write(temp_dir.path().join("README.md"), "hello").expect("write md");
-        fs::write(temp_dir.path().join("image.png"), "skip").expect("write unsupported");
+        fs::write(temp_dir.path().join("image.png"), "image").expect("write image");
         let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
         let created = state
             .create_knowledge_space(
@@ -1186,9 +1187,15 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
 
-        assert_eq!(scanned.files.len(), 1);
-        assert_eq!(scanned.files[0].name, "README.md");
-        assert_eq!(scanned.files[0].status_label, "待解析");
+        assert_eq!(scanned.files.len(), 2);
+        assert!(scanned
+            .files
+            .iter()
+            .any(|file| file.name == "README.md" && file.status_label == "待解析"));
+        assert!(scanned
+            .files
+            .iter()
+            .any(|file| file.name == "image.png" && file.status_label == "待解析"));
         assert!(scanned
             .parse_jobs
             .iter()
@@ -1197,6 +1204,10 @@ mod tests {
             .parse_jobs
             .iter()
             .any(|job| job.job_type == "document" && job.status == "queued"));
+        assert!(!scanned
+            .parse_jobs
+            .iter()
+            .any(|job| job.job_type == "document" && job.file_name == "image.png"));
     }
 
     #[test]
@@ -1514,6 +1525,42 @@ mod tests {
     }
 
     #[test]
+    fn enqueues_image_ocr_job_when_models_are_ready() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("scan.png"), "image").expect("write image");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let model_dir = app_data_dir
+            .path()
+            .join("models")
+            .join("ocr")
+            .join("pp-ocrv6");
+        create_test_ocr_model(&model_dir);
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+
+        let queued = state
+            .enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone())
+            .expect("ocr job queued");
+
+        assert_eq!(queued.files[0].extension, ".png");
+        assert!(queued.parse_jobs.iter().any(|job| {
+            job.job_type == "ocr" && job.file_id.as_deref() == Some(scanned.files[0].id.as_str())
+        }));
+    }
+
+    #[test]
     fn document_worker_gate_allows_one_worker_per_space_until_finished() {
         let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
         fs::write(knowledge_dir.path().join("README.md"), "hello").expect("write md");
@@ -1574,7 +1621,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_pdf_ocr_jobs_before_queueing() {
+    fn rejects_non_ocr_supported_jobs_before_queueing() {
         let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
         fs::write(knowledge_dir.path().join("README.md"), "hello").expect("write md");
         let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
@@ -1595,7 +1642,7 @@ mod tests {
         assert!(result
             .expect_err("md file is rejected")
             .to_string()
-            .contains("仅支持 PDF"));
+            .contains("仅支持 PDF 或图片"));
     }
 
     #[test]
@@ -1651,6 +1698,64 @@ mod tests {
         assert_eq!(ocr_job.status, "succeeded");
         assert_eq!(ocr_job.phase, "已完成");
         assert!(snapshot.block_preview.excerpt.contains("OCR 文本"));
+    }
+
+    #[test]
+    fn runs_next_image_ocr_job_into_searchable_knowledge_block() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("scan.png"), "image").expect("write image");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let model_dir = app_data_dir
+            .path()
+            .join("models")
+            .join("ocr")
+            .join("pp-ocrv6");
+        create_test_ocr_model(&model_dir);
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+        state
+            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .expect("ocr job queued");
+
+        state
+            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_candidate, request| {
+                assert!(request.file_path.ends_with("scan.png"));
+                Ok(OcrSidecarResult {
+                    text: "截图里的本地 OCR 文本".to_string(),
+                    page_count: 1,
+                    pages: vec![OcrPageResult {
+                        page_index: 0,
+                        text: "截图里的本地 OCR 文本".to_string(),
+                        confidence: Some(0.91),
+                    }],
+                })
+            })
+            .expect("image ocr job runs");
+        let snapshot = state.snapshot().expect("snapshot builds");
+
+        let ocr_job = snapshot
+            .parse_jobs
+            .iter()
+            .find(|job| job.job_type == "ocr")
+            .expect("ocr job exists");
+        assert_eq!(snapshot.files[0].status_label, "已索引");
+        assert_eq!(ocr_job.status, "succeeded");
+        assert!(snapshot
+            .block_preview
+            .excerpt
+            .contains("截图里的本地 OCR 文本"));
     }
 
     #[tokio::test(flavor = "current_thread")]

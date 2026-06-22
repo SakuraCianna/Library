@@ -3,6 +3,7 @@ param(
   [string]$Tier = 'medium',
   [string]$ModelDir = "$PSScriptRoot\..\models\ocr\pp-ocrv6",
   [string]$PythonPath = '',
+  [string]$SmokeFile = '',
   [string]$SmokePdf = '',
   [switch]$SkipRuntime
 )
@@ -49,9 +50,10 @@ if (-not $SkipRuntime) {
   $arguments += '--require-runtime'
 }
 
-if ($SmokePdf.Trim()) {
-  $arguments += '--smoke-pdf'
-  $arguments += $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SmokePdf)
+$smokeInput = if ($SmokeFile.Trim()) { $SmokeFile } else { $SmokePdf }
+if ($smokeInput.Trim()) {
+  $arguments += '--smoke-file'
+  $arguments += $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($smokeInput)
 }
 
 Write-Host "Python: $python"

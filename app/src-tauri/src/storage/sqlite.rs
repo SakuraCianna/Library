@@ -9,6 +9,7 @@ use crate::models::{
     ParseJobSummary, ParseStatus, ParsedDocument, PermissionMode, ScanSummary, ScannedFile,
 };
 
+const DOCUMENT_PARSE_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
 const FOUNDATION_SCHEMA: &str = include_str!("../../migrations/001_foundation.sql");
 const FOUNDATION_TABLES: [&str; 6] = [
     "knowledge_spaces",
@@ -272,6 +273,13 @@ impl SqliteStore {
                     extension: row.get(2)?,
                 })
             })?
+            .filter_map(|candidate| match candidate {
+                Ok(candidate) if is_document_parse_extension(&candidate.extension) => {
+                    Some(Ok(candidate))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
             .collect();
 
         candidates
@@ -1342,9 +1350,21 @@ fn list_parse_candidates_in_tx(
                 extension: row.get(2)?,
             })
         })?
+        .filter_map(|candidate| match candidate {
+            Ok(candidate) if is_document_parse_extension(&candidate.extension) => {
+                Some(Ok(candidate))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
         .collect();
 
     candidates
+}
+
+fn is_document_parse_extension(extension: &str) -> bool {
+    let extension = extension.trim_start_matches('.').to_lowercase();
+    DOCUMENT_PARSE_EXTENSIONS.contains(&extension.as_str())
 }
 
 fn replace_file_knowledge_block_in_tx(
@@ -1771,6 +1791,7 @@ mod tests {
         let scanned = vec![
             scanned_file("README.md", "md", 10, "hash-a"),
             scanned_file("资料\\Redis.docx", "docx", 20, "hash-b"),
+            scanned_file("截图.png", "png", 30, "hash-image"),
         ];
         store
             .apply_scan_results(&space_id, &scanned)
@@ -1793,6 +1814,7 @@ mod tests {
                 .count(),
             2
         );
+        assert!(!jobs.iter().any(|job| job.file_name == "截图.png"));
         assert_eq!(spaces[0].document_queue_count, 2);
     }
 
