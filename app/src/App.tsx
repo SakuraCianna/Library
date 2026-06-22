@@ -67,6 +67,11 @@ const jobTypeLabel: Record<string, string> = {
   document: "文档解析",
   ocr: "本地 OCR",
 };
+const QUEUE_ERROR_MAX_CHARS = 180;
+const WINDOWS_FILE_PATH_PATTERN =
+  /(?:[A-Za-z]:\\|\\\\[^\\/:*?"<>|\s\r\n]+\\)(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*?\.(?:pdf|docx|xlsx|md|txt|png|jpe?g|bmp|tiff?|webp)\b/gi;
+const WINDOWS_DIRECTORY_PATH_PATTERN =
+  /(?:[A-Za-z]:\\|\\\\[^\\/:*?"<>|\s\r\n]+\\)(?:[^\\/:*?"<>|\s\r\n]+\\)*[^\\/:*?"<>|\s\r\n]*/g;
 
 function fileStatusClass(file: KnowledgeFile) {
   if (file.status === "changed") return styles.statusChanged;
@@ -103,6 +108,23 @@ function queueProgressText(job: ParseJobSummary) {
   }
 
   return `${job.progressCurrent}/${job.progressTotal}`;
+}
+
+function queueErrorText(message: string) {
+  const withoutPrivatePaths = message
+    .replace(WINDOWS_FILE_PATH_PATTERN, "本地文件路径")
+    .replace(WINDOWS_DIRECTORY_PATH_PATTERN, "本地文件路径")
+    .trim();
+  if (withoutPrivatePaths.length === 0) {
+    return "任务执行失败，请查看日志。";
+  }
+
+  const chars = Array.from(withoutPrivatePaths);
+  if (chars.length <= QUEUE_ERROR_MAX_CHARS) {
+    return withoutPrivatePaths;
+  }
+
+  return `${chars.slice(0, QUEUE_ERROR_MAX_CHARS).join("")}…`;
 }
 
 function cancelJobLabel(job: ParseJobSummary) {
@@ -803,7 +825,9 @@ export default function App() {
                           {job.phase || "等待执行"}
                         </span>
                         {job.errorMessage ? (
-                          <span className={styles.queueError}>{job.errorMessage}</span>
+                          <span className={styles.queueError}>
+                            {queueErrorText(job.errorMessage)}
+                          </span>
                         ) : null}
                       </div>
                       <div className={styles.queueActions}>

@@ -15,14 +15,14 @@
 Recorded on 2026-06-23 from `E:\CodeHome\Library`.
 
 - Branch: `codex/Library`.
-- Module 1 started from a clean worktree at `43daf861e02a3b3174e7b35b4174187269a64f7f`.
-- `main`, `origin/main`, `codex/Library`, and `origin/codex/Library`: `43daf861e02a3b3174e7b35b4174187269a64f7f`.
-- File diff between `main` and `codex/Library`: none at Module 1 start.
-- Frontend tests: `npm test` passed, 4 files and 28 tests.
+- Module 2 started from a clean worktree at `4fbdba6ca3e23d7686aca9d883a41bba14d19240`.
+- `main`, `origin/main`, `codex/Library`, and `origin/codex/Library`: `4fbdba6ca3e23d7686aca9d883a41bba14d19240`.
+- File diff between `main` and `codex/Library`: none at Module 2 start.
+- Frontend tests: `npm test` passed, 4 files and 29 tests.
 - Frontend build: `npm run build` passed.
-- OCR sidecar tests: `..\..\.venv\Scripts\python.exe -m pytest` passed, 20 tests.
+- OCR sidecar tests: `..\..\.venv\Scripts\python.exe -m pytest` passed, 25 tests.
 - Rust format: `cargo fmt -- --check` passed.
-- Rust tests: `cargo test` passed, 79 tests.
+- Rust tests: `cargo test` passed, 82 tests.
 - Rust check: `cargo check` passed.
 - Whitespace check: `git diff --check` passed.
 - OCR local environment check: `.\scripts\检查OCR环境.ps1 -Tier medium` passed for models, sidecar, `pypdf`, `paddleocr`, and `paddlepaddle`.
@@ -90,7 +90,7 @@ Set-Location E:\CodeHome\Library
 - [x] Mark only evidence-backed completed plan steps in older plan files.
 - [x] Leave any manual smoke-test-only items unchecked unless the smoke path was run in the current module.
 - [x] Add a short "当前进度验收" section to README if it improves user-facing clarity.
-- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+- [x] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 2: Import And OCR Stability Limits
 
@@ -104,15 +104,16 @@ Set-Location E:\CodeHome\Library
 - Modify: `sidecars/ocr/check_ocr_environment.py`
 - Modify: `sidecars/ocr/ocr_sidecar.py`
 - Modify: `sidecars/ocr/test_ocr_sidecar.py`
+- Modify: `scripts/检查OCR环境.ps1`
 - Modify: `app/src/__tests__/App.test.tsx`
 - Modify: `README.md`
 
-- [ ] Add or confirm tests for PDF page limits, image size limits, and 50 MB input enforcement.
-- [ ] Add scanner-level guardrails for very large folders with clear Chinese user-facing messages.
-- [ ] Ensure cancelled scan/document/OCR jobs never write success output after cancellation.
-- [ ] Ensure failed document and OCR jobs can be retried without duplicate active jobs.
-- [ ] Show bounded error messages in the queue UI without leaking absolute private paths.
-- [ ] Run the full verification gate and OCR environment check.
+- [x] Add or confirm tests for PDF page limits, image size limits, and 50 MB input enforcement.
+- [x] Add scanner-level guardrails for very large folders with clear Chinese user-facing messages.
+- [x] Ensure cancelled scan/document/OCR jobs never write success output after cancellation.
+- [x] Ensure failed document and OCR jobs can be retried without duplicate active jobs.
+- [x] Show bounded error messages in the queue UI without leaking absolute private paths.
+- [x] Run the full verification gate and OCR environment check.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 3: Backup Export Minimum
@@ -220,4 +221,4 @@ Set-Location E:\CodeHome\Library
 
 ## Next Immediate Target
 
-Start with Module 1 only. It is small, low risk, and fixes the current mismatch between verified progress and stale historical checkboxes. After that, Module 2 is the first feature/stability module because ingestion limits and retry/cancel correctness protect user data. Module 3 then adds a minimum export path before deeper parsing expands the amount of durable local data.
+Complete the Module 2 delivery flow on `codex/Library`: independent review, commit, PR, merge, and branch sync. After Module 2 is merged, the next durable target is Module 3: Backup Export Minimum, so local metadata and knowledge blocks have a recoverability path before deeper parser work increases durable data volume.

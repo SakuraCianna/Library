@@ -247,9 +247,7 @@ impl AppState {
     pub fn scan_knowledge_space(&self, space_id: String) -> Result<WorkbenchSnapshot, AppError> {
         let _ = self.prepare_scan_knowledge_space(space_id.clone())?;
         let outcome = self.run_one_scan_job_with_scanner(&space_id, |root_path, _job_id| {
-            crate::scanner::scan_folder(root_path).map_err(|error| {
-                AppError::Filesystem(format!("无法扫描文件夹 {}：{}", root_path.display(), error))
-            })
+            crate::scanner::scan_folder(root_path).map_err(scan_filesystem_error)
         })?;
         self.finish_scan_worker(&space_id);
 
@@ -314,13 +312,7 @@ impl AppState {
                     }
                     true
                 })
-                .map_err(|error| {
-                    AppError::Filesystem(format!(
-                        "无法扫描文件夹 {}：{}",
-                        root_path.display(),
-                        error
-                    ))
-                })
+                .map_err(scan_filesystem_error)
             });
 
             match outcome {
@@ -1317,6 +1309,10 @@ fn validate_folder_path(path: &Path) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn scan_filesystem_error(error: std::io::Error) -> AppError {
+    AppError::Filesystem(format!("无法扫描文件夹：{error}"))
 }
 
 fn source_locator_to_relative_path(source_locator: &str) -> Result<PathBuf, AppError> {
@@ -2393,6 +2389,32 @@ mod tests {
             ocr_job.error_message.as_deref(),
             Some("文件系统错误：OCR_EMPTY_RESULT")
         );
+
+        let failed_job_id = ocr_job.id.clone();
+        let retried = state
+            .enqueue_ocr_parse_job(
+                snapshot.active_space_id.clone(),
+                snapshot.files[0].id.clone(),
+            )
+            .expect("failed ocr job can be retried");
+        let ocr_jobs = retried
+            .parse_jobs
+            .iter()
+            .filter(|job| job.job_type == "ocr")
+            .collect::<Vec<_>>();
+        let active_job_count = ocr_jobs
+            .iter()
+            .filter(|job| matches!(job.status.as_str(), "queued" | "running"))
+            .count();
+
+        assert_eq!(ocr_jobs.len(), 2);
+        assert_eq!(active_job_count, 1);
+        assert!(ocr_jobs
+            .iter()
+            .any(|job| job.id == failed_job_id && job.status == "failed"));
+        assert!(ocr_jobs.iter().any(|job| {
+            job.id != failed_job_id && job.status == "queued" && job.error_message.is_none()
+        }));
     }
 
     #[test]

@@ -31,7 +31,23 @@ def test_parse_request_accepts_local_file_and_model_dir():
     assert request.model_dir.endswith("pp-ocrv6")
     assert request.tier == "medium"
     assert request.max_pdf_pages == 12
+    assert request.max_image_pixels == 25_000_000
     assert request.progress is False
+
+
+def test_parse_request_accepts_image_pixel_limit():
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": "E:\\Knowledge\\scan.png",
+                "modelDir": "E:\\CodeHome\\Library\\models\\ocr\\pp-ocrv6",
+                "tier": "medium",
+                "maxImagePixels": 1000,
+            }
+        )
+    )
+
+    assert request.max_image_pixels == 1000
 
 
 def test_parse_request_accepts_progress_stream_flag():
@@ -252,7 +268,7 @@ def test_run_ocr_accepts_image_without_pdf_page_count(tmp_path: Path):
     image_path = tmp_path / "scan.png"
     model_dir = tmp_path / "models"
     create_model_assets(model_dir)
-    image_path.write_bytes(b"image")
+    write_png_header(image_path, width=3, height=4)
     request = parse_request(
         json.dumps(
             {
@@ -286,7 +302,7 @@ def test_run_ocr_reports_image_progress(tmp_path: Path):
     model_dir = tmp_path / "models"
     progress_events = []
     create_model_assets(model_dir)
-    image_path.write_bytes(b"image")
+    write_png_header(image_path, width=3, height=4)
     request = parse_request(
         json.dumps(
             {
@@ -366,6 +382,113 @@ def test_run_ocr_rejects_pdf_over_page_limit_before_engine(tmp_path: Path):
     assert response["error"]["code"] == "OCR_TOO_MANY_PAGES"
 
 
+def test_run_ocr_rejects_image_over_pixel_limit_before_engine(tmp_path: Path):
+    image_path = tmp_path / "scan.png"
+    model_dir = tmp_path / "models"
+    write_png_header(image_path, width=6, height=5)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(image_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "maxImagePixels": 20,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: (_ for _ in ()).throw(
+            AssertionError("OCR engine should not run")
+        ),
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OCR_IMAGE_TOO_LARGE"
+    assert "6x5" in response["error"]["message"]
+
+
+def test_run_ocr_rejects_tiff_over_pixel_limit_before_engine(tmp_path: Path):
+    image_path = tmp_path / "scan.tiff"
+    model_dir = tmp_path / "models"
+    write_tiff_header(image_path, width=7, height=6)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(image_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "maxImagePixels": 40,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: (_ for _ in ()).throw(
+            AssertionError("OCR engine should not run")
+        ),
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OCR_IMAGE_TOO_LARGE"
+    assert "7x6" in response["error"]["message"]
+
+
+def test_run_ocr_rejects_webp_over_pixel_limit_before_engine(tmp_path: Path):
+    image_path = tmp_path / "scan.webp"
+    model_dir = tmp_path / "models"
+    write_webp_vp8x_header(image_path, width=8, height=6)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(image_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "maxImagePixels": 47,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: (_ for _ in ()).throw(
+            AssertionError("OCR engine should not run")
+        ),
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OCR_IMAGE_TOO_LARGE"
+    assert "8x6" in response["error"]["message"]
+
+
+def test_run_ocr_rejects_unreadable_image_dimensions_before_engine(tmp_path: Path):
+    image_path = tmp_path / "scan.png"
+    model_dir = tmp_path / "models"
+    image_path.write_bytes(b"image")
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(image_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "maxImagePixels": 25_000_000,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: (_ for _ in ()).throw(
+            AssertionError("OCR engine should not run")
+        ),
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OCR_IMAGE_DIMENSION_UNREADABLE"
+
+
 def test_real_ocr_engine_forces_model_source_flags(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("DISABLE_MODEL_SOURCE_CHECK", "False")
     monkeypatch.setenv("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "False")
@@ -412,3 +535,51 @@ def write_test_pdf(pdf_path: Path, page_count: int = 1) -> None:
         writer.add_blank_page(width=120, height=120)
     with pdf_path.open("wb") as file:
         writer.write(file)
+
+
+def write_png_header(png_path: Path, *, width: int, height: int) -> None:
+    png_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + (13).to_bytes(4, "big")
+        + b"IHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x02\x00\x00\x00"
+        + b"\x00\x00\x00\x00"
+    )
+
+
+def write_tiff_header(tiff_path: Path, *, width: int, height: int) -> None:
+    def entry(tag: int, value: int) -> bytes:
+        return (
+            tag.to_bytes(2, "little")
+            + (4).to_bytes(2, "little")
+            + (1).to_bytes(4, "little")
+            + value.to_bytes(4, "little")
+        )
+
+    tiff_path.write_bytes(
+        b"II"
+        + (42).to_bytes(2, "little")
+        + (8).to_bytes(4, "little")
+        + (2).to_bytes(2, "little")
+        + entry(256, width)
+        + entry(257, height)
+        + (0).to_bytes(4, "little")
+    )
+
+
+def write_webp_vp8x_header(webp_path: Path, *, width: int, height: int) -> None:
+    chunk_data = (
+        b"\x00\x00\x00\x00"
+        + (width - 1).to_bytes(3, "little")
+        + (height - 1).to_bytes(3, "little")
+    )
+    webp_path.write_bytes(
+        b"RIFF"
+        + (4 + 8 + len(chunk_data)).to_bytes(4, "little")
+        + b"WEBP"
+        + b"VP8X"
+        + len(chunk_data).to_bytes(4, "little")
+        + chunk_data
+    )
