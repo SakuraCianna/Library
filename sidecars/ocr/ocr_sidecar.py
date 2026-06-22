@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable
 
 
 OCR_VERSION = "PP-OCRv6"
-SUPPORTED_EXTENSIONS = {".pdf"}
+SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 MAX_INPUT_BYTES = 50 * 1024 * 1024
 DEFAULT_MAX_PDF_PAGES = 12
 REQUIRED_MODEL_FILES = ("inference.json", "inference.pdiparams", "inference.yml")
@@ -102,19 +102,21 @@ def validate_request(request: OcrRequest) -> dict[str, Any] | None:
         return build_error_response("INPUT_NOT_FOUND", "输入文件不存在")
     if file_path.stat().st_size > MAX_INPUT_BYTES:
         return build_error_response("OCR_INPUT_TOO_LARGE", "OCR 输入文件超过 50 MB")
-    if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-        return build_error_response("OCR_UNSUPPORTED_FILE", "当前 OCR 仅支持 PDF 文件")
-    try:
-        page_count = detect_pdf_page_count(file_path)
-    except RuntimeError as exc:
-        return build_error_response("OCR_RUNTIME_NOT_INSTALLED", str(exc))
-    except Exception as exc:
-        return build_error_response("OCR_PDF_PAGE_COUNT_FAILED", f"无法读取 PDF 页数：{exc}")
-    if page_count > request.max_pdf_pages:
-        return build_error_response(
-            "OCR_TOO_MANY_PAGES",
-            f"OCR PDF 页数 {page_count} 超过当前上限 {request.max_pdf_pages}",
-        )
+    extension = file_path.suffix.lower()
+    if extension not in SUPPORTED_EXTENSIONS:
+        return build_error_response("OCR_UNSUPPORTED_FILE", "当前 OCR 仅支持 PDF 或图片文件")
+    if extension == ".pdf":
+        try:
+            page_count = detect_pdf_page_count(file_path)
+        except RuntimeError as exc:
+            return build_error_response("OCR_RUNTIME_NOT_INSTALLED", str(exc))
+        except Exception as exc:
+            return build_error_response("OCR_PDF_PAGE_COUNT_FAILED", f"无法读取 PDF 页数：{exc}")
+        if page_count > request.max_pdf_pages:
+            return build_error_response(
+                "OCR_TOO_MANY_PAGES",
+                f"OCR PDF 页数 {page_count} 超过当前上限 {request.max_pdf_pages}",
+            )
 
     missing = missing_model_assets(request)
     if missing:

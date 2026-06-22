@@ -153,6 +153,39 @@ def test_run_ocr_uses_injected_engine_without_importing_heavy_runtime(tmp_path: 
     assert response["result"]["pageCount"] == 1
 
 
+def test_run_ocr_accepts_image_without_pdf_page_count(tmp_path: Path):
+    image_path = tmp_path / "scan.png"
+    model_dir = tmp_path / "models"
+    create_model_assets(model_dir)
+    image_path.write_bytes(b"image")
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(image_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "maxPdfPages": 1,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: lambda _path: [
+            {
+                "res": {
+                    "page_index": 0,
+                    "rec_texts": ["IMAGE OCR TEXT"],
+                    "rec_scores": [0.91],
+                }
+            }
+        ],
+    )
+
+    assert response["ok"] is True
+    assert response["result"]["text"] == "IMAGE OCR TEXT"
+
+
 def test_run_ocr_reports_empty_result(tmp_path: Path):
     pdf_path = tmp_path / "scan.pdf"
     model_dir = tmp_path / "models"

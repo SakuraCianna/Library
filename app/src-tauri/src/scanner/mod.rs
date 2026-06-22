@@ -7,7 +7,9 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::models::ScannedFile;
 
-const SUPPORTED_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
+const SUPPORTED_EXTENSIONS: [&str; 12] = [
+    "pdf", "docx", "xlsx", "md", "txt", "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp",
+];
 const SKIPPED_DIR_NAMES: [&str; 7] = [
     ".git",
     ".idea",
@@ -139,7 +141,7 @@ mod tests {
     fn scans_supported_files_and_skips_hidden_or_unsupported_entries() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         fs::write(temp_dir.path().join("README.md"), "hello").expect("write md");
-        fs::write(temp_dir.path().join("image.png"), "skip").expect("write png");
+        fs::write(temp_dir.path().join("image.png"), "image").expect("write png");
         fs::create_dir(temp_dir.path().join(".git")).expect("hidden dir");
         fs::write(temp_dir.path().join(".git").join("secret.md"), "skip").expect("write hidden");
         fs::create_dir(temp_dir.path().join("资料")).expect("nested dir");
@@ -151,9 +153,13 @@ mod tests {
             .map(|file| file.relative_path.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(relative_paths, vec!["README.md", "资料\\Redis.PDF"]);
-        assert_eq!(scanned[0].extension, "md");
-        assert_eq!(scanned[1].extension, "pdf");
+        assert_eq!(
+            relative_paths,
+            vec!["image.png", "README.md", "资料\\Redis.PDF"]
+        );
+        assert_eq!(scanned[0].extension, "png");
+        assert_eq!(scanned[1].extension, "md");
+        assert_eq!(scanned[2].extension, "pdf");
     }
 
     #[test]

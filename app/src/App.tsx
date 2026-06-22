@@ -92,6 +92,12 @@ function cancelJobLabel(job: ParseJobSummary) {
   return job.jobType === "scan" ? "取消扫描任务" : "取消解析任务";
 }
 
+function isOcrSupportedFile(file: KnowledgeFile) {
+  return [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"].includes(
+    file.extension.toLowerCase(),
+  );
+}
+
 export default function App() {
   const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
     useState(false);
@@ -394,7 +400,7 @@ export default function App() {
                       <span>{file.extension}</span>
                     </div>
                     <div className={styles.fileActions}>
-                      {file.extension.toLowerCase() === ".pdf" ? (
+                      {isOcrSupportedFile(file) ? (
                         <button
                           aria-label={`排队 OCR ${file.name}`}
                           className={styles.queueButton}

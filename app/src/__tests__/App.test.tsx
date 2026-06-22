@@ -237,6 +237,50 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "排队 OCR scan.pdf" })).toBeDisabled();
   });
 
+  it("queues an image file for OCR through the desktop command", async () => {
+    const snapshotWithImage = {
+      ...snapshotWithSpace,
+      files: [
+        {
+          id: "file-image",
+          name: "scan.png",
+          extension: ".png",
+          status: "queued" as const,
+          statusLabel: "待解析",
+        },
+      ],
+    };
+    const queuedSnapshot = {
+      ...snapshotWithImage,
+      parseJobs: [
+        parseJob({
+          fileId: "file-image",
+          fileName: "scan.png",
+        }),
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "enqueue_ocr_parse_job") {
+        return queuedSnapshot;
+      }
+      return snapshotWithImage;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("scan.png")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "排队 OCR scan.png" }));
+
+    expect(await screen.findByText("解析队列")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "排队 OCR scan.png" })).toBeDisabled();
+  });
+
   it("starts folder scanning through the scan command", async () => {
     const commands: string[] = [];
     const scanningSnapshot = {
