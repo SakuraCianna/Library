@@ -132,6 +132,7 @@ pub struct ChatMessageSource {
     pub excerpt: String,
     pub source_file_name: String,
     pub source_locator: String,
+    pub source_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +294,7 @@ pub struct KnowledgeBlockSearchHit {
     pub excerpt: String,
     pub source_file_name: String,
     pub source_locator: String,
+    pub source_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

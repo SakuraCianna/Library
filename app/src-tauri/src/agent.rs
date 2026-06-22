@@ -33,12 +33,22 @@ fn build_local_answer(question: &str, hits: &[KnowledgeBlockSearchHit]) -> Strin
     );
 
     for (index, hit) in hits.iter().enumerate() {
-        answer.push_str(&format!("\n{}. {}：{}", index + 1, hit.title, hit.excerpt));
+        answer.push_str(&format!(
+            "\n{}. [{}] {}：{}",
+            index + 1,
+            source_kind_label(&hit.source_kind),
+            hit.title,
+            hit.excerpt
+        ));
     }
 
     answer.push_str("\n\n来源：");
     for hit in hits {
-        answer.push_str(&format!("\n- {}", hit.source_file_name));
+        answer.push_str(&format!(
+            "\n- {}（{}）",
+            hit.source_file_name,
+            source_kind_label(&hit.source_kind)
+        ));
     }
 
     answer
@@ -103,8 +113,9 @@ fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {
         }
 
         context.push_str(&format!(
-            "[来源 {}]\n来源文件：{}\n来源定位：{}\n标题：{}\n内容：{}\n\n",
+            "[来源 {}]\n来源类型：{}\n来源文件：{}\n来源定位：{}\n标题：{}\n内容：{}\n\n",
             index + 1,
+            source_kind_label(&hit.source_kind),
             hit.source_file_name,
             hit.source_locator,
             hit.title,
@@ -113,6 +124,14 @@ fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {
     }
 
     context.chars().take(MAX_CONTEXT_CHARS).collect()
+}
+
+fn source_kind_label(source_kind: &str) -> &'static str {
+    match source_kind {
+        "table" => "表格洞察",
+        "markdown_note" => "Markdown 笔记",
+        _ => "原始文件",
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -159,11 +178,31 @@ mod tests {
                 excerpt: "缓存穿透需要空值缓存和布隆过滤器。".to_string(),
                 source_file_name: "Redis面试.md".to_string(),
                 source_locator: "Redis面试.md".to_string(),
+                source_kind: "original_file".to_string(),
             }],
         );
 
         assert!(answer.contains("空值缓存"));
         assert!(answer.contains("来源"));
         assert!(answer.contains("Redis面试.md"));
+    }
+
+    #[test]
+    fn local_answer_labels_table_sources() {
+        let answer = build_local_answer(
+            "6月营收",
+            &[KnowledgeBlockSearchHit {
+                id: "table-1".to_string(),
+                title: "经营报表.xlsx · 工作表 1".to_string(),
+                excerpt: "表头：月份、营收、成本 样例 1：2026-06 | 120 | 70".to_string(),
+                source_file_name: "经营报表.xlsx".to_string(),
+                source_locator: "经营报表.xlsx#sheet-001".to_string(),
+                source_kind: "table".to_string(),
+            }],
+        );
+
+        assert!(answer.contains("[表格洞察]"));
+        assert!(answer.contains("2026-06 | 120 | 70"));
+        assert!(answer.contains("经营报表.xlsx（表格洞察）"));
     }
 }

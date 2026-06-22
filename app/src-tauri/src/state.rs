@@ -1298,6 +1298,7 @@ fn chat_sources_from_hits(hits: &[KnowledgeBlockSearchHit]) -> Vec<ChatMessageSo
             excerpt: hit.excerpt.clone(),
             source_file_name: hit.source_file_name.clone(),
             source_locator: hit.source_locator.clone(),
+            source_kind: hit.source_kind.clone(),
         })
         .collect()
 }
@@ -1707,8 +1708,11 @@ mod tests {
         assert!(indexed.block_preview.excerpt.contains("缓存穿透"));
     }
 
-    #[test]
-    fn indexes_xlsx_table_insight_into_snapshot_preview() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn indexes_xlsx_table_insight_into_snapshot_preview_and_agent_sources() {
+        let _env_lock = env_lock().lock().expect("env lock");
+        let _api_key_guard = EnvVarGuard::set("DEEPSEEK_API_KEY", "test-local-key");
+        let _base_url_guard = EnvVarGuard::set("DEEPSEEK_BASE_URL", "http://127.0.0.1:9");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         fs::write(temp_dir.path().join("经营报表.xlsx"), "xlsx").expect("write xlsx");
         let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
@@ -1747,6 +1751,24 @@ mod tests {
             .table_preview
             .description
             .contains("月份、营收、成本"));
+
+        let answered = state
+            .ask_agent(indexed.active_space_id, "2026-06 营收".to_string())
+            .await
+            .expect("agent answers from table insight");
+        let assistant_message = answered
+            .messages
+            .iter()
+            .find(|message| message.role == ChatRole::Assistant)
+            .expect("assistant message exists");
+
+        assert!(assistant_message.content.contains("[表格洞察]"));
+        assert_eq!(assistant_message.sources.len(), 1);
+        assert_eq!(assistant_message.sources[0].source_kind, "table");
+        assert_eq!(
+            assistant_message.sources[0].source_locator,
+            "经营报表.xlsx#sheet-001"
+        );
     }
 
     #[test]

@@ -469,7 +469,7 @@ impl SqliteStore {
     ) -> rusqlite::Result<Option<KnowledgeBlockSearchHit>> {
         self.connection
             .query_row(
-                "SELECT id, title, body, source_locator
+                "SELECT id, title, body, source_locator, source_kind
                  FROM knowledge_blocks
                  WHERE space_id = ?1
                    AND searchable = 1
@@ -1026,7 +1026,7 @@ impl SqliteStore {
         limit: usize,
     ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
         let mut statement = self.connection.prepare(
-            "SELECT block.id, block.title, block.body, block.source_locator
+            "SELECT block.id, block.title, block.body, block.source_locator, block.source_kind
              FROM knowledge_blocks_fts fts
              JOIN knowledge_blocks block ON block.fts_rowid = fts.rowid
              WHERE block.space_id = ?1
@@ -1041,7 +1041,9 @@ impl SqliteStore {
         });
 
         match rows {
-            Ok(mapped) => mapped.collect(),
+            Ok(mapped) => mapped
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .or_else(|_| Ok(Vec::new())),
             Err(_) => Ok(Vec::new()),
         }
     }
@@ -1054,7 +1056,7 @@ impl SqliteStore {
     ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
         let pattern = format!("%{term}%");
         let mut statement = self.connection.prepare(
-            "SELECT id, title, body, source_locator
+            "SELECT id, title, body, source_locator, source_kind
              FROM knowledge_blocks
              WHERE space_id = ?1
                AND searchable = 1
@@ -1079,7 +1081,7 @@ impl SqliteStore {
         file_id: &str,
     ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, title, body, source_locator
+            "SELECT id, title, body, source_locator, source_kind
              FROM knowledge_blocks
              WHERE space_id = ?1
                AND file_id = ?2
@@ -1104,7 +1106,7 @@ impl SqliteStore {
         }
 
         let mut statement = self.connection.prepare(
-            "SELECT id, title, body, source_locator
+            "SELECT id, title, body, source_locator, source_kind
              FROM knowledge_blocks
              WHERE space_id = ?1
                AND id = ?2
@@ -1836,6 +1838,7 @@ fn row_to_search_hit(row: &Row<'_>, term: &str) -> rusqlite::Result<KnowledgeBlo
         excerpt: build_excerpt(&body, term),
         source_file_name: display_source_file_name(&source_locator),
         source_locator,
+        source_kind: row.get(4)?,
     })
 }
 
@@ -2281,6 +2284,7 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_file_name, "Redis面试.md");
+        assert_eq!(hits[0].source_kind, "original_file");
         assert!(hits[0].excerpt.contains("缓存穿透"));
         assert_eq!(files[0].status, crate::models::ParseStatus::Indexed);
     }
@@ -2332,6 +2336,7 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_locator, "经营报表.xlsx#sheet-001");
         assert_eq!(hits[0].source_file_name, "经营报表.xlsx");
+        assert_eq!(hits[0].source_kind, "table");
     }
 
     #[test]

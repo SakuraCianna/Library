@@ -129,6 +129,12 @@ function ocrCheckDetail(check: OcrEnvironmentCheck) {
   return check.message;
 }
 
+function sourceKindLabel(sourceKind?: string) {
+  if (sourceKind === "table") return "表格洞察";
+  if (sourceKind === "markdown_note") return "Markdown 笔记";
+  return "原始文件";
+}
+
 export default function App() {
   const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
     useState(false);
@@ -868,7 +874,10 @@ export default function App() {
                           type="button"
                           aria-label={`查看来源 ${source.sourceFileName} ${source.title}`}
                         >
-                          <strong>{source.sourceFileName}</strong>
+                          <span className={styles.messageSourceHeader}>
+                            <strong>{source.sourceFileName}</strong>
+                            <span>{sourceKindLabel(source.sourceKind)}</span>
+                          </span>
                           <span>{source.title}</span>
                           <span>定位：{source.sourceLocator}</span>
                           <span className={styles.messageSourceExcerpt}>
