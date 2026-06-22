@@ -198,6 +198,32 @@
   font-size: 12px;
 }
 
+.runtimeStatus {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid #e1e7f0;
+  padding-top: 8px;
+}
+
+.runtimeRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.runtimeRow strong {
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.runtimeMeta {
+  overflow-wrap: anywhere;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .emptyState {
   border: 1px dashed #cbd5e1;
   border-radius: var(--radius-control);
@@ -228,6 +254,14 @@
   align-items: baseline;
   gap: var(--space-3);
   min-width: 0;
+}
+
+.folderActions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .folderName {

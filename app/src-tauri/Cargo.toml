@@ -34,6 +34,8 @@ arrow-schema = "58.3.0"
 futures = "0.3.32"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
 tauri-plugin-dialog = "2"
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+zip = "6.0.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

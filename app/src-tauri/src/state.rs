@@ -7,6 +7,7 @@ use crate::models::{
     can_request_session_permission, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
     KnowledgeSpace, PermissionMode, ScanSummary, TableInsightPreview, WorkbenchSnapshot,
 };
+use crate::parser::parse_file;
 use crate::scanner::scan_folder;
 use crate::storage::sqlite::SqliteStore;
 
@@ -15,6 +16,7 @@ pub struct AppState {
     active_space_id: Mutex<Option<String>>,
     active_scope: Mutex<ChatScope>,
     session_permission: Mutex<PermissionMode>,
+    messages: Mutex<Vec<ChatMessage>>,
 }
 
 impl AppState {
@@ -34,6 +36,7 @@ impl AppState {
             active_space_id: Mutex::new(None),
             active_scope: Mutex::new(ChatScope::CurrentFolder),
             session_permission: Mutex::new(PermissionMode::Readonly),
+            messages: Mutex::new(Vec::new()),
         }
     }
 
@@ -53,6 +56,17 @@ impl AppState {
                 .map_err(|error| AppError::Storage(error.to_string()))?,
             None => Vec::new(),
         };
+        let latest_block = match active_space.as_ref() {
+            Some(space) => store
+                .latest_knowledge_block(&space.id)
+                .map_err(|error| AppError::Storage(error.to_string()))?,
+            None => None,
+        };
+        let messages = self
+            .messages
+            .lock()
+            .expect("messages mutex poisoned")
+            .clone();
 
         let session_permission = self.resolve_session_permission(active_space.as_ref());
         Ok(build_snapshot(
@@ -64,6 +78,8 @@ impl AppState {
                 .clone(),
             session_permission,
             files,
+            latest_block,
+            messages,
         ))
     }
 
@@ -95,6 +111,83 @@ impl AppState {
             .lock()
             .expect("session permission mutex poisoned") = default_permission;
         drop(store);
+
+        self.snapshot()
+    }
+
+    pub fn index_knowledge_space(&self, space_id: String) -> Result<WorkbenchSnapshot, AppError> {
+        let root_path = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .get_space_root(&space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到要索引的知识库".to_string()))?
+                .root_path
+        };
+        let candidates = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .list_parse_candidates(&space_id)
+                .map_err(|error| AppError::Storage(format!("无法读取待解析文件：{error}")))?
+        };
+        let mut indexed_count = 0_u32;
+        let mut failed_count = 0_u32;
+
+        for candidate in candidates {
+            match parse_file(Path::new(&root_path), &candidate) {
+                Ok(document) => {
+                    let mut store = self.store.lock().expect("sqlite store mutex poisoned");
+                    store
+                        .replace_file_knowledge_block(&space_id, &candidate.file_id, &document)
+                        .map_err(|error| AppError::Storage(format!("无法保存解析结果：{error}")))?;
+                    indexed_count += 1;
+                }
+                Err(_) => {
+                    let store = self.store.lock().expect("sqlite store mutex poisoned");
+                    store
+                        .mark_file_parse_failed(&candidate.file_id)
+                        .map_err(|error| {
+                            AppError::Storage(format!("无法记录解析失败状态：{error}"))
+                        })?;
+                    failed_count += 1;
+                }
+            }
+        }
+
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
+        self.push_system_message(format!(
+            "索引/摘要完成：成功 {} 个，失败 {} 个。",
+            indexed_count, failed_count
+        ));
+        self.snapshot()
+    }
+
+    pub async fn ask_agent(
+        &self,
+        space_id: String,
+        question: String,
+    ) -> Result<WorkbenchSnapshot, AppError> {
+        let question = question.trim().to_string();
+        if question.is_empty() {
+            return Err(AppError::Storage("请输入问题".to_string()));
+        }
+
+        let hits = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .search_knowledge_blocks(&space_id, &question, 4)
+                .map_err(|error| AppError::Storage(format!("检索知识块失败：{error}")))?
+        };
+        self.push_chat_message(ChatRole::User, question.clone());
+        let answer = crate::agent::answer_question(&question, &hits).await;
+        self.push_chat_message(ChatRole::Assistant, answer);
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
 
         self.snapshot()
     }
@@ -210,6 +303,24 @@ impl AppState {
 
         session_permission.clone()
     }
+
+    fn push_system_message(&self, content: String) {
+        self.push_chat_message(ChatRole::System, content);
+    }
+
+    fn push_chat_message(&self, role: ChatRole, content: String) {
+        let mut messages = self.messages.lock().expect("messages mutex poisoned");
+        messages.push(ChatMessage {
+            id: format!("msg-{}", uuid::Uuid::new_v4()),
+            role,
+            content,
+        });
+
+        if messages.len() > 24 {
+            let overflow = messages.len() - 24;
+            messages.drain(0..overflow);
+        }
+    }
 }
 
 fn build_snapshot(
@@ -218,6 +329,8 @@ fn build_snapshot(
     active_scope: ChatScope,
     session_permission: PermissionMode,
     files: Vec<crate::models::KnowledgeFile>,
+    latest_block: Option<crate::models::KnowledgeBlockSearchHit>,
+    messages: Vec<ChatMessage>,
 ) -> WorkbenchSnapshot {
     let has_spaces = !spaces.is_empty();
     let has_files = !files.is_empty();
@@ -232,36 +345,48 @@ fn build_snapshot(
         active_scope,
         session_permission,
         files,
-        block_preview: KnowledgeBlockPreview {
-            id: "block-empty".to_string(),
-            title: if has_files {
-                "知识块等待解析".to_string()
-            } else {
-                "暂无知识块".to_string()
-            },
-            excerpt: if has_files {
-                "文件元数据已进入本地数据库，后续解析阶段会生成可检索的知识块。".to_string()
-            } else if has_spaces {
-                "点击扫描后，支持的文件会先进入本地元数据索引。".to_string()
-            } else {
-                "请先添加一个真实文件夹作为知识库。".to_string()
-            },
-            source_file_name: first_file_name,
-        },
+        block_preview: latest_block
+            .map(|block| KnowledgeBlockPreview {
+                id: block.id,
+                title: block.title,
+                excerpt: block.excerpt,
+                source_file_name: block.source_file_name,
+            })
+            .unwrap_or_else(|| KnowledgeBlockPreview {
+                id: "block-empty".to_string(),
+                title: if has_files {
+                    "知识块等待解析".to_string()
+                } else {
+                    "暂无知识块".to_string()
+                },
+                excerpt: if has_files {
+                    "文件元数据已进入本地数据库，点击建索引/摘要后会生成可检索的知识块。"
+                        .to_string()
+                } else if has_spaces {
+                    "点击扫描后，支持的文件会先进入本地元数据索引。".to_string()
+                } else {
+                    "请先添加一个真实文件夹作为知识库。".to_string()
+                },
+                source_file_name: first_file_name,
+            }),
         table_preview: TableInsightPreview {
             id: "table-empty".to_string(),
             title: "表格理解等待接入".to_string(),
             description: "本阶段先完成文件扫描入库，表格结构理解将在后续解析阶段接入。".to_string(),
         },
-        messages: vec![ChatMessage {
-            id: "msg-system-ready".to_string(),
-            role: ChatRole::System,
-            content: if has_spaces {
-                "当前已使用本地 SQLite 读取真实知识库状态。".to_string()
-            } else {
-                "请点击新建选择一个真实文件夹。".to_string()
-            },
-        }],
+        messages: if messages.is_empty() {
+            vec![ChatMessage {
+                id: "msg-system-ready".to_string(),
+                role: ChatRole::System,
+                content: if has_spaces {
+                    "当前已使用本地 SQLite 读取真实知识库状态。".to_string()
+                } else {
+                    "请点击新建选择一个真实文件夹。".to_string()
+                },
+            }]
+        } else {
+            messages
+        },
         pending_action: None,
     }
 }
@@ -327,6 +452,34 @@ mod tests {
         assert_eq!(scanned.files.len(), 1);
         assert_eq!(scanned.files[0].name, "README.md");
         assert_eq!(scanned.files[0].status_label, "待解析");
+    }
+
+    #[test]
+    fn indexes_scanned_files_into_searchable_blocks() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(
+            temp_dir.path().join("Redis面试.md"),
+            "Redis 缓存穿透是查询不存在的数据导致缓存和数据库都无法命中。",
+        )
+        .expect("write md");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "面试".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        state
+            .scan_knowledge_space(created.active_space_id.clone())
+            .expect("space scanned");
+
+        let indexed = state
+            .index_knowledge_space(created.active_space_id)
+            .expect("space indexed");
+
+        assert_eq!(indexed.files[0].status_label, "已索引");
+        assert!(indexed.block_preview.excerpt.contains("缓存穿透"));
     }
 
     #[test]

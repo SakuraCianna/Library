@@ -115,29 +115,39 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$target = Resolve-Path -LiteralPath (New-Item -ItemType Directory -Force -Path $TargetDir)
+$targetItem = New-Item -ItemType Directory -Force -Path $TargetDir
+$target = $targetItem.FullName
 $repos = @(
   "PaddlePaddle/PP-OCRv6_${Tier}_det",
   "PaddlePaddle/PP-OCRv6_${Tier}_rec"
 )
+$pythonCommand = Get-Command py -ErrorAction SilentlyContinue
 
-python -c "import huggingface_hub" 2>$null
-if ($LASTEXITCODE -ne 0) {
-  py -m pip install --upgrade huggingface_hub
+if ($null -eq $pythonCommand) {
+  $pythonCommand = Get-Command python -ErrorAction Stop
 }
 
-foreach ($repo in $repos) {
-  $name = ($repo -split '/')[1]
-  $out = Join-Path $target $name
-  $env:HF_REPO_ID = $repo
-  $env:HF_LOCAL_DIR = $out
-  py -c "import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id=os.environ['HF_REPO_ID'], local_dir=os.environ['HF_LOCAL_DIR'], local_dir_use_symlinks=False)"
-  if ($LASTEXITCODE -ne 0) {
-    throw "OCR 模型下载失败: $repo"
+& $pythonCommand.Source -c "import huggingface_hub" 2>$null
+if ($LASTEXITCODE -ne 0) {
+  & $pythonCommand.Source -m pip install --upgrade huggingface_hub
+}
+
+try {
+  foreach ($repo in $repos) {
+    $name = ($repo -split '/')[1]
+    $out = Join-Path $target $name
+    $env:HF_REPO_ID = $repo
+    $env:HF_LOCAL_DIR = $out
+    & $pythonCommand.Source -c "import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id=os.environ['HF_REPO_ID'], local_dir=os.environ['HF_LOCAL_DIR'], local_dir_use_symlinks=False)"
+    if ($LASTEXITCODE -ne 0) {
+      throw "OCR 模型下载失败: $repo"
+    }
   }
 }
-Remove-Item Env:\HF_REPO_ID -ErrorAction SilentlyContinue
-Remove-Item Env:\HF_LOCAL_DIR -ErrorAction SilentlyContinue
+finally {
+  Remove-Item Env:\HF_REPO_ID -ErrorAction SilentlyContinue
+  Remove-Item Env:\HF_LOCAL_DIR -ErrorAction SilentlyContinue
+}
 
 Write-Host "OCR 模型已下载到: $target"
 ```
@@ -332,8 +342,11 @@ Add this command to `commands.rs`:
 
 ```rust
 #[tauri::command]
-pub fn get_runtime_status(app: tauri::AppHandle) -> Result<RuntimeStatus, AppError> {
-    let app_data_dir = app.path().app_data_dir()?;
+pub fn get_runtime_status(app: tauri::AppHandle) -> Result<RuntimeStatus, ErrorResponse> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| ErrorResponse {
+        message: format!("无法读取应用数据目录：{error}"),
+    })?;
+
     Ok(crate::runtime::runtime_status(&app_data_dir))
 }
 ```
@@ -342,6 +355,7 @@ Also import:
 
 ```rust
 use tauri::Manager;
+use crate::error::ErrorResponse;
 use crate::models::RuntimeStatus;
 ```
 

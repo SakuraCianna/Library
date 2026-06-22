@@ -2,14 +2,16 @@ import bookmarkPlusIcon from "@iconify-icons/lucide/bookmark-plus";
 import checkIcon from "@iconify-icons/lucide/check";
 import chevronDownIcon from "@iconify-icons/lucide/chevron-down";
 import eyeIcon from "@iconify-icons/lucide/eye";
+import fileSearchIcon from "@iconify-icons/lucide/file-search";
 import folderPlusIcon from "@iconify-icons/lucide/folder-plus";
 import refreshCwIcon from "@iconify-icons/lucide/refresh-cw";
 import sendIcon from "@iconify-icons/lucide/send";
 import settingsIcon from "@iconify-icons/lucide/settings";
 import xIcon from "@iconify-icons/lucide/x";
 import { Icon } from "@iconify/react";
-import { useState } from "react";
+import { type FormEvent, useState } from "react";
 
+import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
 import type {
   ChatMessage,
@@ -51,15 +53,19 @@ function messageClass(message: ChatMessage) {
 export default function App() {
   const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
     useState(false);
+  const [question, setQuestion] = useState("");
   const {
     snapshot,
     error,
     loading,
+    askAgentQuestion,
     createSpaceFromFolder,
+    indexActiveSpace,
     scanActiveSpace,
     setFolderDefaultPermission,
     setSessionPermission,
   } = useWorkbenchSnapshot();
+  const { runtimeStatus, runtimeStatusError } = useRuntimeStatus();
   const activeSpace =
     snapshot.spaces.find((space) => space.id === snapshot.activeSpaceId) ??
     snapshot.spaces[0] ??
@@ -68,6 +74,18 @@ export default function App() {
   const defaultPermission = activeSpace?.defaultPermission ?? "readonly";
   const changedFileCount = activeSpace?.changedFileCount ?? 0;
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
+  const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
+
+  function handleAskAgent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canAskAgent) {
+      return;
+    }
+
+    const submittedQuestion = question.trim();
+    setQuestion("");
+    void askAgentQuestion(submittedQuestion);
+  }
 
   return (
     <div className={styles.shell}>
@@ -123,7 +141,6 @@ export default function App() {
             <button
               aria-label="打开默认权限设置"
               className={styles.iconButton}
-              disabled={!hasActiveSpace}
               aria-expanded={showDefaultPermissionHelp}
               onClick={() =>
                 setShowDefaultPermissionHelp((currentValue) => !currentValue)
@@ -155,6 +172,31 @@ export default function App() {
               <p>
                 默认权限是这个文件夹长期保存的 Agent 操作边界；右侧会话权限只影响当前聊天。
               </p>
+              <div className={styles.runtimeStatus}>
+                <div className={styles.runtimeRow}>
+                  <span>DeepSeek</span>
+                  <strong>
+                    {runtimeStatus?.deepseek.model ?? "deepseek-v4-flash"}
+                  </strong>
+                </div>
+                <div className={styles.runtimeMeta}>
+                  {runtimeStatus?.deepseek.configured
+                    ? `密钥 ${runtimeStatus.deepseek.keyHint}`
+                    : "密钥未配置"}
+                </div>
+                <div className={styles.runtimeRow}>
+                  <span>本地 OCR</span>
+                  <strong>{runtimeStatus?.ocr.configured ? "已就绪" : "未就绪"}</strong>
+                </div>
+                <div className={styles.runtimeMeta}>
+                  {runtimeStatusError ??
+                    (runtimeStatus?.ocr.configured
+                      ? `模型目录 ${runtimeStatus.ocr.modelDir}`
+                      : `缺少 ${
+                          runtimeStatus?.ocr.missingModels.join("、") ?? "OCR 模型"
+                        }`)}
+                </div>
+              </div>
               <button
                 className={styles.helpToggle}
                 onClick={() => setShowDefaultPermissionHelp(false)}
@@ -176,15 +218,26 @@ export default function App() {
               {activeSpace?.path ?? "请先添加一个真实文件夹"}
             </span>
           </div>
-          <button
-            className={styles.plainButton}
-            disabled={!hasActiveSpace || loading}
-            onClick={() => void scanActiveSpace()}
-            type="button"
-          >
-            <Icon aria-hidden icon={refreshCwIcon} />
-            <span>扫描</span>
-          </button>
+          <div className={styles.folderActions}>
+            <button
+              className={styles.plainButton}
+              disabled={!hasActiveSpace || loading}
+              onClick={() => void scanActiveSpace()}
+              type="button"
+            >
+              <Icon aria-hidden icon={refreshCwIcon} />
+              <span>扫描</span>
+            </button>
+            <button
+              className={styles.plainButton}
+              disabled={!hasActiveSpace || loading}
+              onClick={() => void indexActiveSpace()}
+              type="button"
+            >
+              <Icon aria-hidden icon={fileSearchIcon} />
+              <span>建索引/摘要</span>
+            </button>
+          </div>
         </header>
 
         <nav className={styles.tabs} aria-label="内容标签">
@@ -348,15 +401,21 @@ export default function App() {
           ) : null}
         </section>
 
-        <form aria-label="智能助手输入区" className={styles.composer}>
+        <form
+          aria-label="智能助手输入区"
+          className={styles.composer}
+          onSubmit={handleAskAgent}
+        >
           <div className={styles.composerInput}>
             <textarea
               aria-label="向智能助手提问"
               className={styles.composerBox}
               placeholder={hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"}
               rows={3}
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
             />
-            <button className={styles.sendButton} disabled={!hasActiveSpace} type="button">
+            <button className={styles.sendButton} disabled={!canAskAgent} type="submit">
               <Icon aria-hidden icon={sendIcon} />
               <span>发送</span>
             </button>

@@ -5,3 +5,10 @@ app/src-tauri/target/
 app/.vite/
 *.log
 *.tmp
+.env
+.env.*
+!.env.example
+models/
+app/models/
+app/.models/
+app/src-tauri/models/

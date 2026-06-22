@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import {
+  askAgent,
   createKnowledgeSpace,
   getWorkbenchSnapshot,
+  indexKnowledgeSpace,
   requestSessionPermission,
   scanKnowledgeSpace,
   selectKnowledgeFolder,
@@ -18,7 +20,9 @@ interface WorkbenchSnapshotState {
 }
 
 interface WorkbenchSnapshotResult extends WorkbenchSnapshotState {
+  askAgentQuestion: (question: string) => Promise<void>;
   createSpaceFromFolder: (permission: PermissionMode) => Promise<void>;
+  indexActiveSpace: () => Promise<void>;
   scanActiveSpace: () => Promise<void>;
   setFolderDefaultPermission: (permission: PermissionMode) => Promise<void>;
   setSessionPermission: (permission: PermissionMode) => Promise<void>;
@@ -120,6 +124,60 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     }
   }, [commitSnapshot, state.snapshot.activeSpaceId]);
 
+  const indexActiveSpace = useCallback(async () => {
+    const spaceId = state.snapshot.activeSpaceId;
+    if (!spaceId) {
+      setState((current) => ({
+        ...current,
+        error: "请先添加一个知识库文件夹",
+      }));
+      return;
+    }
+
+    setState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const snapshot = await indexKnowledgeSpace(spaceId);
+      commitSnapshot(snapshot);
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, "索引/摘要失败"),
+      }));
+    }
+  }, [commitSnapshot, state.snapshot.activeSpaceId]);
+
+  const askAgentQuestion = useCallback(
+    async (question: string) => {
+      const spaceId = state.snapshot.activeSpaceId;
+      if (!spaceId) {
+        setState((current) => ({
+          ...current,
+          error: "请先添加一个知识库文件夹",
+        }));
+        return;
+      }
+
+      const trimmedQuestion = question.trim();
+      if (!trimmedQuestion) {
+        return;
+      }
+
+      setState((current) => ({ ...current, loading: true, error: null }));
+      try {
+        const snapshot = await askAgent(spaceId, trimmedQuestion);
+        commitSnapshot(snapshot);
+      } catch (error) {
+        setState((current) => ({
+          ...current,
+          loading: false,
+          error: getErrorMessage(error, "助手回答失败"),
+        }));
+      }
+    },
+    [commitSnapshot, state.snapshot.activeSpaceId],
+  );
+
   const setFolderDefaultPermission = useCallback(
     async (permission: PermissionMode) => {
       const spaceId = state.snapshot.activeSpaceId;
@@ -192,7 +250,9 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
 
   return {
     ...state,
+    askAgentQuestion,
     createSpaceFromFolder,
+    indexActiveSpace,
     scanActiveSpace,
     setFolderDefaultPermission,
     setSessionPermission,

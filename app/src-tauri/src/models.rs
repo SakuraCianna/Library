@@ -136,6 +136,31 @@ pub struct PendingAction {
     pub requires_approval: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStatus {
+    pub deepseek: DeepSeekRuntimeStatus,
+    pub ocr: OcrRuntimeStatus,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepSeekRuntimeStatus {
+    pub configured: bool,
+    pub model: String,
+    pub base_url: String,
+    pub key_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrRuntimeStatus {
+    pub configured: bool,
+    pub tier: String,
+    pub model_dir: String,
+    pub missing_models: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchSnapshot {
@@ -192,6 +217,44 @@ pub struct ScanSummary {
     pub changed_count: u32,
     pub deleted_count: u32,
     pub failed_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileParseCandidate {
+    pub file_id: String,
+    pub relative_path: String,
+    pub extension: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedDocument {
+    pub title: String,
+    pub body: String,
+    pub summary: String,
+    pub source_locator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeBlockSearchHit {
+    pub id: String,
+    pub title: String,
+    pub excerpt: String,
+    pub source_file_name: String,
+    pub source_locator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexKnowledgeSpaceRequest {
+    pub space_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAgentRequest {
+    pub space_id: String,
+    pub question: String,
 }
 
 pub fn can_request_session_permission(
