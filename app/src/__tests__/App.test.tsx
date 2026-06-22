@@ -266,6 +266,34 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders OCR page progress in the parse queue", async () => {
+    const snapshotWithProgress = {
+      ...snapshotWithSpace,
+      parseJobs: [
+        parseJob({
+          status: "running",
+          phase: "已识别第 1/2 页",
+          progressCurrent: 1,
+          progressTotal: 2,
+        }),
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return snapshotWithProgress;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("本地 OCR · 已识别第 1/2 页")).toBeInTheDocument();
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+  });
+
   it("queues a PDF file for OCR through the desktop command", async () => {
     const snapshotWithPdf = {
       ...snapshotWithSpace,

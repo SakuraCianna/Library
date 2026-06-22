@@ -31,6 +31,37 @@ def test_parse_request_accepts_local_file_and_model_dir():
     assert request.model_dir.endswith("pp-ocrv6")
     assert request.tier == "medium"
     assert request.max_pdf_pages == 12
+    assert request.progress is False
+
+
+def test_parse_request_accepts_progress_stream_flag():
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": "E:\\Knowledge\\scan.pdf",
+                "modelDir": "E:\\CodeHome\\Library\\models\\ocr\\pp-ocrv6",
+                "tier": "medium",
+                "progress": True,
+            }
+        )
+    )
+
+    assert request.progress is True
+
+
+def test_parse_request_accepts_caller_owned_temp_dir(tmp_path: Path):
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(tmp_path / "scan.pdf"),
+                "modelDir": str(tmp_path / "models"),
+                "tier": "medium",
+                "tempDir": str(tmp_path / "ocr-temp"),
+            }
+        )
+    )
+
+    assert request.temp_dir == str(tmp_path / "ocr-temp")
 
 
 def test_error_response_is_json_serializable():
@@ -153,6 +184,70 @@ def test_run_ocr_uses_injected_engine_without_importing_heavy_runtime(tmp_path: 
     assert response["result"]["pageCount"] == 1
 
 
+def test_run_ocr_reports_pdf_page_progress(tmp_path: Path):
+    pdf_path = tmp_path / "scan.pdf"
+    model_dir = tmp_path / "models"
+    progress_events = []
+    create_model_assets(model_dir)
+    write_test_pdf(pdf_path, page_count=2)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(pdf_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "progress": True,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: lambda _path: [
+            {"res": {"rec_texts": ["PAGE OCR TEXT"], "rec_scores": [0.9]}}
+        ],
+        progress_callback=progress_events.append,
+    )
+
+    assert response["ok"] is True
+    assert response["result"]["pageCount"] == 2
+    assert [page["pageIndex"] for page in response["result"]["pages"]] == [0, 1]
+    assert progress_events == [
+        {"phase": "正在识别第 1/2 页", "current": 0, "total": 2},
+        {"phase": "已识别第 1/2 页", "current": 1, "total": 2},
+        {"phase": "正在识别第 2/2 页", "current": 1, "total": 2},
+        {"phase": "已识别第 2/2 页", "current": 2, "total": 2},
+    ]
+
+
+def test_run_ocr_writes_pdf_pages_to_caller_temp_dir(tmp_path: Path):
+    pdf_path = tmp_path / "scan.pdf"
+    model_dir = tmp_path / "models"
+    temp_dir = tmp_path / "caller-owned-temp"
+    create_model_assets(model_dir)
+    write_test_pdf(pdf_path, page_count=1)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(pdf_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "tempDir": str(temp_dir),
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: lambda _path: [
+            {"res": {"rec_texts": ["TEMP OCR TEXT"], "rec_scores": [0.9]}}
+        ],
+    )
+
+    assert response["ok"] is True
+    assert (temp_dir / "page-1.pdf").is_file()
+
+
 def test_run_ocr_accepts_image_without_pdf_page_count(tmp_path: Path):
     image_path = tmp_path / "scan.png"
     model_dir = tmp_path / "models"
@@ -184,6 +279,43 @@ def test_run_ocr_accepts_image_without_pdf_page_count(tmp_path: Path):
 
     assert response["ok"] is True
     assert response["result"]["text"] == "IMAGE OCR TEXT"
+
+
+def test_run_ocr_reports_image_progress(tmp_path: Path):
+    image_path = tmp_path / "scan.png"
+    model_dir = tmp_path / "models"
+    progress_events = []
+    create_model_assets(model_dir)
+    image_path.write_bytes(b"image")
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(image_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "progress": True,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: lambda _path: [
+            {
+                "res": {
+                    "rec_texts": ["IMAGE OCR TEXT"],
+                    "rec_scores": [0.91],
+                }
+            }
+        ],
+        progress_callback=progress_events.append,
+    )
+
+    assert response["ok"] is True
+    assert progress_events == [
+        {"phase": "正在识别图片", "current": 0, "total": 1},
+        {"phase": "已识别图片", "current": 1, "total": 1},
+    ]
 
 
 def test_run_ocr_reports_empty_result(tmp_path: Path):

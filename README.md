@@ -48,6 +48,7 @@
 - 前端解析队列状态展示和运行中任务轮询刷新
 - 前端可启动后台 OCR worker、刷新进度并取消排队或运行中的 OCR 任务
 - 后台扫描、文档解析和 OCR worker 会通过 Tauri 事件通知前端刷新队列状态，并保留轮询兜底
+- OCR sidecar 可输出页/段进度流，PDF 按页更新队列进度，图片按单段更新队列进度
 - 前端和 Rust 单元测试
 
 ### 权限说明
@@ -58,7 +59,6 @@
 
 ### 暂未实现
 
-- OCR 单页/分段实时进度和更细粒度取消
 - 高保真 PDF 版面解析
 - 表格深度理解和表格问答
 - DeepSeek 流式输出
@@ -160,7 +160,7 @@ $env:OCR_PYTHON_PATH = "E:\CodeHome\Library\.venv\Scripts\python.exe"
 $env:OCR_SIDECAR_PATH = "E:\CodeHome\Library\sidecars\ocr\ocr_sidecar.py"
 ```
 
-当前 OCR 阶段支持对队列中的扫描版 PDF 和图片启动本地后台 worker 执行 PaddleOCR 推理，并把结果写入统一知识块。每个模型目录必须包含 `inference.json`、`inference.pdiparams`、`inference.yml`，输入文件当前限制为 50 MB 以内，PDF 默认页数上限为 12 页，可通过 `OCR_MAX_PDF_PAGES` 调整。重试策略、实时进度流和表格深度理解会在后续解析模块接入。
+当前 OCR 阶段支持对队列中的扫描版 PDF 和图片启动本地后台 worker 执行 PaddleOCR 推理，并把结果写入统一知识块。每个模型目录必须包含 `inference.json`、`inference.pdiparams`、`inference.yml`，输入文件当前限制为 50 MB 以内，PDF 默认页数上限为 12 页，可通过 `OCR_MAX_PDF_PAGES` 调整。OCR worker 会启用 sidecar 进度流，PDF 按单页写入队列进度，图片按单段写入队列进度；拆页临时文件由 Rust 创建在受控临时目录中，并在正常结束、取消或超时后清理。取消运行中任务会杀掉当前 sidecar 子进程，并且不会把已取消结果标记为成功。重试策略和表格深度理解会在后续解析模块接入。
 
 ## MVP 最短链路
 
@@ -172,7 +172,7 @@ $env:OCR_SIDECAR_PATH = "E:\CodeHome\Library\sidecars\ocr\ocr_sidecar.py"
 
 扫描会识别 `.md`、`.txt`、`.docx`、`.xlsx`、`.pdf` 和常见图片文件。新增或变更的普通文档会自动放入 `document` 后台解析队列；图片文件不会进入普通文档解析队列，会自动进入本地 OCR 队列，等待用户启动 OCR worker。点击建索引/摘要会启动文档解析 worker，将可抽取文本转成统一知识块并写入本地 SQLite。助手回答会先检索本地知识块；如果本机配置了 DeepSeek API Key，会尝试使用 `deepseek-v4-flash` 生成更自然的回答，失败时自动回退到本地检索结果。
 
-当前普通 PDF 解析是 MVP 轻量能力，适合可抽取文本的 PDF。扫描版 PDF 和图片可以排队 OCR，再在解析队列中启动后台 OCR worker，并通过队列刷新查看阶段、进度、错误和取消状态。复杂版面、实时事件流和表格深度理解仍是后续能力。
+当前普通 PDF 解析是 MVP 轻量能力，适合可抽取文本的 PDF。扫描版 PDF 和图片可以排队 OCR，再在解析队列中启动后台 OCR worker，并通过队列刷新查看阶段、页/段进度、错误和取消状态。复杂版面、表格深度理解和 OCR 结果版面还原仍是后续能力。
 
 ## 常用命令
 
@@ -272,4 +272,4 @@ CI 工作流会在 Windows runner 中安装 `protoc` 并设置 `PROTOC`，本地
 
 当前扫描阶段会在后台任务中遍历支持格式文件并计算内容指纹，扫描完成后自动为新增、变更和失败的普通文档创建文档解析任务，并为图片文件创建本地 OCR 任务。超大目录扫描后续仍需要接入文件数量/大小限制和更细粒度的实时事件流。
 
-当前扫描、普通文档解析和 OCR 解析都已经接入后台任务队列、粗粒度进度和取消；普通文档解析支持失败后再次建索引/摘要重试，OCR 支持扫描版 PDF 与常见图片文件，并包含输入大小和 PDF 页数限制。后续需要继续接入实时事件流、更细粒度进度和更高保真的解析 sidecar。
+当前扫描、普通文档解析和 OCR 解析都已经接入后台任务队列、进度和取消；普通文档解析支持失败后再次建索引/摘要重试，OCR 支持扫描版 PDF 与常见图片文件，并包含输入大小、PDF 页数限制和页/段进度流。后续需要继续接入更高保真的解析 sidecar、复杂版面还原和表格深度理解。
