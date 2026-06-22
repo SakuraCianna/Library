@@ -301,6 +301,13 @@ pub struct AskAgentRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenSourceFileRequest {
+    pub space_id: String,
+    pub source_locator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EnqueueOcrJobRequest {
     pub space_id: String,
     pub file_id: String,

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::error::AppError;
@@ -167,6 +167,41 @@ impl AppState {
         drop(store);
 
         self.snapshot()
+    }
+
+    pub fn resolve_source_file_path(
+        &self,
+        space_id: &str,
+        source_locator: &str,
+    ) -> Result<PathBuf, AppError> {
+        let relative_path = source_locator_to_relative_path(source_locator)?;
+        let root_path = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .get_space_root(space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到来源所属知识库".to_string()))?
+                .root_path
+        };
+        let root = PathBuf::from(root_path)
+            .canonicalize()
+            .map_err(|error| AppError::Filesystem(format!("无法规范化知识库目录：{error}")))?;
+        let source_path = root.join(relative_path);
+        let source_path = source_path
+            .canonicalize()
+            .map_err(|error| AppError::Filesystem(format!("无法读取来源文件：{error}")))?;
+
+        if !source_path.starts_with(&root) {
+            return Err(AppError::PermissionDenied(
+                "来源文件不在当前知识库目录内".to_string(),
+            ));
+        }
+
+        if !source_path.is_file() {
+            return Err(AppError::Filesystem("来源定位不是可打开文件".to_string()));
+        }
+
+        Ok(source_path)
     }
 
     pub fn prepare_scan_knowledge_space(&self, space_id: String) -> Result<bool, AppError> {
@@ -1263,6 +1298,41 @@ fn validate_folder_path(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+fn source_locator_to_relative_path(source_locator: &str) -> Result<PathBuf, AppError> {
+    let locator = source_locator
+        .trim()
+        .strip_suffix("#ocr")
+        .unwrap_or_else(|| source_locator.trim())
+        .trim();
+
+    if locator.is_empty() || locator == "暂无来源定位" {
+        return Err(AppError::Filesystem(
+            "来源定位为空，无法打开文件".to_string(),
+        ));
+    }
+
+    let mut safe_path = PathBuf::new();
+    for component in Path::new(locator).components() {
+        match component {
+            Component::Normal(part) => safe_path.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(AppError::PermissionDenied(
+                    "来源定位必须是知识库内的相对路径".to_string(),
+                ));
+            }
+        }
+    }
+
+    if safe_path.as_os_str().is_empty() {
+        return Err(AppError::Filesystem(
+            "来源定位为空，无法打开文件".to_string(),
+        ));
+    }
+
+    Ok(safe_path)
+}
+
 fn display_relative_file_name(relative_path: &str) -> String {
     relative_path
         .rsplit(['\\', '/'])
@@ -1344,6 +1414,101 @@ mod tests {
             && job.file_name == "image.png"));
         assert_eq!(scanned.spaces[0].document_queue_count, 1);
         assert_eq!(scanned.spaces[0].ocr_queue_count, 1);
+    }
+
+    #[test]
+    fn resolves_source_locator_inside_space_root() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let docs_dir = temp_dir.path().join("docs");
+        fs::create_dir_all(&docs_dir).expect("create docs dir");
+        let source_file = docs_dir.join("Redis.md");
+        fs::write(&source_file, "redis").expect("write source file");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "测试知识库".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let resolved = state
+            .resolve_source_file_path(&created.active_space_id, "docs/Redis.md")
+            .expect("source file resolves");
+
+        assert_eq!(
+            resolved,
+            source_file.canonicalize().expect("canonical file")
+        );
+    }
+
+    #[test]
+    fn resolves_ocr_source_locator_suffix_to_original_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_file = temp_dir.path().join("scan.pdf");
+        fs::write(&source_file, "pdf").expect("write pdf");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let resolved = state
+            .resolve_source_file_path(&created.active_space_id, "scan.pdf#ocr")
+            .expect("ocr source file resolves");
+
+        assert_eq!(resolved, source_file.canonicalize().expect("canonical pdf"));
+    }
+
+    #[test]
+    fn rejects_source_locator_path_traversal() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "测试知识库".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let resolved = state.resolve_source_file_path(&created.active_space_id, "..\\secret.txt");
+
+        assert!(matches!(
+            resolved,
+            Err(crate::error::AppError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_absolute_source_locator() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_file = temp_dir.path().join("README.md");
+        fs::write(&source_file, "hello").expect("write source file");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "测试知识库".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let resolved = state.resolve_source_file_path(
+            &created.active_space_id,
+            &source_file
+                .canonicalize()
+                .expect("canonical file")
+                .to_string_lossy(),
+        );
+
+        assert!(matches!(
+            resolved,
+            Err(crate::error::AppError::PermissionDenied(_))
+        ));
     }
 
     #[test]

@@ -4,10 +4,12 @@ use crate::error::ErrorResponse;
 use crate::events::emit_workbench_updated;
 use crate::models::{
     AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
-    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, OcrEnvironmentReport, PermissionRequest,
-    RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
+    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, OcrEnvironmentReport, OpenSourceFileRequest,
+    PermissionRequest, RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest,
+    WorkbenchSnapshot,
 };
 use crate::state::AppState;
+use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub fn get_workbench_snapshot(
@@ -149,6 +151,23 @@ pub async fn ask_agent(
         .ask_agent(request.space_id, request.question)
         .await
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn open_source_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: OpenSourceFileRequest,
+) -> Result<(), ErrorResponse> {
+    let source_path = state
+        .resolve_source_file_path(&request.space_id, &request.source_locator)
+        .map_err(ErrorResponse::from)?;
+
+    app.opener()
+        .open_path(source_path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|error| ErrorResponse {
+            message: format!("无法打开来源文件：{error}"),
+        })
 }
 
 #[tauri::command]

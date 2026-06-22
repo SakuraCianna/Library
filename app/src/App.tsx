@@ -14,6 +14,7 @@ import { type FormEvent, useEffect, useState } from "react";
 
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
+import { openSourceFile } from "./lib/tauriClient";
 import type {
   ChatMessage,
   ChatMessageSource,
@@ -129,6 +130,8 @@ export default function App() {
     useState(false);
   const [selectedSource, setSelectedSource] =
     useState<ChatMessageSource | null>(null);
+  const [openingSource, setOpeningSource] = useState(false);
+  const [sourceOpenError, setSourceOpenError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
   const [queuePollingUntil, setQueuePollingUntil] = useState(0);
   const {
@@ -195,6 +198,11 @@ export default function App() {
     hasRunningScanJob || hasRunningDocumentJob || hasRunningOcrJob;
   const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
   const focusedBlock = selectedSource ?? snapshot.blockPreview;
+  const focusedSourceLocator = focusedBlock.sourceLocator.trim();
+  const canOpenFocusedSource =
+    hasActiveSpace &&
+    focusedSourceLocator.length > 0 &&
+    focusedSourceLocator !== "暂无来源定位";
 
   useEffect(() => {
     const hasActivePollingWindow = Date.now() < queuePollingUntil;
@@ -216,7 +224,12 @@ export default function App() {
 
   useEffect(() => {
     setSelectedSource(null);
+    setSourceOpenError(null);
   }, [snapshot.activeSpaceId]);
+
+  useEffect(() => {
+    setSourceOpenError(null);
+  }, [selectedSource?.id, snapshot.blockPreview.sourceLocator]);
 
   function keepQueuePollingWarm() {
     setQueuePollingUntil(Date.now() + 15000);
@@ -231,6 +244,24 @@ export default function App() {
     const submittedQuestion = question.trim();
     setQuestion("");
     void askAgentQuestion(submittedQuestion);
+  }
+
+  async function handleOpenFocusedSource() {
+    if (!activeSpace || !canOpenFocusedSource) {
+      return;
+    }
+
+    setSourceOpenError(null);
+    setOpeningSource(true);
+    try {
+      await openSourceFile(activeSpace.id, focusedSourceLocator);
+    } catch (caughtError) {
+      setSourceOpenError(
+        caughtError instanceof Error ? caughtError.message : "无法打开来源文件",
+      );
+    } finally {
+      setOpeningSource(false);
+    }
   }
 
   return (
@@ -517,6 +548,15 @@ export default function App() {
               <h3 className={styles.panelTitle}>{focusedBlock.title}</h3>
               <p className={styles.blockExcerpt}>{focusedBlock.excerpt}</p>
               <div className={styles.buttonRow}>
+                <button
+                  className={styles.plainButton}
+                  disabled={!canOpenFocusedSource || openingSource}
+                  onClick={() => void handleOpenFocusedSource()}
+                  type="button"
+                >
+                  <Icon aria-hidden icon={fileSearchIcon} />
+                  <span>{openingSource ? "打开中" : "打开文件"}</span>
+                </button>
                 {selectedSource ? (
                   <button
                     className={styles.plainButton}
@@ -532,6 +572,9 @@ export default function App() {
                   <span>加入复习</span>
                 </button>
               </div>
+              {sourceOpenError ? (
+                <div className={styles.sourceActionError}>{sourceOpenError}</div>
+              ) : null}
             </article>
 
             <article className={`${styles.panel} ${styles.panelPadded}`}>

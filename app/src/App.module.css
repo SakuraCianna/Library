@@ -528,6 +528,7 @@
 
 .buttonRow {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: 10px;
 }
@@ -540,6 +541,18 @@
   gap: 5px;
   padding: 6px 9px;
   font-size: 12px;
+}
+
+.sourceActionError {
+  margin-top: 8px;
+  border: 1px solid #f1c5c5;
+  border-radius: var(--radius-control);
+  background: #fff5f5;
+  padding: 7px 8px;
+  color: var(--color-danger);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .tablePreview {

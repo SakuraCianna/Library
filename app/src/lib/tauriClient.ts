@@ -263,6 +263,19 @@ export async function askAgent(
   });
 }
 
+export async function openSourceFile(
+  spaceId: string,
+  sourceLocator: string,
+): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  return invoke<void>("open_source_file", {
+    request: { spaceId, sourceLocator },
+  });
+}
+
 export async function setDefaultPermission(
   spaceId: string,
   permission: PermissionMode,
