@@ -15,6 +15,12 @@ pub struct DeepSeekConfig {
     pub base_url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrConfig {
+    pub tier: String,
+    pub model_dir: PathBuf,
+}
+
 pub fn runtime_status(app_data_dir: &Path) -> RuntimeStatus {
     let local_env = load_local_env();
     let api_key = config_value("DEEPSEEK_API_KEY", &local_env);
@@ -22,12 +28,9 @@ pub fn runtime_status(app_data_dir: &Path) -> RuntimeStatus {
         .unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.to_string());
     let base_url = config_value("DEEPSEEK_BASE_URL", &local_env)
         .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_string());
-    let tier = normalize_ocr_tier(config_value("OCR_MODEL_TIER", &local_env).as_deref());
-    let model_dir = config_value("OCR_MODEL_DIR", &local_env)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_ocr_model_dir(app_data_dir));
+    let ocr = ocr_config_from_values(app_data_dir, &local_env);
 
-    build_runtime_status(api_key.as_deref(), model, base_url, tier, model_dir)
+    build_runtime_status(api_key.as_deref(), model, base_url, ocr.tier, ocr.model_dir)
 }
 
 pub fn deepseek_config() -> Option<DeepSeekConfig> {
@@ -45,6 +48,20 @@ pub fn deepseek_config() -> Option<DeepSeekConfig> {
         base_url: config_value("DEEPSEEK_BASE_URL", &local_env)
             .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_string()),
     })
+}
+
+pub fn ocr_config(app_data_dir: &Path) -> OcrConfig {
+    let local_env = load_local_env();
+    ocr_config_from_values(app_data_dir, &local_env)
+}
+
+fn ocr_config_from_values(app_data_dir: &Path, local_env: &HashMap<String, String>) -> OcrConfig {
+    let tier = normalize_ocr_tier(config_value("OCR_MODEL_TIER", local_env).as_deref());
+    let model_dir = config_value("OCR_MODEL_DIR", local_env)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_ocr_model_dir(app_data_dir));
+
+    OcrConfig { tier, model_dir }
 }
 
 fn build_runtime_status(

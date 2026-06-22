@@ -2,9 +2,9 @@ use tauri::{Manager, State};
 
 use crate::error::ErrorResponse;
 use crate::models::{
-    AskAgentRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
-    IndexKnowledgeSpaceRequest, PermissionRequest, RuntimeStatus, ScanKnowledgeSpaceRequest,
-    WorkbenchSnapshot,
+    AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
+    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, PermissionRequest, RuntimeStatus,
+    ScanKnowledgeSpaceRequest, WorkbenchSnapshot,
 };
 use crate::state::AppState;
 
@@ -53,6 +53,24 @@ pub fn index_knowledge_space(
     state
         .index_knowledge_space(request.space_id)
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn enqueue_ocr_parse_job(
+    state: State<'_, AppState>,
+    request: EnqueueOcrJobRequest,
+) -> Result<WorkbenchSnapshot, ErrorResponse> {
+    state
+        .enqueue_ocr_parse_job(request.space_id, request.file_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn cancel_parse_job(
+    state: State<'_, AppState>,
+    request: CancelParseJobRequest,
+) -> Result<WorkbenchSnapshot, ErrorResponse> {
+    state.cancel_parse_job(request.job_id).map_err(Into::into)
 }
 
 #[tauri::command]

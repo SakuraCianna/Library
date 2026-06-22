@@ -411,6 +411,28 @@
   color: var(--color-danger);
 }
 
+.fileActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: max-content;
+}
+
+.queueButton {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: #ffffff;
+  padding: 3px 6px;
+  color: #314154;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.queueButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .blockExcerpt {
   margin: 10px 0 0;
   border: 1px solid #e2e7f0;
@@ -453,6 +475,48 @@
   color: #4b5565;
   font-size: 12px;
   text-align: center;
+}
+
+.queueList {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: 12px;
+}
+
+.queueRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid #e3e8f1;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  padding: 8px;
+  font-size: 12px;
+}
+
+.queueRow div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.queueRow strong,
+.queueRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queueRow span,
+.queueStatus {
+  color: var(--color-muted);
+}
+
+.queueActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .agent {

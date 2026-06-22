@@ -6,6 +6,7 @@ export const emptyWorkbench: WorkbenchSnapshot = {
   sessionPermission: "readonly",
   spaces: [],
   files: [],
+  parseJobs: [],
   blockPreview: {
     id: "block-empty",
     title: "暂无知识块",

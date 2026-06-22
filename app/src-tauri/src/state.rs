@@ -7,12 +7,15 @@ use crate::models::{
     can_request_session_permission, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
     KnowledgeSpace, PermissionMode, ScanSummary, TableInsightPreview, WorkbenchSnapshot,
 };
+use crate::ocr::{build_ocr_request, validate_ocr_inputs};
 use crate::parser::parse_file;
+use crate::runtime::ocr_config;
 use crate::scanner::scan_folder;
 use crate::storage::sqlite::SqliteStore;
 
 pub struct AppState {
     store: Mutex<SqliteStore>,
+    app_data_dir: PathBuf,
     active_space_id: Mutex<Option<String>>,
     active_scope: Mutex<ChatScope>,
     session_permission: Mutex<PermissionMode>,
@@ -27,12 +30,19 @@ impl AppState {
         let store = SqliteStore::open(&db_path)
             .map_err(|error| AppError::Storage(format!("无法打开本地数据库：{error}")))?;
 
-        Ok(Self::new(store))
+        Ok(Self::new_with_app_data_dir(store, app_data_dir))
     }
 
+    #[cfg(test)]
     pub fn new(store: SqliteStore) -> Self {
+        let app_data_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::new_with_app_data_dir(store, app_data_dir)
+    }
+
+    pub fn new_with_app_data_dir(store: SqliteStore, app_data_dir: PathBuf) -> Self {
         Self {
             store: Mutex::new(store),
+            app_data_dir,
             active_space_id: Mutex::new(None),
             active_scope: Mutex::new(ChatScope::CurrentFolder),
             session_permission: Mutex::new(PermissionMode::Readonly),
@@ -62,6 +72,12 @@ impl AppState {
                 .map_err(|error| AppError::Storage(error.to_string()))?,
             None => None,
         };
+        let parse_jobs = match active_space.as_ref() {
+            Some(space) => store
+                .list_parse_jobs(&space.id)
+                .map_err(|error| AppError::Storage(error.to_string()))?,
+            None => Vec::new(),
+        };
         let messages = self
             .messages
             .lock()
@@ -78,6 +94,7 @@ impl AppState {
                 .clone(),
             session_permission,
             files,
+            parse_jobs,
             latest_block,
             messages,
         ))
@@ -162,6 +179,69 @@ impl AppState {
             "索引/摘要完成：成功 {} 个，失败 {} 个。",
             indexed_count, failed_count
         ));
+        self.snapshot()
+    }
+
+    pub fn enqueue_ocr_parse_job(
+        &self,
+        space_id: String,
+        file_id: String,
+    ) -> Result<WorkbenchSnapshot, AppError> {
+        let (root_path, candidate) = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            let root_path = store
+                .get_space_root(&space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到要排队 OCR 的知识库".to_string()))?
+                .root_path;
+            let candidate = store
+                .get_file_parse_candidate(&space_id, &file_id)
+                .map_err(|error| AppError::Storage(format!("无法读取待 OCR 文件：{error}")))?
+                .ok_or_else(|| AppError::Storage("找不到要排队 OCR 的文件".to_string()))?;
+
+            (root_path, candidate)
+        };
+        if !is_ocr_supported_extension(&candidate.extension) {
+            return Err(AppError::Storage(
+                "当前 OCR 队列仅支持 PDF 文件".to_string(),
+            ));
+        }
+        let config = ocr_config(&self.app_data_dir);
+        let input_path = Path::new(&root_path).join(&candidate.relative_path);
+        validate_ocr_inputs(&input_path, &config.model_dir, &config.tier)?;
+        let request = build_ocr_request(&input_path, &config.model_dir, &config.tier);
+
+        {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .enqueue_parse_job(&space_id, &candidate.file_id, "ocr")
+                .map_err(|error| AppError::Storage(format!("无法创建 OCR 解析任务：{error}")))?;
+        }
+
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
+        self.push_system_message(format!(
+            "OCR 解析任务已排队：{}（{}）。",
+            display_relative_file_name(&candidate.relative_path),
+            request.tier
+        ));
+        self.snapshot()
+    }
+
+    pub fn cancel_parse_job(&self, job_id: String) -> Result<WorkbenchSnapshot, AppError> {
+        let cancelled = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .cancel_parse_job(&job_id)
+                .map_err(|error| AppError::Storage(format!("无法取消解析任务：{error}")))?
+        };
+        if !cancelled {
+            return Err(AppError::Storage("找不到可取消的排队任务".to_string()));
+        }
+
+        self.push_system_message("解析任务已取消。".to_string());
         self.snapshot()
     }
 
@@ -329,6 +409,7 @@ fn build_snapshot(
     active_scope: ChatScope,
     session_permission: PermissionMode,
     files: Vec<crate::models::KnowledgeFile>,
+    parse_jobs: Vec<crate::models::ParseJobSummary>,
     latest_block: Option<crate::models::KnowledgeBlockSearchHit>,
     messages: Vec<ChatMessage>,
 ) -> WorkbenchSnapshot {
@@ -345,6 +426,7 @@ fn build_snapshot(
         active_scope,
         session_permission,
         files,
+        parse_jobs,
         block_preview: latest_block
             .map(|block| KnowledgeBlockPreview {
                 id: block.id,
@@ -405,6 +487,21 @@ fn validate_folder_path(path: &Path) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn display_relative_file_name(relative_path: &str) -> String {
+    relative_path
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(relative_path)
+        .to_string()
+}
+
+fn is_ocr_supported_extension(extension: &str) -> bool {
+    extension
+        .trim_start_matches('.')
+        .eq_ignore_ascii_case("pdf")
 }
 
 #[cfg(test)]
@@ -480,6 +577,69 @@ mod tests {
 
         assert_eq!(indexed.files[0].status_label, "已索引");
         assert!(indexed.block_preview.excerpt.contains("缓存穿透"));
+    }
+
+    #[test]
+    fn enqueues_pdf_ocr_job_when_models_are_ready() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("scan.pdf"), "pdf").expect("write pdf");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let model_dir = app_data_dir
+            .path()
+            .join("models")
+            .join("ocr")
+            .join("pp-ocrv6");
+        fs::create_dir_all(model_dir.join("PP-OCRv6_medium_det")).expect("det model dir");
+        fs::create_dir_all(model_dir.join("PP-OCRv6_medium_rec")).expect("rec model dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+
+        let queued = state
+            .enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone())
+            .expect("ocr job queued");
+
+        assert_eq!(queued.parse_jobs.len(), 1);
+        assert_eq!(
+            queued.parse_jobs[0].file_id.as_deref(),
+            Some(scanned.files[0].id.as_str())
+        );
+    }
+
+    #[test]
+    fn rejects_non_pdf_ocr_jobs_before_queueing() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("README.md"), "hello").expect("write md");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+
+        let result =
+            state.enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone());
+
+        assert!(result
+            .expect_err("md file is rejected")
+            .to_string()
+            .contains("仅支持 PDF"));
     }
 
     #[test]

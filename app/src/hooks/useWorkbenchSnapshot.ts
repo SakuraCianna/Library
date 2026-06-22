@@ -3,7 +3,9 @@ import { useCallback, useEffect, useState } from "react";
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import {
   askAgent,
+  cancelParseJob,
   createKnowledgeSpace,
+  enqueueOcrParseJob,
   getWorkbenchSnapshot,
   indexKnowledgeSpace,
   requestSessionPermission,
@@ -21,7 +23,9 @@ interface WorkbenchSnapshotState {
 
 interface WorkbenchSnapshotResult extends WorkbenchSnapshotState {
   askAgentQuestion: (question: string) => Promise<void>;
+  cancelJob: (jobId: string) => Promise<void>;
   createSpaceFromFolder: (permission: PermissionMode) => Promise<void>;
+  enqueueOcrJob: (fileId: string) => Promise<void>;
   indexActiveSpace: () => Promise<void>;
   scanActiveSpace: () => Promise<void>;
   setFolderDefaultPermission: (permission: PermissionMode) => Promise<void>;
@@ -147,6 +151,49 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     }
   }, [commitSnapshot, state.snapshot.activeSpaceId]);
 
+  const enqueueOcrJob = useCallback(
+    async (fileId: string) => {
+      const spaceId = state.snapshot.activeSpaceId;
+      if (!spaceId) {
+        setState((current) => ({
+          ...current,
+          error: "请先添加一个知识库文件夹",
+        }));
+        return;
+      }
+
+      setState((current) => ({ ...current, loading: true, error: null }));
+      try {
+        const snapshot = await enqueueOcrParseJob(spaceId, fileId);
+        commitSnapshot(snapshot);
+      } catch (error) {
+        setState((current) => ({
+          ...current,
+          loading: false,
+          error: getErrorMessage(error, "OCR 排队失败"),
+        }));
+      }
+    },
+    [commitSnapshot, state.snapshot.activeSpaceId],
+  );
+
+  const cancelJob = useCallback(
+    async (jobId: string) => {
+      setState((current) => ({ ...current, loading: true, error: null }));
+      try {
+        const snapshot = await cancelParseJob(jobId);
+        commitSnapshot(snapshot);
+      } catch (error) {
+        setState((current) => ({
+          ...current,
+          loading: false,
+          error: getErrorMessage(error, "取消解析任务失败"),
+        }));
+      }
+    },
+    [commitSnapshot],
+  );
+
   const askAgentQuestion = useCallback(
     async (question: string) => {
       const spaceId = state.snapshot.activeSpaceId;
@@ -251,7 +298,9 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
   return {
     ...state,
     askAgentQuestion,
+    cancelJob,
     createSpaceFromFolder,
+    enqueueOcrJob,
     indexActiveSpace,
     scanActiveSpace,
     setFolderDefaultPermission,

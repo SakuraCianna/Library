@@ -38,6 +38,13 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: sidecars/ocr/requirements-dev.txt
+
       - name: Install Protocol Buffers compiler
         run: |
           choco install protoc -y --no-progress
@@ -76,6 +83,14 @@ jobs:
       - name: Build frontend
         working-directory: app
         run: npm run build
+
+      - name: Install OCR sidecar test dependencies
+        working-directory: sidecars/ocr
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run OCR sidecar tests
+        working-directory: sidecars/ocr
+        run: python -m pytest
 
       - name: Check Rust formatting
         working-directory: app/src-tauri
