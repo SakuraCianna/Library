@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -5,14 +6,14 @@ use std::sync::Mutex;
 use crate::error::AppError;
 use crate::models::{
     can_request_session_permission, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
-    KnowledgeSpace, OcrSidecarRequest, OcrSidecarResult, PermissionMode, ScanSummary,
-    TableInsightPreview, WorkbenchSnapshot,
+    KnowledgeSpace, OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode,
+    ScanSummary, TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
 use crate::parser::parse_file;
 use crate::runtime::ocr_config;
 use crate::scanner::scan_folder;
-use crate::storage::sqlite::SqliteStore;
+use crate::storage::sqlite::{OcrJobWriteOutcome, SqliteStore};
 
 pub struct AppState {
     store: Mutex<SqliteStore>,
@@ -21,6 +22,15 @@ pub struct AppState {
     active_scope: Mutex<ChatScope>,
     session_permission: Mutex<PermissionMode>,
     messages: Mutex<Vec<ChatMessage>>,
+    active_ocr_workers: Mutex<HashSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OcrJobOutcome {
+    NoQueuedJob,
+    Succeeded(String),
+    Failed(String),
+    Cancelled(String),
 }
 
 impl AppState {
@@ -48,6 +58,7 @@ impl AppState {
             active_scope: Mutex::new(ChatScope::CurrentFolder),
             session_permission: Mutex::new(PermissionMode::Readonly),
             messages: Mutex::new(Vec::new()),
+            active_ocr_workers: Mutex::new(HashSet::new()),
         }
     }
 
@@ -239,30 +250,94 @@ impl AppState {
                 .map_err(|error| AppError::Storage(format!("无法取消解析任务：{error}")))?
         };
         if !cancelled {
-            return Err(AppError::Storage("找不到可取消的排队任务".to_string()));
+            return Err(AppError::Storage("找不到可取消的解析任务".to_string()));
         }
 
         self.push_system_message("解析任务已取消。".to_string());
         self.snapshot()
     }
 
-    pub fn run_next_ocr_parse_job(
-        &self,
-        space_id: String,
-        resource_script_path: Option<PathBuf>,
-    ) -> Result<WorkbenchSnapshot, AppError> {
-        self.run_next_ocr_parse_job_with_runner(space_id, move |request| {
-            crate::ocr::run_ocr_sidecar(request, resource_script_path.as_deref())
-        })
+    pub fn begin_ocr_worker(&self, space_id: String) -> Result<bool, AppError> {
+        {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .get_space_root(&space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到要执行 OCR 的知识库".to_string()))?;
+        }
+
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id.clone());
+
+        let mut workers = self
+            .active_ocr_workers
+            .lock()
+            .expect("ocr worker mutex poisoned");
+        if !workers.insert(space_id) {
+            drop(workers);
+            self.push_system_message("OCR 后台任务已在运行。".to_string());
+            return Ok(false);
+        }
+        drop(workers);
+
+        self.push_system_message("OCR 后台任务已启动。".to_string());
+        Ok(true)
     }
 
-    pub fn run_next_ocr_parse_job_with_runner<F>(
+    pub fn run_ocr_worker(&self, space_id: String, resource_script_path: Option<PathBuf>) {
+        loop {
+            let outcome =
+                self.run_one_ocr_parse_job_with_runner(&space_id, |candidate, request| {
+                    let job_id = candidate.job_id.clone();
+                    crate::ocr::run_ocr_sidecar_cancellable(
+                        request,
+                        resource_script_path.as_deref(),
+                        || self.is_parse_job_cancelled(&job_id).unwrap_or(false),
+                    )
+                });
+
+            match outcome {
+                Ok(OcrJobOutcome::NoQueuedJob) => {
+                    self.push_system_message("OCR 后台队列已清空。".to_string());
+                    break;
+                }
+                Ok(outcome) => self.push_ocr_outcome_message(&outcome),
+                Err(error) => {
+                    self.push_system_message(format!("OCR 后台任务中断：{error}"));
+                    break;
+                }
+            }
+        }
+
+        self.finish_ocr_worker(&space_id);
+    }
+
+    #[cfg(test)]
+    fn run_next_ocr_parse_job_with_runner<F>(
         &self,
         space_id: String,
         runner: F,
-    ) -> Result<WorkbenchSnapshot, AppError>
+    ) -> Result<OcrJobOutcome, AppError>
     where
-        F: Fn(&OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
+        F: FnOnce(&ParseJobCandidate, &OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
+    {
+        let outcome = self.run_one_ocr_parse_job_with_runner(&space_id, runner)?;
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
+        Ok(outcome)
+    }
+
+    fn run_one_ocr_parse_job_with_runner<F>(
+        &self,
+        space_id: &str,
+        runner: F,
+    ) -> Result<OcrJobOutcome, AppError>
+    where
+        F: FnOnce(&ParseJobCandidate, &OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
     {
         let (root_path, candidate) = {
             let store = self.store.lock().expect("sqlite store mutex poisoned");
@@ -278,9 +353,9 @@ impl AppState {
             (root_path, candidate)
         };
         let Some(candidate) = candidate else {
-            self.push_system_message("没有待执行的 OCR 任务。".to_string());
-            return self.snapshot();
+            return Ok(OcrJobOutcome::NoQueuedJob);
         };
+        let file_name = display_relative_file_name(&candidate.relative_path);
         if !is_ocr_supported_extension(&candidate.extension) {
             return Err(AppError::Storage(
                 "当前 OCR 队列仅支持 PDF 文件".to_string(),
@@ -300,63 +375,100 @@ impl AppState {
         let config = ocr_config(&self.app_data_dir);
         let input_path = Path::new(&root_path).join(&candidate.relative_path);
         let request = build_ocr_request(&input_path, &config.model_dir, &config.tier);
-        let run_result = validate_ocr_inputs(&input_path, &config.model_dir, &config.tier)
-            .and_then(|_| runner(&request))
-            .and_then(|ocr_result| build_ocr_document(&candidate.relative_path, &ocr_result));
+        let run_result = self
+            .update_ocr_progress(&candidate.job_id, "正在验证 OCR 输入", 0, 1)
+            .and_then(|_| validate_ocr_inputs(&input_path, &config.model_dir, &config.tier))
+            .and_then(|_| self.update_ocr_progress(&candidate.job_id, "正在执行本地 OCR", 0, 1))
+            .and_then(|_| runner(&candidate, &request))
+            .and_then(|ocr_result| {
+                self.update_ocr_progress(&candidate.job_id, "正在写入索引", 1, 1)?;
+                build_ocr_document(&candidate.relative_path, &ocr_result)
+            });
 
         match run_result {
             Ok(document) => {
-                let storage_result = {
+                let outcome = {
                     let mut store = self.store.lock().expect("sqlite store mutex poisoned");
-                    store
-                        .replace_file_knowledge_block(&space_id, &candidate.file_id, &document)
-                        .map_err(|error| AppError::Storage(format!("无法保存 OCR 结果：{error}")))
-                        .and_then(|_| {
-                            store
-                                .mark_parse_job_succeeded(&candidate.job_id)
-                                .map_err(|error| {
-                                    AppError::Storage(format!("无法标记 OCR 成功：{error}"))
-                                })
-                                .and_then(|updated| {
-                                    updated.then_some(()).ok_or_else(|| {
-                                        AppError::Storage(
-                                            "OCR 任务状态已变化，无法标记成功".to_string(),
-                                        )
-                                    })
-                                })
-                        })
+                    match store
+                        .complete_ocr_job_if_running(
+                            space_id,
+                            &candidate.file_id,
+                            &candidate.job_id,
+                            &document,
+                        )
+                        .map_err(|error| AppError::Storage(format!("无法保存 OCR 结果：{error}")))?
+                    {
+                        OcrJobWriteOutcome::Updated => OcrJobOutcome::Succeeded(file_name),
+                        OcrJobWriteOutcome::Cancelled => OcrJobOutcome::Cancelled(file_name),
+                        OcrJobWriteOutcome::NotRunning => {
+                            return Err(AppError::Storage(
+                                "OCR 任务状态已变化，无法标记成功".to_string(),
+                            ));
+                        }
+                    }
                 };
 
-                match storage_result {
-                    Ok(_) => {
-                        self.push_system_message(format!(
-                            "OCR 解析完成：{}。",
-                            display_relative_file_name(&candidate.relative_path)
-                        ));
-                    }
-                    Err(error) => {
-                        self.record_ocr_failure(&candidate.job_id, &candidate.file_id, &error)?;
-                        self.push_system_message(format!(
-                            "OCR 解析失败：{}。",
-                            display_relative_file_name(&candidate.relative_path)
-                        ));
-                    }
-                }
+                Ok(outcome)
             }
             Err(error) => {
-                self.record_ocr_failure(&candidate.job_id, &candidate.file_id, &error)?;
-                self.push_system_message(format!(
-                    "OCR 解析失败：{}。",
-                    display_relative_file_name(&candidate.relative_path)
-                ));
+                if self.is_parse_job_cancelled(&candidate.job_id)? {
+                    return Ok(OcrJobOutcome::Cancelled(file_name));
+                }
+
+                if self.record_ocr_failure(&candidate.job_id, &candidate.file_id, &error)? {
+                    Ok(OcrJobOutcome::Failed(file_name))
+                } else {
+                    Ok(OcrJobOutcome::Cancelled(file_name))
+                }
             }
         }
+    }
 
-        *self
-            .active_space_id
+    fn update_ocr_progress(
+        &self,
+        job_id: &str,
+        phase: &str,
+        progress_current: u32,
+        progress_total: u32,
+    ) -> Result<(), AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        store
+            .update_parse_job_progress(job_id, phase, progress_current, progress_total)
+            .map_err(|error| AppError::Storage(format!("无法更新 OCR 进度：{error}")))?
+            .then_some(())
+            .ok_or_else(|| AppError::Storage("OCR 任务状态已变化，无法更新进度".to_string()))
+    }
+
+    fn is_parse_job_cancelled(&self, job_id: &str) -> Result<bool, AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        let status = store
+            .parse_job_status(job_id)
+            .map_err(|error| AppError::Storage(format!("无法读取 OCR 任务状态：{error}")))?;
+        Ok(status.as_deref() == Some("cancelled"))
+    }
+
+    fn push_ocr_outcome_message(&self, outcome: &OcrJobOutcome) {
+        match outcome {
+            OcrJobOutcome::NoQueuedJob => {
+                self.push_system_message("没有待执行的 OCR 任务。".to_string());
+            }
+            OcrJobOutcome::Succeeded(file_name) => {
+                self.push_system_message(format!("OCR 解析完成：{file_name}。"));
+            }
+            OcrJobOutcome::Failed(file_name) => {
+                self.push_system_message(format!("OCR 解析失败：{file_name}。"));
+            }
+            OcrJobOutcome::Cancelled(file_name) => {
+                self.push_system_message(format!("OCR 解析已取消：{file_name}。"));
+            }
+        }
+    }
+
+    fn finish_ocr_worker(&self, space_id: &str) {
+        self.active_ocr_workers
             .lock()
-            .expect("active space mutex poisoned") = Some(space_id);
-        self.snapshot()
+            .expect("ocr worker mutex poisoned")
+            .remove(space_id);
     }
 
     fn record_ocr_failure(
@@ -364,21 +476,19 @@ impl AppState {
         job_id: &str,
         file_id: &str,
         error: &AppError,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let message = error.to_string();
-        let store = self.store.lock().expect("sqlite store mutex poisoned");
-        store
-            .mark_file_parse_failed(file_id)
-            .map_err(|error| AppError::Storage(format!("无法记录 OCR 文件失败：{error}")))?;
-        let failed = store
-            .mark_parse_job_failed(job_id, &message)
-            .map_err(|error| AppError::Storage(format!("无法记录 OCR 任务失败：{error}")))?;
-        if !failed {
-            return Err(AppError::Storage(
+        let mut store = self.store.lock().expect("sqlite store mutex poisoned");
+        match store
+            .fail_ocr_job_if_running(file_id, job_id, &message)
+            .map_err(|error| AppError::Storage(format!("无法记录 OCR 任务失败：{error}")))?
+        {
+            OcrJobWriteOutcome::Updated => Ok(true),
+            OcrJobWriteOutcome::Cancelled => Ok(false),
+            OcrJobWriteOutcome::NotRunning => Err(AppError::Storage(
                 "OCR 任务状态已变化，无法标记失败".to_string(),
-            ));
+            )),
         }
-        Ok(())
     }
 
     pub async fn ask_agent(
@@ -754,6 +864,34 @@ mod tests {
     }
 
     #[test]
+    fn ocr_worker_gate_allows_one_worker_per_space_until_finished() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let space_id = created.active_space_id;
+
+        assert!(state
+            .begin_ocr_worker(space_id.clone())
+            .expect("first worker starts"));
+        assert!(!state
+            .begin_ocr_worker(space_id.clone())
+            .expect("second worker is rejected"));
+
+        state.finish_ocr_worker(&space_id);
+
+        assert!(state
+            .begin_ocr_worker(space_id.clone())
+            .expect("worker can restart after finish"));
+        state.finish_ocr_worker(&space_id);
+    }
+
+    #[test]
     fn rejects_non_pdf_ocr_jobs_before_queueing() {
         let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
         fs::write(knowledge_dir.path().join("README.md"), "hello").expect("write md");
@@ -807,8 +945,8 @@ mod tests {
             .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
             .expect("ocr job queued");
 
-        let snapshot = state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_request| {
+        state
+            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_candidate, _request| {
                 Ok(OcrSidecarResult {
                     text: "扫描版 PDF 的本地 OCR 文本".to_string(),
                     page_count: 1,
@@ -820,9 +958,11 @@ mod tests {
                 })
             })
             .expect("ocr job runs");
+        let snapshot = state.snapshot().expect("snapshot builds");
 
         assert_eq!(snapshot.files[0].status_label, "已索引");
         assert_eq!(snapshot.parse_jobs[0].status, "succeeded");
+        assert_eq!(snapshot.parse_jobs[0].phase, "已完成");
         assert!(snapshot.block_preview.excerpt.contains("OCR 文本"));
     }
 
@@ -856,8 +996,9 @@ mod tests {
         state
             .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
             .expect("ocr job queued");
-        let indexed = state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_request| {
+        let space_id = scanned.active_space_id.clone();
+        state
+            .run_next_ocr_parse_job_with_runner(space_id.clone(), |_candidate, _request| {
                 Ok(OcrSidecarResult {
                     text: "扫描版 PDF 的本地 OCR 文本".to_string(),
                     page_count: 1,
@@ -869,6 +1010,7 @@ mod tests {
                 })
             })
             .expect("ocr job runs");
+        let indexed = state.snapshot().expect("snapshot builds");
 
         let answered = state
             .ask_agent(indexed.active_space_id, "扫描版".to_string())
@@ -909,13 +1051,14 @@ mod tests {
             .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
             .expect("ocr job queued");
 
-        let snapshot = state
-            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_request| {
+        state
+            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |_candidate, _request| {
                 Err(crate::error::AppError::Filesystem(
                     "OCR_EMPTY_RESULT".to_string(),
                 ))
             })
             .expect("failure is recorded in snapshot");
+        let snapshot = state.snapshot().expect("snapshot builds");
 
         assert_eq!(snapshot.files[0].status_label, "扫描失败");
         assert_eq!(snapshot.parse_jobs[0].status, "failed");
@@ -923,6 +1066,103 @@ mod tests {
             snapshot.parse_jobs[0].error_message.as_deref(),
             Some("文件系统错误：OCR_EMPTY_RESULT")
         );
+    }
+
+    #[test]
+    fn cancelled_running_ocr_job_does_not_write_successful_output() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("scan.pdf"), "pdf").expect("write pdf");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let model_dir = app_data_dir
+            .path()
+            .join("models")
+            .join("ocr")
+            .join("pp-ocrv6");
+        create_test_ocr_model(&model_dir);
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+        state
+            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .expect("ocr job queued");
+
+        state
+            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |candidate, _request| {
+                state
+                    .cancel_parse_job(candidate.job_id.clone())
+                    .expect("running job cancels");
+                Ok(OcrSidecarResult {
+                    text: "这段取消后的 OCR 文本不应入库".to_string(),
+                    page_count: 1,
+                    pages: vec![OcrPageResult {
+                        page_index: 0,
+                        text: "这段取消后的 OCR 文本不应入库".to_string(),
+                        confidence: Some(0.91),
+                    }],
+                })
+            })
+            .expect("cancelled job returns without failing command");
+        let snapshot = state.snapshot().expect("snapshot builds");
+
+        assert_eq!(snapshot.parse_jobs[0].status, "cancelled");
+        assert_eq!(snapshot.parse_jobs[0].phase, "已取消");
+        assert!(!snapshot.block_preview.excerpt.contains("不应入库"));
+    }
+
+    #[test]
+    fn cancelled_running_ocr_job_does_not_mark_file_failed_after_runner_error() {
+        let knowledge_dir = tempfile::tempdir().expect("knowledge dir");
+        fs::write(knowledge_dir.path().join("scan.pdf"), "pdf").expect("write pdf");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let model_dir = app_data_dir
+            .path()
+            .join("models")
+            .join("ocr")
+            .join("pp-ocrv6");
+        create_test_ocr_model(&model_dir);
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let created = state
+            .create_knowledge_space(
+                "OCR".to_string(),
+                knowledge_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let scanned = state
+            .scan_knowledge_space(created.active_space_id)
+            .expect("space scanned");
+        state
+            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .expect("ocr job queued");
+
+        state
+            .run_next_ocr_parse_job_with_runner(scanned.active_space_id, |candidate, _request| {
+                state
+                    .cancel_parse_job(candidate.job_id.clone())
+                    .expect("running job cancels");
+                Err(crate::error::AppError::Filesystem(
+                    "OCR_CANCELLED".to_string(),
+                ))
+            })
+            .expect("cancelled runner error returns without failing command");
+        let snapshot = state.snapshot().expect("snapshot builds");
+
+        assert_eq!(snapshot.parse_jobs[0].status, "cancelled");
+        assert_eq!(snapshot.files[0].status_label, "待解析");
     }
 
     fn create_test_ocr_model(model_dir: &std::path::Path) {

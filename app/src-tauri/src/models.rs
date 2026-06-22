@@ -275,7 +275,7 @@ pub struct EnqueueOcrJobRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunOcrJobRequest {
+pub struct StartOcrWorkerRequest {
     pub space_id: String,
 }
 
@@ -291,6 +291,7 @@ pub struct OcrSidecarRequest {
     pub file_path: String,
     pub model_dir: String,
     pub tier: String,
+    pub max_pdf_pages: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -318,6 +319,11 @@ pub struct ParseJobSummary {
     pub job_type: String,
     pub status: String,
     pub error_message: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub progress_current: u32,
+    pub progress_total: u32,
+    pub phase: String,
 }
 
 pub fn can_request_session_permission(

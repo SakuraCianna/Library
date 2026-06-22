@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import App from "../App";
 import { emptyWorkbench } from "../data/emptyWorkbench";
-import type { WorkbenchSnapshot } from "../types/workbench";
+import type { ParseJobSummary, WorkbenchSnapshot } from "../types/workbench";
 
 const snapshotWithSpace: WorkbenchSnapshot = {
   ...emptyWorkbench,
@@ -52,6 +52,23 @@ const answeredSnapshot: WorkbenchSnapshot = {
     },
   ],
 };
+
+function parseJob(overrides: Partial<ParseJobSummary> = {}): ParseJobSummary {
+  return {
+    id: "job-ocr",
+    fileId: "file-pdf",
+    fileName: "scan.pdf",
+    jobType: "ocr",
+    status: "queued",
+    errorMessage: null,
+    startedAt: null,
+    finishedAt: null,
+    progressCurrent: 0,
+    progressTotal: 1,
+    phase: "等待执行",
+    ...overrides,
+  };
+}
 
 describe("App", () => {
   afterEach(() => {
@@ -153,14 +170,7 @@ describe("App", () => {
     const snapshotWithJob = {
       ...snapshotWithSpace,
       parseJobs: [
-        {
-          id: "job-1",
-          fileId: "file-scan",
-          fileName: "scan.pdf",
-          jobType: "ocr",
-          status: "queued",
-          errorMessage: null,
-        },
+        parseJob({ id: "job-1", fileId: "file-scan" }),
       ],
     };
     Object.defineProperty(globalThis, "isTauri", {
@@ -177,6 +187,8 @@ describe("App", () => {
 
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
     expect(screen.getByText("scan.pdf")).toBeInTheDocument();
+    expect(screen.getByText("等待中")).toBeInTheDocument();
+    expect(screen.getByText("0/1")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "取消解析任务 scan.pdf" }),
     ).toBeInTheDocument();
@@ -198,14 +210,7 @@ describe("App", () => {
     const queuedSnapshot = {
       ...snapshotWithPdf,
       parseJobs: [
-        {
-          id: "job-ocr",
-          fileId: "file-pdf",
-          fileName: "scan.pdf",
-          jobType: "ocr",
-          status: "queued",
-          errorMessage: null,
-        },
+        parseJob(),
       ],
     };
     Object.defineProperty(globalThis, "isTauri", {
@@ -230,27 +235,23 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "排队 OCR scan.pdf" })).toBeDisabled();
   });
 
-  it("runs a queued OCR job through the desktop command", async () => {
+  it("starts the OCR worker through the desktop command", async () => {
     const snapshotWithJob = {
       ...snapshotWithSpace,
       parseJobs: [
-        {
-          id: "job-ocr",
-          fileId: "file-pdf",
-          fileName: "scan.pdf",
-          jobType: "ocr",
-          status: "queued",
-          errorMessage: null,
-        },
+        parseJob(),
       ],
     };
     const finishedSnapshot = {
       ...snapshotWithJob,
       parseJobs: [
-        {
-          ...snapshotWithJob.parseJobs[0],
+        parseJob({
           status: "succeeded",
-        },
+          phase: "已完成",
+          progressCurrent: 1,
+          progressTotal: 1,
+          finishedAt: "2026-06-22T00:00:00Z",
+        }),
       ],
       blockPreview: {
         id: "block-ocr",
@@ -267,7 +268,7 @@ describe("App", () => {
       if (cmd === "get_runtime_status") {
         return runtimeStatus;
       }
-      if (cmd === "run_next_ocr_parse_job") {
+      if (cmd === "start_ocr_worker") {
         return finishedSnapshot;
       }
       return snapshotWithJob;
@@ -275,9 +276,9 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "运行 OCR" }));
+    fireEvent.click(screen.getByRole("button", { name: "启动 OCR" }));
 
-    expect(await screen.findByText("succeeded")).toBeInTheDocument();
+    expect((await screen.findAllByText("已完成")).length).toBeGreaterThan(0);
     expect(screen.getByText("扫描版 PDF 的本地 OCR 文本")).toBeInTheDocument();
   });
 
@@ -285,14 +286,7 @@ describe("App", () => {
     const snapshotWithJob = {
       ...snapshotWithSpace,
       parseJobs: [
-        {
-          id: "job-ocr",
-          fileId: "file-pdf",
-          fileName: "scan.pdf",
-          jobType: "ocr",
-          status: "queued",
-          errorMessage: null,
-        },
+        parseJob(),
       ],
     };
     Object.defineProperty(globalThis, "isTauri", {
@@ -303,7 +297,7 @@ describe("App", () => {
       if (cmd === "get_runtime_status") {
         return runtimeStatus;
       }
-      if (cmd === "run_next_ocr_parse_job") {
+      if (cmd === "start_ocr_worker") {
         throw new Error("模型目录缺失");
       }
       return snapshotWithJob;
@@ -311,7 +305,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("解析队列")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "运行 OCR" }));
+    fireEvent.click(screen.getByRole("button", { name: "启动 OCR" }));
 
     expect(await screen.findByText("模型目录缺失")).toBeInTheDocument();
   });

@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable
 OCR_VERSION = "PP-OCRv6"
 SUPPORTED_EXTENSIONS = {".pdf"}
 MAX_INPUT_BYTES = 50 * 1024 * 1024
+DEFAULT_MAX_PDF_PAGES = 12
 REQUIRED_MODEL_FILES = ("inference.json", "inference.pdiparams", "inference.yml")
 
 
@@ -20,6 +21,7 @@ class OcrRequest:
     file_path: str
     model_dir: str
     tier: str
+    max_pdf_pages: int
 
 
 def parse_request(raw: str) -> OcrRequest:
@@ -28,6 +30,7 @@ def parse_request(raw: str) -> OcrRequest:
         file_path=str(payload["filePath"]),
         model_dir=str(payload["modelDir"]),
         tier=str(payload.get("tier", "medium")),
+        max_pdf_pages=int(payload.get("maxPdfPages") or DEFAULT_MAX_PDF_PAGES),
     )
 
 
@@ -66,6 +69,16 @@ def missing_model_assets(request: OcrRequest) -> list[str]:
     return missing
 
 
+def detect_pdf_page_count(file_path: Path) -> int:
+    try:
+        from pypdf import PdfReader
+    except Exception as exc:  # pragma: no cover - dependency guard
+        raise RuntimeError(f"pypdf 未安装或无法导入：{exc}") from exc
+
+    reader = PdfReader(file_path)
+    return len(reader.pages)
+
+
 def build_paddleocr_kwargs(request: OcrRequest) -> dict[str, Any]:
     det_dir, rec_dir = required_model_paths(request)
     return {
@@ -91,6 +104,17 @@ def validate_request(request: OcrRequest) -> dict[str, Any] | None:
         return build_error_response("OCR_INPUT_TOO_LARGE", "OCR 输入文件超过 50 MB")
     if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         return build_error_response("OCR_UNSUPPORTED_FILE", "当前 OCR 仅支持 PDF 文件")
+    try:
+        page_count = detect_pdf_page_count(file_path)
+    except RuntimeError as exc:
+        return build_error_response("OCR_RUNTIME_NOT_INSTALLED", str(exc))
+    except Exception as exc:
+        return build_error_response("OCR_PDF_PAGE_COUNT_FAILED", f"无法读取 PDF 页数：{exc}")
+    if page_count > request.max_pdf_pages:
+        return build_error_response(
+            "OCR_TOO_MANY_PAGES",
+            f"OCR PDF 页数 {page_count} 超过当前上限 {request.max_pdf_pages}",
+        )
 
     missing = missing_model_assets(request)
     if missing:

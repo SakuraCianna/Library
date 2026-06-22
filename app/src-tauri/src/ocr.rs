@@ -11,6 +11,7 @@ const SUMMARY_CHARS: usize = 180;
 const MAX_OCR_BODY_CHARS: usize = 60_000;
 const OCR_SIDECAR_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_OCR_INPUT_BYTES: u64 = 50 * 1024 * 1024;
+const DEFAULT_MAX_OCR_PDF_PAGES: u32 = 12;
 const REQUIRED_MODEL_FILES: [&str; 3] = ["inference.json", "inference.pdiparams", "inference.yml"];
 
 #[derive(Debug, serde::Deserialize)]
@@ -31,25 +32,40 @@ pub fn build_ocr_request(file_path: &Path, model_dir: &Path, tier: &str) -> OcrS
         file_path: file_path.to_string_lossy().to_string(),
         model_dir: model_dir.to_string_lossy().to_string(),
         tier: tier.to_string(),
+        max_pdf_pages: ocr_pdf_page_limit(),
     }
 }
 
-pub fn run_ocr_sidecar(
+pub fn run_ocr_sidecar_cancellable<F>(
     request: &OcrSidecarRequest,
     resource_script_path: Option<&Path>,
-) -> Result<OcrSidecarResult, AppError> {
+    is_cancelled: F,
+) -> Result<OcrSidecarResult, AppError>
+where
+    F: Fn() -> bool,
+{
     let script_path = resolve_ocr_sidecar_script(resource_script_path)?;
     let project_root = discover_project_root().ok();
     let python_path = discover_python_executable(project_root.as_deref());
-    run_ocr_sidecar_with_paths(request, &python_path, &script_path, OCR_SIDECAR_TIMEOUT)
+    run_ocr_sidecar_with_paths(
+        request,
+        &python_path,
+        &script_path,
+        OCR_SIDECAR_TIMEOUT,
+        is_cancelled,
+    )
 }
 
-fn run_ocr_sidecar_with_paths(
+fn run_ocr_sidecar_with_paths<F>(
     request: &OcrSidecarRequest,
     python_path: &Path,
     script_path: &Path,
     timeout: Duration,
-) -> Result<OcrSidecarResult, AppError> {
+    is_cancelled: F,
+) -> Result<OcrSidecarResult, AppError>
+where
+    F: Fn() -> bool,
+{
     if !script_path.is_file() {
         return Err(AppError::Filesystem(format!(
             "找不到 OCR sidecar：{}",
@@ -98,10 +114,19 @@ fn run_ocr_sidecar_with_paths(
         {
             break status;
         }
+        if is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Filesystem(
+                "OCR_CANCELLED：用户取消了 OCR 任务".to_string(),
+            ));
+        }
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(AppError::Filesystem("OCR sidecar 执行超时".to_string()));
+            return Err(AppError::Filesystem(
+                "OCR_TIMEOUT：OCR sidecar 执行超时".to_string(),
+            ));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -149,7 +174,7 @@ pub fn validate_ocr_inputs(file_path: &Path, model_dir: &Path, tier: &str) -> Re
         .len();
     if file_size > MAX_OCR_INPUT_BYTES {
         return Err(AppError::Filesystem(format!(
-            "OCR 输入文件过大，当前上限为 {} MB",
+            "OCR_INPUT_TOO_LARGE：OCR 输入文件过大，当前上限为 {} MB",
             MAX_OCR_INPUT_BYTES / 1024 / 1024
         )));
     }
@@ -178,6 +203,14 @@ pub fn validate_ocr_inputs(file_path: &Path, model_dir: &Path, tier: &str) -> Re
     }
 
     Ok(())
+}
+
+fn ocr_pdf_page_limit() -> u32 {
+    env::var("OCR_MAX_PDF_PAGES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_OCR_PDF_PAGES)
 }
 
 fn required_ocr_models(tier: &str) -> [String; 2] {
@@ -334,6 +367,8 @@ mod tests {
 
     #[test]
     fn validates_existing_file_and_model_dir() {
+        let _env_lock = env_lock().lock().expect("env lock");
+        let _page_guard = EnvVarGuard::set("OCR_MAX_PDF_PAGES", "12");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let input = temp_dir.path().join("scan.pdf");
         let model_dir = temp_dir.path().join("models");
@@ -351,6 +386,7 @@ mod tests {
         let request = build_ocr_request(&input, &model_dir, "medium");
 
         assert_eq!(request.tier, "medium");
+        assert_eq!(request.max_pdf_pages, 12);
         assert!(request.file_path.ends_with("scan.pdf"));
     }
 

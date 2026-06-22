@@ -108,6 +108,11 @@ CREATE TABLE IF NOT EXISTS parse_jobs (
   job_type TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   error_message TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  progress_current INTEGER NOT NULL DEFAULT 0,
+  progress_total INTEGER NOT NULL DEFAULT 0,
+  phase TEXT NOT NULL DEFAULT '等待执行',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

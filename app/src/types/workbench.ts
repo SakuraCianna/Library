@@ -72,6 +72,11 @@ export interface ParseJobSummary {
   jobType: string;
   status: string;
   errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  progressCurrent: number;
+  progressTotal: number;
+  phase: string;
 }
 
 export interface WorkbenchSnapshot {
