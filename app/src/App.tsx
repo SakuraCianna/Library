@@ -4,6 +4,7 @@ import chevronDownIcon from "@iconify-icons/lucide/chevron-down";
 import eyeIcon from "@iconify-icons/lucide/eye";
 import fileSearchIcon from "@iconify-icons/lucide/file-search";
 import folderPlusIcon from "@iconify-icons/lucide/folder-plus";
+import playIcon from "@iconify-icons/lucide/play";
 import refreshCwIcon from "@iconify-icons/lucide/refresh-cw";
 import sendIcon from "@iconify-icons/lucide/send";
 import settingsIcon from "@iconify-icons/lucide/settings";
@@ -17,6 +18,7 @@ import type {
   ChatMessage,
   ChatScope,
   KnowledgeFile,
+  ParseJobSummary,
   PermissionMode,
 } from "./types/workbench";
 import styles from "./App.module.css";
@@ -36,6 +38,13 @@ const scopeLabel: Record<ChatScope, string> = {
 const tabs = ["总览", "文件", "知识块", "表格", "回收站"];
 const scopes = Object.keys(scopeLabel) as ChatScope[];
 const permissionOptions = Object.keys(permissionLabel) as PermissionMode[];
+const jobStatusLabel: Record<string, string> = {
+  queued: "等待中",
+  running: "运行中",
+  succeeded: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
 
 function fileStatusClass(file: KnowledgeFile) {
   if (file.status === "changed") return styles.statusChanged;
@@ -48,6 +57,22 @@ function messageClass(message: ChatMessage) {
   if (message.role === "assistant") return styles.messageAssistant;
   if (message.role === "system") return styles.messageSystem;
   return styles.messageUser;
+}
+
+function queueStatusClass(status: string) {
+  if (status === "running") return styles.queueStatusRunning;
+  if (status === "succeeded") return styles.queueStatusSucceeded;
+  if (status === "failed") return styles.queueStatusFailed;
+  if (status === "cancelled") return styles.queueStatusCancelled;
+  return styles.queueStatusQueued;
+}
+
+function queueProgressText(job: ParseJobSummary) {
+  if (job.progressTotal <= 0) {
+    return "等待";
+  }
+
+  return `${job.progressCurrent}/${job.progressTotal}`;
 }
 
 export default function App() {
@@ -63,10 +88,11 @@ export default function App() {
     createSpaceFromFolder,
     enqueueOcrJob,
     indexActiveSpace,
-    runNextOcrJob,
+    refreshSnapshot,
     scanActiveSpace,
     setFolderDefaultPermission,
     setSessionPermission,
+    startOcrWorker,
   } = useWorkbenchSnapshot();
   const { runtimeStatus, runtimeStatusError } = useRuntimeStatus();
   const activeSpace =
@@ -79,6 +105,9 @@ export default function App() {
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
   const hasQueuedOcrJob = snapshot.parseJobs.some(
     (job) => job.jobType === "ocr" && job.status === "queued",
+  );
+  const hasRunningOcrJob = snapshot.parseJobs.some(
+    (job) => job.jobType === "ocr" && job.status === "running",
   );
   const activeOcrFileIds = new Set(
     snapshot.parseJobs
@@ -368,25 +397,45 @@ export default function App() {
                     <div className={styles.panelKicker}>后台任务</div>
                     <h3 className={styles.panelTitle}>解析队列</h3>
                   </div>
-                  <button
-                    className={styles.plainButton}
-                    disabled={loading || !hasQueuedOcrJob}
-                    onClick={() => void runNextOcrJob()}
-                    type="button"
-                  >
-                    运行 OCR
-                  </button>
+                  <div className={styles.queueHeaderActions}>
+                    <button
+                      className={styles.plainButton}
+                      disabled={loading || !hasQueuedOcrJob || hasRunningOcrJob}
+                      onClick={() => void startOcrWorker()}
+                      type="button"
+                    >
+                      <Icon aria-hidden icon={playIcon} />
+                      <span>启动 OCR</span>
+                    </button>
+                    <button
+                      className={styles.plainButton}
+                      disabled={loading || !hasActiveSpace}
+                      onClick={() => void refreshSnapshot()}
+                      type="button"
+                    >
+                      <Icon aria-hidden icon={refreshCwIcon} />
+                      <span>刷新</span>
+                    </button>
+                  </div>
                 </div>
                 <div className={styles.queueList}>
                   {snapshot.parseJobs.map((job) => (
                     <div className={styles.queueRow} key={job.id}>
-                      <div>
+                      <div className={styles.queueInfo}>
                         <strong>{job.fileName}</strong>
-                        <span>{job.jobType}</span>
+                        <span>{job.phase || job.jobType}</span>
+                        {job.errorMessage ? (
+                          <span className={styles.queueError}>{job.errorMessage}</span>
+                        ) : null}
                       </div>
                       <div className={styles.queueActions}>
-                        <span className={styles.queueStatus}>{job.status}</span>
-                        {job.status === "queued" ? (
+                        <span className={queueStatusClass(job.status)}>
+                          {jobStatusLabel[job.status] ?? job.status}
+                        </span>
+                        <span className={styles.queueProgress}>
+                          {queueProgressText(job)}
+                        </span>
+                        {job.status === "queued" || job.status === "running" ? (
                           <button
                             aria-label={`取消解析任务 ${job.fileName}`}
                             className={styles.iconButton}

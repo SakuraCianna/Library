@@ -490,6 +490,13 @@
   gap: var(--space-2);
 }
 
+.queueHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 .queueRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -502,28 +509,72 @@
   font-size: 12px;
 }
 
-.queueRow div {
+.queueInfo {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
-.queueRow strong,
-.queueRow span {
+.queueInfo strong,
+.queueInfo span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.queueRow span,
-.queueStatus {
+.queueInfo span,
+.queueStatusQueued {
   color: var(--color-muted);
 }
 
 .queueActions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: var(--space-2);
+  min-width: max-content;
+}
+
+.queueStatusQueued,
+.queueStatusRunning,
+.queueStatusSucceeded,
+.queueStatusFailed,
+.queueStatusCancelled,
+.queueProgress {
+  border: 1px solid #d9e1ec;
+  border-radius: var(--radius-control);
+  background: #ffffff;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.queueStatusRunning {
+  color: var(--color-accent);
+}
+
+.queueStatusSucceeded {
+  color: var(--color-success);
+}
+
+.queueStatusFailed {
+  color: var(--color-danger);
+}
+
+.queueStatusCancelled {
+  color: var(--color-muted);
+}
+
+.queueProgress {
+  color: #344054;
+}
+
+.queueError {
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .agent {
@@ -739,6 +790,19 @@
 
   .tablePreview {
     grid-template-columns: 1fr;
+  }
+
+  .queueRow {
+    grid-template-columns: 1fr;
+  }
+
+  .queueHeader {
+    flex-wrap: wrap;
+  }
+
+  .queueActions,
+  .queueHeaderActions {
+    justify-content: flex-start;
   }
 
   .messageUser,

@@ -37,9 +37,9 @@
 - DeepSeek 本地安全配置状态读取
 - PP-OCRv6 本地模型下载脚本和状态检查
 - 本地 OCR sidecar JSON 协议和 PaddleOCR 真实推理入口
-- SQLite 解析队列入队、取消、执行和列表查询骨架
+- SQLite 解析队列入队、后台执行、取消、进度和列表查询骨架
 - 前端解析队列状态展示
-- 前端可手动运行下一条 OCR 解析任务
+- 前端可启动后台 OCR worker、刷新进度并取消排队或运行中的 OCR 任务
 - 前端和 Rust 单元测试
 
 ### 权限说明
@@ -51,7 +51,7 @@
 ### 暂未实现
 
 - 图片 OCR 推理执行
-- OCR 后台批量调度、进度流和重试策略
+- OCR 重试策略和实时进度流
 - 高保真 PDF 版面解析
 - 表格深度理解和表格问答
 - DeepSeek 流式输出
@@ -125,6 +125,7 @@ OCR 模型默认使用 PP-OCRv6 medium。模型文件默认下载到 `models/ocr
 ```powershell
 .\scripts\下载OCR模型.ps1 -Tier medium
 $env:OCR_MODEL_DIR = "E:\CodeHome\Library\models\ocr\pp-ocrv6"
+$env:OCR_MAX_PDF_PAGES = "12"
 ```
 
 如果希望放到其他目录：
@@ -148,7 +149,7 @@ $env:OCR_PYTHON_PATH = "E:\CodeHome\Library\.venv\Scripts\python.exe"
 $env:OCR_SIDECAR_PATH = "E:\CodeHome\Library\sidecars\ocr\ocr_sidecar.py"
 ```
 
-当前 OCR 阶段支持对队列中的扫描版 PDF 执行本地 PaddleOCR 推理，并把结果写入统一知识块。每个模型目录必须包含 `inference.json`、`inference.pdiparams`、`inference.yml`，输入 PDF 当前限制为 50 MB 以内。图片 OCR、批量后台调度、进度流和表格深度理解会在后续解析模块接入。
+当前 OCR 阶段支持对队列中的扫描版 PDF 启动本地后台 worker 执行 PaddleOCR 推理，并把结果写入统一知识块。每个模型目录必须包含 `inference.json`、`inference.pdiparams`、`inference.yml`，输入 PDF 当前限制为 50 MB 以内，默认页数上限为 12 页，可通过 `OCR_MAX_PDF_PAGES` 调整。图片 OCR、重试策略、实时进度流和表格深度理解会在后续解析模块接入。
 
 ## MVP 最短链路
 
@@ -160,7 +161,7 @@ $env:OCR_SIDECAR_PATH = "E:\CodeHome\Library\sidecars\ocr\ocr_sidecar.py"
 
 建索引/摘要会把扫描到的 `.md`、`.txt`、`.docx`、`.xlsx` 和文本型 `.pdf` 转成统一知识块并写入本地 SQLite。助手回答会先检索本地知识块；如果本机配置了 DeepSeek API Key，会尝试使用 `deepseek-v4-flash` 生成更自然的回答，失败时自动回退到本地检索结果。
 
-当前普通 PDF 解析是 MVP 轻量能力，适合可抽取文本的 PDF。扫描版 PDF 可以先排队 OCR，再在解析队列中手动运行下一条 OCR 任务。复杂版面、图片文字、批量任务和 OCR 进度展示仍是后续能力。
+当前普通 PDF 解析是 MVP 轻量能力，适合可抽取文本的 PDF。扫描版 PDF 可以先排队 OCR，再在解析队列中启动后台 OCR worker，并通过刷新查看阶段、进度、错误和取消状态。复杂版面、图片文字、重试策略和实时进度流仍是后续能力。
 
 ## 常用命令
 
@@ -259,4 +260,4 @@ CI 工作流会在 Windows runner 中安装 `protoc` 并设置 `PROTOC`，本地
 
 当前扫描阶段会同步遍历支持格式文件并计算内容指纹。超大目录后续需要接入后台任务、进度、取消和文件大小限制。
 
-当前解析阶段是同步 MVP 链路，适合先验证单文件和小文件夹。后续需要改成后台任务队列、进度展示、取消和重试。
+当前 OCR 解析阶段已经接入后台任务队列、粗粒度进度、取消和页数限制。通用文档解析仍是同步 MVP 链路，后续需要继续接入后台化、重试和更细的进度事件。

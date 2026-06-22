@@ -30,6 +30,7 @@ def test_parse_request_accepts_local_file_and_model_dir():
     assert request.file_path.endswith("scan.pdf")
     assert request.model_dir.endswith("pp-ocrv6")
     assert request.tier == "medium"
+    assert request.max_pdf_pages == 12
 
 
 def test_error_response_is_json_serializable():
@@ -128,12 +129,8 @@ def test_extract_ocr_pages_normalizes_paddle_result_shape():
 def test_run_ocr_uses_injected_engine_without_importing_heavy_runtime(tmp_path: Path):
     pdf_path = tmp_path / "scan.pdf"
     model_dir = tmp_path / "models"
-    (model_dir / "PP-OCRv6_medium_det").mkdir(parents=True)
-    (model_dir / "PP-OCRv6_medium_rec").mkdir(parents=True)
-    for model_name in ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"):
-        for file_name in ("inference.json", "inference.pdiparams", "inference.yml"):
-            (model_dir / model_name / file_name).write_text("model", encoding="utf-8")
-    pdf_path.write_bytes(b"%PDF-1.4 scanned")
+    create_model_assets(model_dir)
+    write_test_pdf(pdf_path)
     request = parse_request(
         json.dumps(
             {
@@ -159,12 +156,8 @@ def test_run_ocr_uses_injected_engine_without_importing_heavy_runtime(tmp_path: 
 def test_run_ocr_reports_empty_result(tmp_path: Path):
     pdf_path = tmp_path / "scan.pdf"
     model_dir = tmp_path / "models"
-    (model_dir / "PP-OCRv6_medium_det").mkdir(parents=True)
-    (model_dir / "PP-OCRv6_medium_rec").mkdir(parents=True)
-    for model_name in ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"):
-        for file_name in ("inference.json", "inference.pdiparams", "inference.yml"):
-            (model_dir / model_name / file_name).write_text("model", encoding="utf-8")
-    pdf_path.write_bytes(b"%PDF-1.4 scanned")
+    create_model_assets(model_dir)
+    write_test_pdf(pdf_path)
     request = parse_request(
         json.dumps(
             {
@@ -179,6 +172,33 @@ def test_run_ocr_reports_empty_result(tmp_path: Path):
 
     assert response["ok"] is False
     assert response["error"]["code"] == "OCR_EMPTY_RESULT"
+
+
+def test_run_ocr_rejects_pdf_over_page_limit_before_engine(tmp_path: Path):
+    pdf_path = tmp_path / "scan.pdf"
+    model_dir = tmp_path / "models"
+    create_model_assets(model_dir)
+    write_test_pdf(pdf_path, page_count=2)
+    request = parse_request(
+        json.dumps(
+            {
+                "filePath": str(pdf_path),
+                "modelDir": str(model_dir),
+                "tier": "medium",
+                "maxPdfPages": 1,
+            }
+        )
+    )
+
+    response = run_ocr(
+        request,
+        ocr_factory=lambda _request: (_ for _ in ()).throw(
+            AssertionError("OCR engine should not run")
+        ),
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OCR_TOO_MANY_PAGES"
 
 
 def test_real_ocr_engine_forces_model_source_flags(monkeypatch, tmp_path: Path):
@@ -209,3 +229,21 @@ def test_real_ocr_engine_forces_model_source_flags(monkeypatch, tmp_path: Path):
 
     assert os.environ["DISABLE_MODEL_SOURCE_CHECK"] == "True"
     assert os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] == "True"
+
+
+def create_model_assets(model_dir: Path) -> None:
+    for model_name in ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"):
+        model_path = model_dir / model_name
+        model_path.mkdir(parents=True)
+        for file_name in ("inference.json", "inference.pdiparams", "inference.yml"):
+            (model_path / file_name).write_text("model", encoding="utf-8")
+
+
+def write_test_pdf(pdf_path: Path, page_count: int = 1) -> None:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=120, height=120)
+    with pdf_path.open("wb") as file:
+        writer.write(file)
