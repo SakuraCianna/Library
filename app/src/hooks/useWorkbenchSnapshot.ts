@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import {
@@ -8,6 +8,7 @@ import {
   enqueueOcrParseJob,
   getWorkbenchSnapshot,
   indexKnowledgeSpace,
+  listenWorkbenchUpdates,
   requestSessionPermission,
   scanKnowledgeSpace,
   selectKnowledgeFolder,
@@ -47,6 +48,7 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
+  const mountedRef = useRef(true);
   const [state, setState] = useState<WorkbenchSnapshotState>({
     snapshot: emptyWorkbench,
     loading: true,
@@ -54,6 +56,10 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
   });
 
   const commitSnapshot = useCallback((snapshot: WorkbenchSnapshot) => {
+    if (!mountedRef.current) {
+      return;
+    }
+
     setState({
       snapshot,
       loading: false,
@@ -69,6 +75,10 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
       const snapshot = await getWorkbenchSnapshot();
       commitSnapshot(snapshot);
     } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+
       setState((current) => ({
         ...current,
         loading: false,
@@ -76,6 +86,12 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
       }));
     }
   }, [commitSnapshot]);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const setSessionPermission = useCallback(async (permission: PermissionMode) => {
     try {
@@ -336,6 +352,74 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
       active = false;
     };
   }, [commitSnapshot]);
+
+  useEffect(() => {
+    let active = true;
+    let stopListening: (() => void) | null = null;
+    let refreshTimer: number | null = null;
+    let refreshing = false;
+    let pendingRefresh = false;
+
+    const clearRefreshTimer = () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+    };
+
+    const scheduleRefresh = () => {
+      if (!active) {
+        return;
+      }
+
+      if (refreshTimer !== null) {
+        pendingRefresh = true;
+        return;
+      }
+
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (!active) {
+          return;
+        }
+
+        if (refreshing) {
+          pendingRefresh = true;
+          return;
+        }
+
+        refreshing = true;
+        void refreshSnapshot({ silent: true }).finally(() => {
+          refreshing = false;
+          if (pendingRefresh && active) {
+            pendingRefresh = false;
+            scheduleRefresh();
+          }
+        });
+      }, 250);
+    };
+
+    listenWorkbenchUpdates(() => {
+      scheduleRefresh();
+    })
+      .then((unlisten) => {
+        if (!active) {
+          unlisten?.();
+          return;
+        }
+
+        stopListening = unlisten;
+      })
+      .catch(() => {
+        stopListening = null;
+      });
+
+    return () => {
+      active = false;
+      clearRefreshTimer();
+      stopListening?.();
+    };
+  }, [refreshSnapshot]);
 
   return {
     ...state,

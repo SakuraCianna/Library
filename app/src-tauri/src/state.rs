@@ -243,7 +243,10 @@ impl AppState {
         Ok(true)
     }
 
-    pub fn run_scan_worker(&self, space_id: String) {
+    pub fn run_scan_worker<F>(&self, space_id: String, mut notify: F)
+    where
+        F: FnMut(&str),
+    {
         loop {
             let outcome = self.run_one_scan_job_with_scanner(&space_id, |root_path, job_id| {
                 scan_folder_with_progress(root_path, |progress| {
@@ -251,7 +254,9 @@ impl AppState {
                         return false;
                     }
 
-                    let _ = self.update_scan_progress(job_id, progress);
+                    if self.update_scan_progress(job_id, progress).is_ok() {
+                        notify("scan-progress");
+                    }
                     true
                 })
                 .map_err(|error| {
@@ -266,17 +271,23 @@ impl AppState {
             match outcome {
                 Ok(ScanJobOutcome::NoQueuedJob) => {
                     self.push_system_message("扫描后台队列已清空。".to_string());
+                    notify("scan-drained");
                     break;
                 }
-                Ok(outcome) => self.push_scan_outcome_message(&outcome),
+                Ok(outcome) => {
+                    self.push_scan_outcome_message(&outcome);
+                    notify("scan-state-changed");
+                }
                 Err(error) => {
                     self.push_system_message(format!("扫描后台任务中断：{error}"));
+                    notify("scan-interrupted");
                     break;
                 }
             }
         }
 
         self.finish_scan_worker(&space_id);
+        notify("scan-worker-finished");
     }
 
     #[cfg(test)]
@@ -424,32 +435,44 @@ impl AppState {
         Ok(true)
     }
 
-    pub fn run_document_worker(&self, space_id: String) {
+    pub fn run_document_worker<F>(&self, space_id: String, mut notify: F)
+    where
+        F: FnMut(&str),
+    {
         loop {
-            let outcome =
-                self.run_one_document_parse_job_with_parser(&space_id, |root_path, candidate| {
+            let outcome = self.run_one_document_parse_job_with_parser_notifying(
+                &space_id,
+                |root_path, candidate| {
                     let file_candidate = crate::models::FileParseCandidate {
                         file_id: candidate.file_id.clone(),
                         relative_path: candidate.relative_path.clone(),
                         extension: candidate.extension.clone(),
                     };
                     parse_file(root_path, &file_candidate)
-                });
+                },
+                &mut notify,
+            );
 
             match outcome {
                 Ok(DocumentJobOutcome::NoQueuedJob) => {
                     self.push_system_message("文档解析后台队列已清空。".to_string());
+                    notify("document-drained");
                     break;
                 }
-                Ok(outcome) => self.push_document_outcome_message(&outcome),
+                Ok(outcome) => {
+                    self.push_document_outcome_message(&outcome);
+                    notify("document-state-changed");
+                }
                 Err(error) => {
                     self.push_system_message(format!("文档解析后台任务中断：{error}"));
+                    notify("document-interrupted");
                     break;
                 }
             }
         }
 
         self.finish_document_worker(&space_id);
+        notify("document-worker-finished");
     }
 
     #[cfg(test)]
@@ -469,6 +492,7 @@ impl AppState {
         Ok(outcome)
     }
 
+    #[cfg(test)]
     fn run_one_document_parse_job_with_parser<F>(
         &self,
         space_id: &str,
@@ -476,6 +500,19 @@ impl AppState {
     ) -> Result<DocumentJobOutcome, AppError>
     where
         F: FnOnce(&Path, &ParseJobCandidate) -> Result<crate::models::ParsedDocument, AppError>,
+    {
+        self.run_one_document_parse_job_with_parser_notifying(space_id, parser, |_| {})
+    }
+
+    fn run_one_document_parse_job_with_parser_notifying<F, N>(
+        &self,
+        space_id: &str,
+        parser: F,
+        mut notify: N,
+    ) -> Result<DocumentJobOutcome, AppError>
+    where
+        F: FnOnce(&Path, &ParseJobCandidate) -> Result<crate::models::ParsedDocument, AppError>,
+        N: FnMut(&str),
     {
         let (root_path, candidate) = {
             let mut store = self.store.lock().expect("sqlite store mutex poisoned");
@@ -496,13 +533,14 @@ impl AppState {
         let file_name = display_relative_file_name(&candidate.relative_path);
 
         let root_path = Path::new(&root_path);
-        let run_result = self
-            .update_parse_progress(&candidate.job_id, "正在解析文档", 0, 2)
-            .and_then(|_| parser(root_path, &candidate))
-            .and_then(|document| {
-                self.update_parse_progress(&candidate.job_id, "正在写入索引", 2, 2)?;
-                Ok(document)
-            });
+        let run_result = (|| {
+            self.update_parse_progress(&candidate.job_id, "正在解析文档", 0, 2)?;
+            notify("document-progress");
+            let document = parser(root_path, &candidate)?;
+            self.update_parse_progress(&candidate.job_id, "正在写入索引", 2, 2)?;
+            notify("document-progress");
+            Ok(document)
+        })();
 
         match run_result {
             Ok(document) => {
@@ -636,32 +674,48 @@ impl AppState {
         Ok(true)
     }
 
-    pub fn run_ocr_worker(&self, space_id: String, resource_script_path: Option<PathBuf>) {
+    pub fn run_ocr_worker<F>(
+        &self,
+        space_id: String,
+        resource_script_path: Option<PathBuf>,
+        mut notify: F,
+    ) where
+        F: FnMut(&str),
+    {
         loop {
-            let outcome =
-                self.run_one_ocr_parse_job_with_runner(&space_id, |candidate, request| {
+            let outcome = self.run_one_ocr_parse_job_with_runner_notifying(
+                &space_id,
+                |candidate, request| {
                     let job_id = candidate.job_id.clone();
                     crate::ocr::run_ocr_sidecar_cancellable(
                         request,
                         resource_script_path.as_deref(),
                         || self.is_parse_job_cancelled(&job_id).unwrap_or(false),
                     )
-                });
+                },
+                &mut notify,
+            );
 
             match outcome {
                 Ok(OcrJobOutcome::NoQueuedJob) => {
                     self.push_system_message("OCR 后台队列已清空。".to_string());
+                    notify("ocr-drained");
                     break;
                 }
-                Ok(outcome) => self.push_ocr_outcome_message(&outcome),
+                Ok(outcome) => {
+                    self.push_ocr_outcome_message(&outcome);
+                    notify("ocr-state-changed");
+                }
                 Err(error) => {
                     self.push_system_message(format!("OCR 后台任务中断：{error}"));
+                    notify("ocr-interrupted");
                     break;
                 }
             }
         }
 
         self.finish_ocr_worker(&space_id);
+        notify("ocr-worker-finished");
     }
 
     #[cfg(test)]
@@ -681,6 +735,7 @@ impl AppState {
         Ok(outcome)
     }
 
+    #[cfg(test)]
     fn run_one_ocr_parse_job_with_runner<F>(
         &self,
         space_id: &str,
@@ -688,6 +743,19 @@ impl AppState {
     ) -> Result<OcrJobOutcome, AppError>
     where
         F: FnOnce(&ParseJobCandidate, &OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
+    {
+        self.run_one_ocr_parse_job_with_runner_notifying(space_id, runner, |_| {})
+    }
+
+    fn run_one_ocr_parse_job_with_runner_notifying<F, N>(
+        &self,
+        space_id: &str,
+        runner: F,
+        mut notify: N,
+    ) -> Result<OcrJobOutcome, AppError>
+    where
+        F: FnOnce(&ParseJobCandidate, &OcrSidecarRequest) -> Result<OcrSidecarResult, AppError>,
+        N: FnMut(&str),
     {
         let (root_path, candidate) = {
             let mut store = self.store.lock().expect("sqlite store mutex poisoned");
@@ -715,15 +783,17 @@ impl AppState {
         let config = ocr_config(&self.app_data_dir);
         let input_path = Path::new(&root_path).join(&candidate.relative_path);
         let request = build_ocr_request(&input_path, &config.model_dir, &config.tier);
-        let run_result = self
-            .update_parse_progress(&candidate.job_id, "正在验证 OCR 输入", 0, 1)
-            .and_then(|_| validate_ocr_inputs(&input_path, &config.model_dir, &config.tier))
-            .and_then(|_| self.update_parse_progress(&candidate.job_id, "正在执行本地 OCR", 0, 1))
-            .and_then(|_| runner(&candidate, &request))
-            .and_then(|ocr_result| {
-                self.update_parse_progress(&candidate.job_id, "正在写入索引", 1, 1)?;
-                build_ocr_document(&candidate.relative_path, &ocr_result)
-            });
+        let run_result = (|| {
+            self.update_parse_progress(&candidate.job_id, "正在验证 OCR 输入", 0, 1)?;
+            notify("ocr-progress");
+            validate_ocr_inputs(&input_path, &config.model_dir, &config.tier)?;
+            self.update_parse_progress(&candidate.job_id, "正在执行本地 OCR", 0, 1)?;
+            notify("ocr-progress");
+            let ocr_result = runner(&candidate, &request)?;
+            self.update_parse_progress(&candidate.job_id, "正在写入索引", 1, 1)?;
+            notify("ocr-progress");
+            build_ocr_document(&candidate.relative_path, &ocr_result)
+        })();
 
         match run_result {
             Ok(document) => {

@@ -139,6 +139,7 @@ describe("useWorkbenchSnapshot", () => {
         throw new Error("C:\\Users\\Sakura_Cianna\\secret.db");
       }),
       indexKnowledgeSpace: vi.fn(),
+      listenWorkbenchUpdates: vi.fn(async () => () => undefined),
       requestSessionPermission: vi.fn(),
       scanKnowledgeSpace: vi.fn(),
       selectKnowledgeFolder: vi.fn(),
@@ -191,6 +192,40 @@ describe("useWorkbenchSnapshot", () => {
     expect(screen.getByTestId("space-count")).toHaveTextContent("1");
   });
 
+  it("组件卸载时释放后台事件监听", async () => {
+    const unlisten = vi.fn();
+    const listenWorkbenchUpdates = vi.fn(async () => unlisten);
+    vi.doMock("../lib/tauriClient", () => ({
+      askAgent: vi.fn(),
+      cancelParseJob: vi.fn(),
+      createKnowledgeSpace: vi.fn(),
+      enqueueOcrParseJob: vi.fn(),
+      getWorkbenchSnapshot: vi.fn(async () => realSnapshot),
+      indexKnowledgeSpace: vi.fn(),
+      listenWorkbenchUpdates,
+      requestSessionPermission: vi.fn(),
+      scanKnowledgeSpace: vi.fn(),
+      selectKnowledgeFolder: vi.fn(),
+      setDefaultPermission: vi.fn(),
+      startOcrWorker: vi.fn(),
+    }));
+
+    const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
+    const { unmount } = render(
+      React.createElement(SnapshotProbe, {
+        useSnapshot: useWorkbenchSnapshot,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(listenWorkbenchUpdates).toHaveBeenCalledOnce();
+    });
+
+    unmount();
+
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
   it("浏览器预览中切换会话权限不会清空临时知识库", async () => {
     const promptSpy = vi
       .spyOn(window, "prompt")
@@ -220,7 +255,7 @@ describe("useWorkbenchSnapshot", () => {
   it("组件卸载后不会继续更新状态", async () => {
     let resolveSnapshot: (snapshot: WorkbenchSnapshot) => void = () => {};
     const setState = vi.fn();
-    let cleanupEffect: (() => void) | undefined;
+    const cleanupEffects: Array<() => void> = [];
 
     vi.doMock("../lib/tauriClient", () => ({
       askAgent: vi.fn(),
@@ -234,6 +269,7 @@ describe("useWorkbenchSnapshot", () => {
           }),
       ),
       indexKnowledgeSpace: vi.fn(),
+      listenWorkbenchUpdates: vi.fn(async () => () => undefined),
       requestSessionPermission: vi.fn(),
       scanKnowledgeSpace: vi.fn(),
       selectKnowledgeFolder: vi.fn(),
@@ -250,9 +286,10 @@ describe("useWorkbenchSnapshot", () => {
           const cleanupEffectCandidate = effect();
 
           if (typeof cleanupEffectCandidate === "function") {
-            cleanupEffect = cleanupEffectCandidate;
+            cleanupEffects.push(cleanupEffectCandidate);
           }
         }),
+        useRef: vi.fn((initialValue) => ({ current: initialValue })),
         useState: vi.fn(() => [
           { snapshot: emptyWorkbench, loading: true, error: null },
           setState,
@@ -263,8 +300,8 @@ describe("useWorkbenchSnapshot", () => {
     const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
     useWorkbenchSnapshot();
 
-    expect(cleanupEffect).toBeDefined();
-    cleanupEffect?.();
+    expect(cleanupEffects.length).toBeGreaterThan(0);
+    cleanupEffects.forEach((cleanupEffect) => cleanupEffect());
     resolveSnapshot(realSnapshot);
     await Promise.resolve();
 
