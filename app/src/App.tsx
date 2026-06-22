@@ -10,6 +10,7 @@ import playIcon from "@iconify-icons/lucide/play";
 import refreshCwIcon from "@iconify-icons/lucide/refresh-cw";
 import sendIcon from "@iconify-icons/lucide/send";
 import settingsIcon from "@iconify-icons/lucide/settings";
+import uploadIcon from "@iconify-icons/lucide/upload";
 import xIcon from "@iconify-icons/lucide/x";
 import { Icon } from "@iconify/react";
 import {
@@ -211,16 +212,20 @@ export default function App() {
   const {
     snapshot,
     backupExport,
+    backupRestorePreflight,
+    backupRestoreResult,
     error,
     loading,
     askAgentQuestion,
     cancelJob,
+    confirmBackupRestore,
     createSpaceFromFolder,
     enqueueOcrJob,
     exportActiveSpaceBackup,
     indexActiveSpace,
     refreshSnapshot,
     scanActiveSpace,
+    selectBackupForRestore,
     setFolderDefaultPermission,
     setSessionPermission,
     startOcrWorker,
@@ -626,6 +631,15 @@ export default function App() {
               <Icon aria-hidden icon={downloadIcon} />
               <span>导出备份</span>
             </button>
+            <button
+              className={styles.plainButton}
+              disabled={loading}
+              onClick={() => void selectBackupForRestore()}
+              type="button"
+            >
+              <Icon aria-hidden icon={uploadIcon} />
+              <span>恢复备份</span>
+            </button>
           </div>
         </header>
 
@@ -655,6 +669,29 @@ export default function App() {
                 <span>
                   备份已导出 {backupExport.fileName} · {backupExport.fileCount}{" "}
                   个文件 · {backupExport.knowledgeBlockCount} 个知识块
+                </span>
+              ) : null}
+              {backupRestorePreflight ? (
+                <span className={styles.restoreStatus}>
+                  备份可恢复 {backupRestorePreflight.fileName} ·{" "}
+                  {backupRestorePreflight.spaceName} ·{" "}
+                  {backupRestorePreflight.fileCount} 个文件 ·{" "}
+                  {backupRestorePreflight.knowledgeBlockCount} 个知识块
+                  <button
+                    className={styles.statusAction}
+                    disabled={loading}
+                    onClick={() => void confirmBackupRestore()}
+                    type="button"
+                  >
+                    确认恢复
+                  </button>
+                </span>
+              ) : null}
+              {backupRestoreResult ? (
+                <span>
+                  备份已恢复 {backupRestoreResult.fileName} ·{" "}
+                  {backupRestoreResult.fileCount} 个文件 ·{" "}
+                  {backupRestoreResult.knowledgeBlockCount} 个知识块
                 </span>
               ) : null}
               {loading ? <span>处理中</span> : null}

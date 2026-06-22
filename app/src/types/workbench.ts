@@ -121,6 +121,28 @@ export interface BackupExportResult {
   parseJobCount: number;
 }
 
+export interface BackupRestorePreflight {
+  path: string;
+  fileName: string;
+  format: string;
+  schemaVersion: number;
+  exportedAt: string;
+  spaceId: string;
+  spaceName: string;
+  rootPath: string;
+  defaultPermission: PermissionMode;
+  fileCount: number;
+  knowledgeBlockCount: number;
+  parseJobCount: number;
+  trashEntryCount: number;
+  willOverwrite: boolean;
+}
+
+export interface BackupRestoreResult extends BackupRestorePreflight {
+  restoredAt: string;
+  overwritten: boolean;
+}
+
 export interface WorkbenchSnapshot {
   spaces: KnowledgeSpace[];
   activeSpaceId: string;

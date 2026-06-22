@@ -5,6 +5,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import type {
   BackupExportResult,
+  BackupRestorePreflight,
+  BackupRestoreResult,
   KnowledgeBlockContext,
   OcrEnvironmentReport,
   PermissionMode,
@@ -105,6 +107,21 @@ export async function selectKnowledgeFolder(): Promise<string | null> {
     directory: true,
     multiple: false,
     title: "选择知识库文件夹",
+  });
+
+  return typeof selectedPath === "string" ? selectedPath : null;
+}
+
+export async function selectBackupFile(): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    return window.prompt("输入要恢复的备份 JSON 文件路径");
+  }
+
+  const selectedPath = await open({
+    directory: false,
+    filters: [{ name: "Library JSON backup", extensions: ["json"] }],
+    multiple: false,
+    title: "选择备份文件",
   });
 
   return typeof selectedPath === "string" ? selectedPath : null;
@@ -326,5 +343,30 @@ export async function exportSpaceBackup(
 
   return invoke<BackupExportResult>("export_space_backup", {
     request: { spaceId, fileName: null },
+  });
+}
+
+export async function preflightSpaceBackupRestore(
+  path: string,
+): Promise<BackupRestorePreflight> {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器预览无法预检本地备份，请在桌面应用中运行。");
+  }
+
+  return invoke<BackupRestorePreflight>("preflight_space_backup_restore", {
+    request: { path },
+  });
+}
+
+export async function restoreSpaceBackup(
+  path: string,
+  confirmOverwrite: boolean,
+): Promise<BackupRestoreResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器预览无法恢复本地备份，请在桌面应用中运行。");
+  }
+
+  return invoke<BackupRestoreResult>("restore_space_backup", {
+    request: { path, confirmOverwrite },
   });
 }

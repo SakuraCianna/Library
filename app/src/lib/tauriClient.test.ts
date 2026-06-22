@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import {
   createKnowledgeSpace,
+  selectBackupFile,
   selectKnowledgeFolder,
 } from "./tauriClient";
 
@@ -68,6 +69,37 @@ describe("tauriClient", () => {
           name: "真实",
           rootPath: "D:\\知识库\\真实",
           defaultPermission: "approval",
+        },
+      },
+    });
+  });
+
+  it("opens a JSON backup file picker for restore preflight", async () => {
+    const calls: Array<{ cmd: string; args?: unknown }> = [];
+
+    Reflect.deleteProperty(globalThis, "isTauri");
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args });
+
+      if (cmd === "plugin:dialog|open") {
+        return "E:\\Library\\backups\\library-backup.json";
+      }
+
+      return emptyWorkbench;
+    });
+
+    await expect(selectBackupFile()).resolves.toBe(
+      "E:\\Library\\backups\\library-backup.json",
+    );
+
+    expect(calls).toContainEqual({
+      cmd: "plugin:dialog|open",
+      args: {
+        options: {
+          directory: false,
+          filters: [{ name: "Library JSON backup", extensions: ["json"] }],
+          multiple: false,
+          title: "选择备份文件",
         },
       },
     });

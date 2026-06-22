@@ -388,6 +388,31 @@
   font-size: 12px;
 }
 
+.restoreStatus {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.statusAction {
+  border: 1px solid #b7c8dd;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.statusAction:disabled {
+  color: #8a94a6;
+}
+
+.statusAction:not(:disabled):hover {
+  border-color: #8aa9cc;
+  background: #f8fbff;
+}
+
 .panel {
   border: 1px solid #dce3ee;
   border-radius: var(--radius-panel);

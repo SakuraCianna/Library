@@ -280,6 +280,182 @@ impl SqliteStore {
         })
     }
 
+    pub fn has_knowledge_space(&self, space_id: &str) -> rusqlite::Result<bool> {
+        self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM knowledge_spaces WHERE id = ?1 AND deleted_at IS NULL
+             )",
+            [space_id],
+            |row| row.get::<_, bool>(0),
+        )
+    }
+
+    pub fn active_space_id_for_root_path(
+        &self,
+        root_path: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT id
+                 FROM knowledge_spaces
+                 WHERE root_path = ?1 COLLATE NOCASE
+                   AND deleted_at IS NULL
+                 LIMIT 1",
+                [root_path],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub fn restore_space_backup(&mut self, backup: &BackupExport) -> rusqlite::Result<()> {
+        let tx = self.connection.transaction()?;
+        let space_id = &backup.space.id;
+
+        tx.execute("DELETE FROM trash_entries WHERE space_id = ?1", [space_id])?;
+        tx.execute("DELETE FROM parse_jobs WHERE space_id = ?1", [space_id])?;
+        tx.execute(
+            "DELETE FROM knowledge_blocks WHERE space_id = ?1",
+            [space_id],
+        )?;
+        tx.execute("DELETE FROM markdown_notes WHERE space_id = ?1", [space_id])?;
+        tx.execute("DELETE FROM files WHERE space_id = ?1", [space_id])?;
+        tx.execute("DELETE FROM knowledge_spaces WHERE id = ?1", [space_id])?;
+
+        tx.execute(
+            "INSERT INTO knowledge_spaces (
+                id, name, root_path, default_permission, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                backup.space.id,
+                backup.space.name,
+                backup.space.root_path,
+                backup.space.default_permission.as_str(),
+                backup.space.created_at,
+                backup.space.updated_at
+            ],
+        )?;
+
+        for file in &backup.files {
+            tx.execute(
+                "INSERT INTO files (
+                    id, space_id, relative_path, extension, content_hash, size_bytes,
+                    modified_at, parse_status, last_scanned_at, created_at, updated_at,
+                    deleted_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    file.id,
+                    space_id,
+                    file.relative_path,
+                    file.extension,
+                    file.content_hash,
+                    file.size_bytes,
+                    file.modified_at,
+                    file.parse_status,
+                    file.last_scanned_at,
+                    file.created_at,
+                    file.updated_at,
+                    file.deleted_at
+                ],
+            )?;
+        }
+
+        for note in &backup.markdown_notes {
+            let user_editable = if note.user_editable { 1_i64 } else { 0_i64 };
+            tx.execute(
+                "INSERT INTO markdown_notes (
+                    id, file_id, space_id, relative_path, user_editable,
+                    last_generated_hash, created_at, updated_at, deleted_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    note.id,
+                    note.file_id,
+                    space_id,
+                    note.relative_path,
+                    user_editable,
+                    note.last_generated_hash,
+                    note.created_at,
+                    note.updated_at,
+                    note.deleted_at
+                ],
+            )?;
+        }
+
+        for block in &backup.knowledge_blocks {
+            let searchable = if block.searchable { 1_i64 } else { 0_i64 };
+            tx.execute(
+                "INSERT INTO knowledge_blocks (
+                    id, space_id, file_id, note_id, title, body, source_kind,
+                    source_locator, searchable, created_at, updated_at, deleted_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    block.id,
+                    space_id,
+                    block.file_id,
+                    block.note_id,
+                    block.title,
+                    block.body,
+                    block.source_kind,
+                    block.source_locator,
+                    searchable,
+                    block.created_at,
+                    block.updated_at,
+                    block.deleted_at
+                ],
+            )?;
+        }
+
+        for job in &backup.parse_jobs {
+            tx.execute(
+                "INSERT INTO parse_jobs (
+                    id, space_id, file_id, job_type, status, error_message, started_at,
+                    finished_at, progress_current, progress_total, phase, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    job.id,
+                    space_id,
+                    job.file_id,
+                    job.job_type,
+                    job.status,
+                    job.error_message,
+                    job.started_at,
+                    job.finished_at,
+                    job.progress_current,
+                    job.progress_total,
+                    job.phase,
+                    job.created_at,
+                    job.updated_at
+                ],
+            )?;
+        }
+
+        for entry in &backup.trash_entries {
+            tx.execute(
+                "INSERT INTO trash_entries (
+                    id, space_id, entity_kind, entity_id, display_name, original_locator,
+                    deleted_at, restored_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    entry.id,
+                    space_id,
+                    entry.entity_kind,
+                    entry.entity_id,
+                    entry.display_name,
+                    entry.original_locator,
+                    entry.deleted_at,
+                    entry.restored_at
+                ],
+            )?;
+        }
+
+        tx.commit()
+    }
+
     pub fn update_knowledge_space_permission(
         &self,
         space_id: &str,
@@ -2281,7 +2457,10 @@ fn display_extension(extension: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{display_source_file_name, SqliteStore};
-    use crate::models::{ParsedDocument, ParsedTableInsight, PermissionMode, ScannedFile};
+    use crate::models::{
+        BackupExport, BackupExportFile, BackupExportKnowledgeBlock, BackupExportSpace,
+        BackupExportWorkspace, ParsedDocument, ParsedTableInsight, PermissionMode, ScannedFile,
+    };
     use rusqlite::{params, Connection};
 
     const TEST_TIME: &str = "2026-06-21T00:00:00Z";
@@ -2725,6 +2904,52 @@ mod tests {
         assert!(!serialized.contains("secret-note"));
         assert!(!serialized.contains("library-ocr-runs"));
         assert!(!serialized.contains("should-not-export"));
+    }
+
+    #[test]
+    fn restores_space_backup_replacing_existing_space_and_search_index() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        store
+            .connection
+            .execute(
+                "INSERT INTO knowledge_spaces (
+                    id, name, root_path, default_permission, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![
+                    "backup-space",
+                    "旧空间",
+                    "D:\\知识库\\旧",
+                    "readonly",
+                    TEST_TIME
+                ],
+            )
+            .expect("existing space is inserted");
+        insert_file(&store, "old-file", "backup-space", "旧文件.md", "indexed")
+            .expect("old file is inserted");
+        insert_knowledge_block(&store, "backup-space").expect("old block is inserted");
+        let backup = backup_export_fixture();
+
+        store
+            .restore_space_backup(&backup)
+            .expect("backup is restored");
+        let spaces = store.list_knowledge_spaces().expect("spaces list");
+        let files = store.list_files("backup-space").expect("files list");
+        let hits = store
+            .search_knowledge_blocks("backup-space", "空值缓存", 5)
+            .expect("search restored blocks");
+        let old_hits = store
+            .search_knowledge_blocks("backup-space", "缓存雪崩", 5)
+            .expect("search old blocks");
+
+        assert_eq!(spaces.len(), 1);
+        assert_eq!(spaces[0].name, "备份空间");
+        assert_eq!(spaces[0].default_permission, PermissionMode::Approval);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "Redis面试.md");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_locator, "Redis面试.md");
+        assert!(old_hits.is_empty());
     }
 
     #[test]
@@ -3236,6 +3461,55 @@ mod tests {
                 TEST_TIME
             ],
         )
+    }
+
+    fn backup_export_fixture() -> BackupExport {
+        BackupExport {
+            format: "library.backup.v1".to_string(),
+            schema_version: 1,
+            exported_at: TEST_TIME.to_string(),
+            space: BackupExportSpace {
+                id: "backup-space".to_string(),
+                name: "备份空间".to_string(),
+                root_path: "D:\\知识库\\备份空间".to_string(),
+                default_permission: PermissionMode::Approval,
+                created_at: TEST_TIME.to_string(),
+                updated_at: TEST_TIME.to_string(),
+            },
+            workspace: BackupExportWorkspace {
+                active_space_id: "backup-space".to_string(),
+                default_permission: PermissionMode::Approval,
+            },
+            files: vec![BackupExportFile {
+                id: "file-redis".to_string(),
+                relative_path: "Redis面试.md".to_string(),
+                extension: "md".to_string(),
+                content_hash: Some("hash-redis".to_string()),
+                size_bytes: 128,
+                modified_at: Some(TEST_TIME.to_string()),
+                parse_status: "indexed".to_string(),
+                last_scanned_at: Some(TEST_TIME.to_string()),
+                created_at: TEST_TIME.to_string(),
+                updated_at: TEST_TIME.to_string(),
+                deleted_at: None,
+            }],
+            markdown_notes: Vec::new(),
+            knowledge_blocks: vec![BackupExportKnowledgeBlock {
+                id: "block-redis".to_string(),
+                file_id: Some("file-redis".to_string()),
+                note_id: None,
+                title: "Redis 缓存".to_string(),
+                body: "缓存穿透需要空值缓存。".to_string(),
+                source_kind: "original_file".to_string(),
+                source_locator: "Redis面试.md".to_string(),
+                searchable: true,
+                created_at: TEST_TIME.to_string(),
+                updated_at: TEST_TIME.to_string(),
+                deleted_at: None,
+            }],
+            parse_jobs: Vec::new(),
+            trash_entries: Vec::new(),
+        }
     }
 
     fn scanned_file(
