@@ -136,7 +136,7 @@ Set-Location E:\CodeHome\Library
 - [x] Add tests for export shape, path traversal rejection, and missing workspace behavior.
 - [x] Add a simple UI entry for export status without adding restore yet.
 - [x] Run the full verification gate.
-- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+- [x] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 4: Document Parser Sidecar Foundation
 
@@ -221,4 +221,4 @@ Set-Location E:\CodeHome\Library
 
 ## Next Immediate Target
 
-Start Module 3: Backup Export Minimum. The durable target is a local export path for metadata, knowledge blocks, and workspace settings that excludes secrets, `.env`, model folders, and temporary files, so recoverability exists before deeper parser work increases durable data volume.
+Start Module 4: Document Parser Sidecar Foundation. The durable target is a local-only parser sidecar with a bounded JSON protocol, focused tests for Markdown, text PDF fallback, DOCX, XLSX, unsupported files, timeout, and malformed output, and Rust remaining the trusted path-validation and database-write boundary.

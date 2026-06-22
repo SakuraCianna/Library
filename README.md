@@ -81,7 +81,7 @@
 
 ## 当前进度验收
 
-当前主线处于第一阶段本地优先 MVP 后的稳定推进阶段。`codex/Library`、`main`、`origin/codex/Library` 和 `origin/main` 已同步到同一提交，后续模块继续按 `docs/superpowers/plans/2026-06-23-library-sustained-stability-roadmap.md` 执行。
+当前主线处于第一阶段本地优先 MVP 后的稳定推进阶段。Module 3 本地备份导出已完成并合并到 `main`，后续模块继续按 `docs/superpowers/plans/2026-06-23-library-sustained-stability-roadmap.md` 执行；下一目标是 Module 4 文档解析 Sidecar 基础。
 
 本轮验收将 README 功能状态与当前源码和测试重新核对：文件扫描、普通文档解析、XLSX 表格洞察、本地全文检索、来源证据、DeepSeek 兜底问答、本地 OCR sidecar、解析队列、后台 worker、进度、取消、事件刷新和本地备份导出都有对应命令边界、前端入口或单元测试覆盖。未在当前源码中实现的高保真解析、复杂表格推理、备份导入/恢复、代码签名和自动更新仍保持在“暂未实现”。
 
