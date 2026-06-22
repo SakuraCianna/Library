@@ -114,7 +114,7 @@ Set-Location E:\CodeHome\Library
 - [x] Ensure failed document and OCR jobs can be retried without duplicate active jobs.
 - [x] Show bounded error messages in the queue UI without leaking absolute private paths.
 - [x] Run the full verification gate and OCR environment check.
-- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+- [x] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 3: Backup Export Minimum
 
@@ -221,4 +221,4 @@ Set-Location E:\CodeHome\Library
 
 ## Next Immediate Target
 
-Complete the Module 2 delivery flow on `codex/Library`: independent review, commit, PR, merge, and branch sync. After Module 2 is merged, the next durable target is Module 3: Backup Export Minimum, so local metadata and knowledge blocks have a recoverability path before deeper parser work increases durable data volume.
+Start Module 3: Backup Export Minimum. The durable target is a local export path for metadata, knowledge blocks, and workspace settings that excludes secrets, `.env`, model folders, and temporary files, so recoverability exists before deeper parser work increases durable data volume.
