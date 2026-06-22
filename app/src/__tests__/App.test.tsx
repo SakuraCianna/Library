@@ -199,7 +199,10 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: /面试/ })).not.toBeInTheDocument();
     expect(screen.queryByText("待批准操作")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "打开默认权限设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    expect(await screen.findByRole("dialog", { name: "常规" })).toBeInTheDocument();
+    expect(screen.getByText("当前知识库")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "模型与 OCR" }));
     expect(await screen.findByText("DeepSeek")).toBeInTheDocument();
     expect(screen.getByText("deepseek-v4-flash")).toBeInTheDocument();
     expect(screen.getByText("本地 OCR")).toBeInTheDocument();
@@ -209,7 +212,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByLabelText("切换文件夹默认权限")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "打开默认权限设置" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "打开设置" })).toBeEnabled();
     expect(screen.getByRole("combobox", { name: "切换会话权限" })).toBeDisabled();
   });
 
@@ -230,13 +233,23 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "真实知识库" });
-    const gearButton = screen.getByRole("button", { name: "打开默认权限设置" });
+    const gearButton = screen.getByRole("button", { name: "打开设置" });
     expect(gearButton).toBeEnabled();
 
     fireEvent.click(gearButton);
 
-    expect(screen.getAllByText("默认权限").length).toBeGreaterThan(0);
-    expect(screen.getByText(/文件夹长期保存的 Agent 操作边界/)).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "常规" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭设置" })).toHaveFocus();
+    expect(screen.getAllByText("文件夹默认权限").length).toBeGreaterThan(0);
+    expect(screen.getByText(/长期保存在本地 SQLite/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "权限" }));
+    expect(await screen.findByRole("dialog", { name: "权限" })).toBeInTheDocument();
+    expect(screen.getByText(/会话权限不能超过文件夹默认权限/)).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    expect(gearButton).toHaveFocus();
   });
 
   it("renders real xlsx table insight preview from the snapshot", async () => {
@@ -277,7 +290,8 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "真实知识库" });
-    fireEvent.click(screen.getByRole("button", { name: "打开默认权限设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "模型与 OCR" }));
     fireEvent.click(await screen.findByRole("button", { name: "自检" }));
 
     expect(await screen.findByText("通过")).toBeInTheDocument();
@@ -293,6 +307,7 @@ describe("App", () => {
     await screen.findByText("暂无知识库文件夹");
     expect(screen.getByRole("button", { name: "新建" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "扫描" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "加入复习" })).toBeDisabled();
 
     const composer = screen.getByRole("form", { name: "智能助手输入区" });
     expect(
@@ -325,6 +340,9 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByRole("heading", { name: "真实知识库" });
+    expect(screen.getByRole("button", { name: "当前文件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "当前文件夹" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "全库" })).toBeDisabled();
     const composer = screen.getByRole("form", { name: "智能助手输入区" });
     fireEvent.change(within(composer).getByLabelText("向智能助手提问"), {
       target: { value: "缓存穿透怎么处理？" },

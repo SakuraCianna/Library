@@ -84,14 +84,16 @@ export function useRuntimeStatus(): RuntimeStatusState {
   }, []);
 
   useEffect(() => {
-    void refreshRuntimeStatus();
-  }, [refreshRuntimeStatus]);
+    mountedRef.current = true;
 
-  useEffect(() => {
     return () => {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    void refreshRuntimeStatus();
+  }, [refreshRuntimeStatus]);
 
   return {
     ...state,

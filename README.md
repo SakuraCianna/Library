@@ -34,6 +34,7 @@
 - Rust Tauri 命令边界
 - 文件夹默认权限与当前会话权限分离
 - 左下角文件夹默认权限下拉设置
+- 设置模态框集中展示常规、模型/OCR 和权限状态
 - 右侧当前会话权限下拉设置
 - SQLite 本地元数据 schema 和 repository 骨架
 - SQLite FTS5 全文检索基础表和触发器
@@ -160,7 +161,7 @@ $env:OCR_MODEL_DIR = "D:\AIModels\Library\ocr\pp-ocrv6"
 .\scripts\检查OCR环境.ps1 -Tier medium
 ```
 
-桌面应用左侧默认权限设置面板也提供 OCR 自检入口，会检查模型文件、sidecar、`pypdf`、`paddleocr` 和 `paddlepaddle`。
+桌面应用设置模态框的“模型与 OCR”页也提供 OCR 自检入口，会检查模型文件、sidecar、`pypdf`、`paddleocr` 和 `paddlepaddle`。
 
 桌面构建会把 `sidecars/ocr/ocr_sidecar.py`、`check_ocr_environment.py` 和 `requirements.txt` 作为 Tauri resource 打包。开发态优先使用仓库根目录下的 `.venv\Scripts\python.exe`，打包后可通过本机环境变量显式指定：
 

@@ -88,6 +88,8 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
   }, [commitSnapshot]);
 
   useEffect(() => {
+    mountedRef.current = true;
+
     return () => {
       mountedRef.current = false;
     };
@@ -120,7 +122,24 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
 
   const createSpaceFromFolder = useCallback(
     async (permission: PermissionMode) => {
-      const rootPath = await selectKnowledgeFolder();
+      setState((current) => ({ ...current, error: null }));
+
+      let rootPath: string | null;
+      try {
+        rootPath = await selectKnowledgeFolder();
+      } catch (error) {
+        const message = getErrorMessage(error, "选择知识库文件夹失败");
+        setState((current) => ({
+          ...current,
+          loading: false,
+          error:
+            message === "选择知识库文件夹失败"
+              ? message
+              : `选择知识库文件夹失败：${message}`,
+        }));
+        return;
+      }
+
       if (!rootPath) {
         return;
       }

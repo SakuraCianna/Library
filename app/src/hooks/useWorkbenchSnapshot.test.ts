@@ -62,7 +62,8 @@ function ActionProbe({
 }: {
   useSnapshot: UseWorkbenchSnapshot;
 }) {
-  const { snapshot, createSpaceFromFolder, setSessionPermission } = useSnapshot();
+  const { snapshot, error, createSpaceFromFolder, setSessionPermission } =
+    useSnapshot();
 
   return React.createElement(
     "section",
@@ -71,6 +72,11 @@ function ActionProbe({
       "span",
       { "data-testid": "space-count" },
       String(snapshot.spaces.length),
+    ),
+    React.createElement(
+      "span",
+      { "data-testid": "error" },
+      error ?? "",
     ),
     React.createElement(
       "span",
@@ -126,6 +132,26 @@ describe("useWorkbenchSnapshot", () => {
 
     expect(screen.getByTestId("error").textContent).toBe("");
     expect(screen.getByTestId("active-space").textContent).toBe("");
+    expect(screen.getByTestId("space-count")).toHaveTextContent("0");
+  });
+
+  it("在 React StrictMode 重新挂载后仍会结束 loading", async () => {
+    const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
+
+    render(
+      React.createElement(
+        React.StrictMode,
+        null,
+        React.createElement(SnapshotProbe, {
+          useSnapshot: useWorkbenchSnapshot,
+        }),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading")).toHaveTextContent("false");
+    });
+
     expect(screen.getByTestId("space-count")).toHaveTextContent("0");
   });
 
@@ -250,6 +276,41 @@ describe("useWorkbenchSnapshot", () => {
     expect(screen.getByTestId("space-count")).toHaveTextContent("1");
 
     promptSpy.mockRestore();
+  });
+
+  it("文件夹选择器失败时显示中文错误", async () => {
+    vi.doMock("../lib/tauriClient", () => ({
+      askAgent: vi.fn(),
+      cancelParseJob: vi.fn(),
+      createKnowledgeSpace: vi.fn(),
+      enqueueOcrParseJob: vi.fn(),
+      getWorkbenchSnapshot: vi.fn(async () => emptyWorkbench),
+      indexKnowledgeSpace: vi.fn(),
+      listenWorkbenchUpdates: vi.fn(async () => () => undefined),
+      requestSessionPermission: vi.fn(),
+      scanKnowledgeSpace: vi.fn(),
+      selectKnowledgeFolder: vi.fn(async () => {
+        throw new Error("dialog plugin unavailable");
+      }),
+      setDefaultPermission: vi.fn(),
+      startOcrWorker: vi.fn(),
+    }));
+
+    const { useWorkbenchSnapshot } = await import("./useWorkbenchSnapshot");
+
+    render(
+      React.createElement(ActionProbe, {
+        useSnapshot: useWorkbenchSnapshot,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("error")).toHaveTextContent(
+        "选择知识库文件夹失败：dialog plugin unavailable",
+      );
+    });
   });
 
   it("组件卸载后不会继续更新状态", async () => {
