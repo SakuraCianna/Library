@@ -124,10 +124,22 @@ pub struct TableInsightPreview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChatMessageSource {
+    pub id: String,
+    pub title: String,
+    pub excerpt: String,
+    pub source_file_name: String,
+    pub source_locator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: String,
     pub role: ChatRole,
     pub content: String,
+    #[serde(default)]
+    pub sources: Vec<ChatMessageSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

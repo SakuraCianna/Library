@@ -5,9 +5,10 @@ use std::sync::Mutex;
 
 use crate::error::AppError;
 use crate::models::{
-    can_request_session_permission, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
-    KnowledgeSpace, OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode,
-    ScanSummary, ScannedFile, TableInsightPreview, WorkbenchSnapshot,
+    can_request_session_permission, ChatMessage, ChatMessageSource, ChatRole, ChatScope,
+    KnowledgeBlockPreview, KnowledgeBlockSearchHit, KnowledgeSpace, OcrSidecarRequest,
+    OcrSidecarResult, ParseJobCandidate, PermissionMode, ScanSummary, ScannedFile,
+    TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
 use crate::parser::parse_file;
@@ -1029,7 +1030,11 @@ impl AppState {
         };
         self.push_chat_message(ChatRole::User, question.clone());
         let answer = crate::agent::answer_question(&question, &hits).await;
-        self.push_chat_message(ChatRole::Assistant, answer);
+        self.push_chat_message_with_sources(
+            ChatRole::Assistant,
+            answer,
+            chat_sources_from_hits(&hits),
+        );
         *self
             .active_space_id
             .lock()
@@ -1129,11 +1134,21 @@ impl AppState {
     }
 
     fn push_chat_message(&self, role: ChatRole, content: String) {
+        self.push_chat_message_with_sources(role, content, Vec::new());
+    }
+
+    fn push_chat_message_with_sources(
+        &self,
+        role: ChatRole,
+        content: String,
+        sources: Vec<ChatMessageSource>,
+    ) {
         let mut messages = self.messages.lock().expect("messages mutex poisoned");
         messages.push(ChatMessage {
             id: format!("msg-{}", uuid::Uuid::new_v4()),
             role,
             content,
+            sources,
         });
 
         if messages.len() > 24 {
@@ -1205,12 +1220,25 @@ fn build_snapshot(
                 } else {
                     "请点击新建选择一个真实文件夹。".to_string()
                 },
+                sources: Vec::new(),
             }]
         } else {
             messages
         },
         pending_action: None,
     }
+}
+
+fn chat_sources_from_hits(hits: &[KnowledgeBlockSearchHit]) -> Vec<ChatMessageSource> {
+    hits.iter()
+        .map(|hit| ChatMessageSource {
+            id: hit.id.clone(),
+            title: hit.title.clone(),
+            excerpt: hit.excerpt.clone(),
+            source_file_name: hit.source_file_name.clone(),
+            source_locator: hit.source_locator.clone(),
+        })
+        .collect()
 }
 
 fn validate_folder_path(path: &Path) -> Result<(), AppError> {
@@ -1986,6 +2014,16 @@ mod tests {
         assert!(answered.messages.iter().any(|message| {
             message.role == ChatRole::Assistant && message.content.contains("本地 OCR 文本")
         }));
+        let assistant_message = answered
+            .messages
+            .iter()
+            .find(|message| message.role == ChatRole::Assistant)
+            .expect("assistant message exists");
+        assert_eq!(assistant_message.sources.len(), 1);
+        assert_eq!(assistant_message.sources[0].source_file_name, "scan.pdf");
+        assert!(assistant_message.sources[0]
+            .excerpt
+            .contains("本地 OCR 文本"));
     }
 
     #[test]

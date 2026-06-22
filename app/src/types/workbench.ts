@@ -36,10 +36,19 @@ export interface TableInsightPreview {
   description: string;
 }
 
+export interface ChatMessageSource {
+  id: string;
+  title: string;
+  excerpt: string;
+  sourceFileName: string;
+  sourceLocator: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  sources: ChatMessageSource[];
 }
 
 export interface PendingAction {

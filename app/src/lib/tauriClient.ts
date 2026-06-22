@@ -82,6 +82,7 @@ function browserSnapshotForFolder(
         id: "browser-preview-message",
         role: "system",
         content: "浏览器预览无法扫描本地文件，请在桌面应用中运行。",
+        sources: [],
       },
     ],
   };
@@ -245,11 +246,13 @@ export async function askAgent(
           id: "browser-question",
           role: "user",
           content: question,
+          sources: [],
         },
         {
           id: "browser-answer",
           role: "assistant",
           content: "浏览器预览无法读取本地索引，请在桌面应用中运行。",
+          sources: [],
         },
       ],
     };

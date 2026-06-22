@@ -675,7 +675,22 @@ export default function App() {
         <section className={styles.messages} aria-label="助手会话">
           {snapshot.messages.map((message) => (
             <article className={messageClass(message)} key={message.id}>
-              {message.content}
+              <div className={styles.messageContent}>{message.content}</div>
+              {message.role === "assistant" && message.sources.length > 0 ? (
+                <div className={styles.messageSources} aria-label="回答来源">
+                  <div className={styles.messageSourcesTitle}>来源</div>
+                  <ul className={styles.messageSourceList}>
+                    {message.sources.map((source) => (
+                      <li className={styles.messageSourceItem} key={source.id}>
+                        <strong>{source.sourceFileName}</strong>
+                        <span>{source.title}</span>
+                        <span>定位：{source.sourceLocator}</span>
+                        <p>{source.excerpt}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </article>
           ))}
           {snapshot.pendingAction ? (
