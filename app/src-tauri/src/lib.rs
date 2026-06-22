@@ -31,6 +31,7 @@ pub fn run() {
             commands::index_knowledge_space,
             commands::enqueue_ocr_parse_job,
             commands::cancel_parse_job,
+            commands::run_next_ocr_parse_job,
             commands::ask_agent,
             commands::set_default_permission,
             commands::get_runtime_status

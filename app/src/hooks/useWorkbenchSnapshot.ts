@@ -9,6 +9,7 @@ import {
   getWorkbenchSnapshot,
   indexKnowledgeSpace,
   requestSessionPermission,
+  runNextOcrParseJob,
   scanKnowledgeSpace,
   selectKnowledgeFolder,
   setDefaultPermission,
@@ -27,6 +28,7 @@ interface WorkbenchSnapshotResult extends WorkbenchSnapshotState {
   createSpaceFromFolder: (permission: PermissionMode) => Promise<void>;
   enqueueOcrJob: (fileId: string) => Promise<void>;
   indexActiveSpace: () => Promise<void>;
+  runNextOcrJob: () => Promise<void>;
   scanActiveSpace: () => Promise<void>;
   setFolderDefaultPermission: (permission: PermissionMode) => Promise<void>;
   setSessionPermission: (permission: PermissionMode) => Promise<void>;
@@ -194,6 +196,29 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     [commitSnapshot],
   );
 
+  const runNextOcrJob = useCallback(async () => {
+    const spaceId = state.snapshot.activeSpaceId;
+    if (!spaceId) {
+      setState((current) => ({
+        ...current,
+        error: "请先添加一个知识库文件夹",
+      }));
+      return;
+    }
+
+    setState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const snapshot = await runNextOcrParseJob(spaceId);
+      commitSnapshot(snapshot);
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, "OCR 执行失败"),
+      }));
+    }
+  }, [commitSnapshot, state.snapshot.activeSpaceId]);
+
   const askAgentQuestion = useCallback(
     async (question: string) => {
       const spaceId = state.snapshot.activeSpaceId;
@@ -302,6 +327,7 @@ export function useWorkbenchSnapshot(): WorkbenchSnapshotResult {
     createSpaceFromFolder,
     enqueueOcrJob,
     indexActiveSpace,
+    runNextOcrJob,
     scanActiveSpace,
     setFolderDefaultPermission,
     setSessionPermission,

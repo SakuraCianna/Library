@@ -228,6 +228,14 @@ pub struct FileParseCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseJobCandidate {
+    pub job_id: String,
+    pub file_id: String,
+    pub relative_path: String,
+    pub extension: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedDocument {
     pub title: String,
     pub body: String,
@@ -267,6 +275,12 @@ pub struct EnqueueOcrJobRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RunOcrJobRequest {
+    pub space_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CancelParseJobRequest {
     pub job_id: String,
 }
@@ -277,6 +291,22 @@ pub struct OcrSidecarRequest {
     pub file_path: String,
     pub model_dir: String,
     pub tier: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrPageResult {
+    pub page_index: u32,
+    pub text: String,
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrSidecarResult {
+    pub text: String,
+    pub page_count: u32,
+    pub pages: Vec<OcrPageResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

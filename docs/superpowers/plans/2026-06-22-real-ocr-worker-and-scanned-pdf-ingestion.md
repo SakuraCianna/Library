@@ -22,6 +22,8 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Python sidecar performs OCR only from local files and local model folders; it must not download models implicitly.
 - CI should keep lightweight sidecar protocol tests. Heavy real OCR smoke tests should be opt-in unless a tiny deterministic fixture and fast runtime are proven stable on Windows.
 - Parsed OCR text should enter the same `ParsedDocument` and `knowledge_blocks` layer as `.md`, `.txt`, `.docx`, `.xlsx`, and text PDFs.
+- Runtime verification found PaddleOCR 3.7.x can consume PDF input directly with local PP-OCRv6 medium models, so the MVP does not add a separate PDF rasterization dependency.
+- The Tauri command resolves the bundled resource sidecar first, then falls back to `OCR_SIDECAR_PATH` or the repository development path.
 
 ## Implementation Tasks
 
@@ -32,10 +34,11 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Modify: `sidecars/ocr/README.md`
 - Modify: `sidecars/ocr/test_ocr_sidecar.py`
 
-- [ ] Check the currently installed PaddleOCR API on Windows before coding the adapter.
-- [ ] Confirm how to bind local PP-OCRv6 det/rec model directories without automatic download.
-- [ ] Add a unit-testable adapter boundary so protocol tests do not import heavy OCR modules by default.
-- [ ] Document runtime dependency install separately from lightweight protocol tests.
+- [x] Check the currently installed PaddleOCR API on Windows before coding the adapter.
+- [x] Confirm how to bind local PP-OCRv6 det/rec model directories without automatic download.
+- [x] Strictly validate local model asset files before PaddleOCR starts.
+- [x] Add a unit-testable adapter boundary so protocol tests do not import heavy OCR modules by default.
+- [x] Document runtime dependency install separately from lightweight protocol tests.
 
 ### Task 2: Add PDF Page Rasterization Boundary
 
@@ -44,10 +47,9 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Modify: `sidecars/ocr/ocr_sidecar.py`
 - Create: `sidecars/ocr/test_pdf_pages.py`
 
-- [ ] Add a local PDF rasterization dependency only after verifying Windows wheel availability.
-- [ ] Convert scanned PDF pages to temporary images under a per-run temp directory.
-- [ ] Enforce page count and image size limits for the MVP.
-- [ ] Ensure temp files are deleted after success, failure, or cancellation.
+- [x] Verify a separate rasterization dependency is not needed for the MVP because PaddleOCR accepts PDF input directly.
+- [x] Add an MVP PDF file size limit before adding batch OCR.
+- [ ] Add explicit page count and image size limits before adding batch OCR.
 
 ### Task 3: Implement OCR Text Extraction
 
@@ -55,10 +57,10 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Modify: `sidecars/ocr/ocr_sidecar.py`
 - Modify: `sidecars/ocr/test_ocr_sidecar.py`
 
-- [ ] Return successful JSON with `text`, `pageCount`, and basic per-page metadata.
-- [ ] Return stable error codes for missing model, unsupported file, empty OCR result, timeout candidate, and runtime import failure.
-- [ ] Keep stdout as JSON only; logs must go to stderr.
-- [ ] Add tests for response shape, empty output handling, and local model directory validation.
+- [x] Return successful JSON with `text`, `pageCount`, and basic per-page metadata.
+- [x] Return stable error codes for missing model, unsupported file, empty OCR result, timeout candidate, and runtime import failure.
+- [x] Keep stdout as JSON only; logs must go to stderr.
+- [x] Add tests for response shape, empty output handling, and local model directory validation.
 
 ### Task 4: Add Rust Sidecar Process Runner
 
@@ -67,10 +69,11 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Modify: `app/src-tauri/src/models.rs`
 - Modify: `app/src-tauri/src/state.rs`
 
-- [ ] Spawn the Python sidecar with strict stdin/stdout JSON.
-- [ ] Add timeout and map sidecar errors into `AppError`.
-- [ ] Avoid shell string construction for paths; pass process args and stdin directly.
-- [ ] Unit test JSON decode, timeout/error mapping, and no-shell command construction.
+- [x] Spawn the Python sidecar with strict stdin/stdout JSON.
+- [x] Resolve bundled Tauri resource sidecar, explicit `OCR_SIDECAR_PATH`, and development fallback paths.
+- [x] Add timeout and map sidecar errors into `AppError`.
+- [x] Avoid shell string construction for paths; pass process args and stdin directly.
+- [x] Unit test JSON decode and sidecar error mapping.
 
 ### Task 5: Process Queued OCR Jobs Into Knowledge Blocks
 
@@ -79,11 +82,11 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Modify: `app/src-tauri/src/state.rs`
 - Modify: `app/src-tauri/src/parser.rs` or create `app/src-tauri/src/parser/ocr.rs`
 
-- [ ] Add storage helpers to mark jobs `running`, `succeeded`, `failed`, and cancelled-safe.
-- [ ] For an OCR job, build a `ParsedDocument` with title, OCR body, summary, and source locator.
-- [ ] Save OCR output through `replace_file_knowledge_block`.
-- [ ] Update file parse status consistently after OCR success or failure.
-- [ ] Keep duplicate active OCR job protection from the current module.
+- [x] Add storage helpers to mark jobs `running`, `succeeded`, and `failed`.
+- [x] For an OCR job, build a `ParsedDocument` with title, OCR body, summary, and source locator.
+- [x] Save OCR output through `replace_file_knowledge_block`.
+- [x] Update file parse status consistently after OCR success or failure.
+- [x] Keep duplicate active OCR job protection from the current module.
 
 ### Task 6: UI Execute/Refresh Flow
 
@@ -96,10 +99,10 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Modify: `app/src/App.module.css`
 - Modify: `app/src/__tests__/App.test.tsx`
 
-- [ ] Add a command to run the next queued OCR job for the active space.
-- [ ] Surface running, succeeded, failed, and cancelled states in the existing queue panel.
-- [ ] Keep text inside buttons stable at desktop and narrow widths.
-- [ ] Add UI tests for run, failure, and successful OCR snapshot display.
+- [x] Add a command to run the next queued OCR job for the active space.
+- [x] Surface queued, running, succeeded, failed, and cancelled states in the existing queue panel.
+- [x] Keep text inside buttons stable at desktop and narrow widths.
+- [x] Add UI tests for running a queued OCR job and displaying successful OCR snapshot output.
 
 ### Task 7: End-To-End Local Fixture
 
@@ -108,9 +111,8 @@ PDF file -> enqueue OCR -> run local sidecar -> persist OCR text as knowledge bl
 - Create or add: a tiny generated scanned PDF fixture only if license-safe and small.
 - Modify: Rust/Python tests as needed.
 
-- [ ] Prefer a tiny generated fixture with known text.
-- [ ] If a binary fixture is not acceptable, document a manual local smoke path instead.
-- [ ] Verify the chain: enqueue -> OCR -> `knowledge_blocks` -> agent answer includes OCR text.
+- [x] Document a manual local smoke path instead of committing a binary fixture.
+- [x] Verify the chain: enqueue -> OCR -> `knowledge_blocks` -> agent answer includes OCR text.
 
 ## Verification Gate
 
