@@ -92,7 +92,7 @@ E:\CodeHome\Library\
 - Modify: `app/package.json`
 - Modify: `app/src-tauri/Cargo.toml`
 
-- [ ] **Step 1: Initialize Git on the allowed branch if the workspace is not already a repository**
+- [x] **Step 1: Initialize Git on the allowed branch if the workspace is not already a repository**
 
 Run from `E:\CodeHome\Library`:
 
@@ -112,7 +112,7 @@ Initialized empty Git repository in E:/CodeHome/Library/.git/
 ## codex/Library
 ```
 
-- [ ] **Step 2: Scaffold a Tauri app**
+- [x] **Step 2: Scaffold a Tauri app**
 
 Run from `E:\CodeHome\Library`:
 
@@ -139,7 +139,7 @@ app\src\App.tsx exists
 app\src-tauri\Cargo.toml exists
 ```
 
-- [ ] **Step 3: Install frontend test dependencies**
+- [x] **Step 3: Install frontend test dependencies**
 
 Run from `E:\CodeHome\Library\app`:
 
@@ -149,7 +149,7 @@ npm install -D vitest jsdom @testing-library/react @testing-library/jest-dom @te
 
 Expected: `package.json` and `package-lock.json` are updated with the dev dependencies.
 
-- [ ] **Step 4: Install Rust foundation dependencies**
+- [x] **Step 4: Install Rust foundation dependencies**
 
 Run from `E:\CodeHome\Library\app\src-tauri`:
 
@@ -172,7 +172,7 @@ cargo add tempfile --dev
 
 Expected: `Cargo.toml` and `Cargo.lock` include the listed crates.
 
-- [ ] **Step 5: Add root `.gitignore`**
+- [x] **Step 5: Add root `.gitignore`**
 
 Create `E:\CodeHome\Library\.gitignore`:
 
@@ -186,7 +186,7 @@ app/.vite/
 *.tmp
 ```
 
-- [ ] **Step 6: Verify scaffold builds**
+- [x] **Step 6: Verify scaffold builds**
 
 Run from `E:\CodeHome\Library\app`:
 
@@ -204,7 +204,7 @@ cargo test
 
 Expected: Cargo test succeeds or reports zero tests.
 
-- [ ] **Step 7: Commit scaffold**
+- [x] **Step 7: Commit scaffold**
 
 Run from `E:\CodeHome\Library`:
 
@@ -226,7 +226,7 @@ Expected: commit succeeds on `codex/Library`.
 - Create: `app/src/test/setup.ts`
 - Modify: `app/package.json`
 
-- [ ] **Step 1: Add Vitest config**
+- [x] **Step 1: Add Vitest config**
 
 Create `app/vitest.config.ts`:
 
@@ -244,7 +244,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 2: Add test setup**
+- [x] **Step 2: Add test setup**
 
 Create `app/src/test/setup.ts`:
 
@@ -252,7 +252,7 @@ Create `app/src/test/setup.ts`:
 import "@testing-library/jest-dom/vitest";
 ```
 
-- [ ] **Step 3: Add test scripts**
+- [x] **Step 3: Add test scripts**
 
 Modify `app/package.json` scripts so they include:
 
@@ -269,7 +269,7 @@ Modify `app/package.json` scripts so they include:
 }
 ```
 
-- [ ] **Step 4: Create workbench types**
+- [x] **Step 4: Create workbench types**
 
 Create `app/src/types/workbench.ts`:
 
@@ -335,7 +335,7 @@ export interface WorkbenchSnapshot {
 }
 ```
 
-- [ ] **Step 5: Create mock workbench data**
+- [x] **Step 5: Create mock workbench data**
 
 Create `app/src/data/mockWorkbench.ts`:
 
@@ -428,7 +428,7 @@ export const mockWorkbench: WorkbenchSnapshot = {
 };
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run from `E:\CodeHome\Library\app`:
 
@@ -438,7 +438,7 @@ npm test
 
 Expected: Vitest runs successfully with no tests or passes existing template tests.
 
-- [ ] **Step 7: Commit types and mock data**
+- [x] **Step 7: Commit types and mock data**
 
 Run from `E:\CodeHome\Library`:
 
@@ -461,7 +461,7 @@ Expected: commit succeeds.
 - Modify: `app/src/main.tsx`
 - Create: `app/src/__tests__/App.test.tsx`
 
-- [ ] **Step 1: Add CSS design tokens**
+- [x] **Step 1: Add CSS design tokens**
 
 Create `app/src/styles/tokens.css`:
 
@@ -490,7 +490,7 @@ Create `app/src/styles/tokens.css`:
 }
 ```
 
-- [ ] **Step 2: Add global CSS**
+- [x] **Step 2: Add global CSS**
 
 Create `app/src/styles/global.css`:
 
@@ -527,7 +527,7 @@ button:disabled {
 }
 ```
 
-- [ ] **Step 3: Import global CSS in `main.tsx`**
+- [x] **Step 3: Import global CSS in `main.tsx`**
 
 Replace `app/src/main.tsx` with:
 
@@ -544,7 +544,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 );
 ```
 
-- [ ] **Step 4: Add workbench CSS module**
+- [x] **Step 4: Add workbench CSS module**
 
 Create `app/src/App.module.css`:
 
@@ -883,7 +883,7 @@ Create `app/src/App.module.css`:
 }
 ```
 
-- [ ] **Step 5: Implement `App.tsx`**
+- [x] **Step 5: Implement `App.tsx`**
 
 Replace `app/src/App.tsx` with:
 
@@ -1042,7 +1042,7 @@ export default function App() {
 }
 ```
 
-- [ ] **Step 6: Add UI test**
+- [x] **Step 6: Add UI test**
 
 Create `app/src/__tests__/App.test.tsx`:
 
@@ -1064,7 +1064,7 @@ describe("App", () => {
 });
 ```
 
-- [ ] **Step 7: Run frontend checks**
+- [x] **Step 7: Run frontend checks**
 
 Run from `E:\CodeHome\Library\app`:
 
@@ -1075,7 +1075,7 @@ npm run build
 
 Expected: tests pass and Vite build succeeds.
 
-- [ ] **Step 8: Commit UI**
+- [x] **Step 8: Commit UI**
 
 Run from `E:\CodeHome\Library`:
 
@@ -1097,7 +1097,7 @@ Expected: commit succeeds.
 - Create: `app/src-tauri/src/commands.rs`
 - Modify: `app/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Create Rust models**
+- [x] **Step 1: Create Rust models**
 
 Create `app/src-tauri/src/models.rs`:
 
@@ -1157,7 +1157,7 @@ pub fn can_temporarily_escalate(folder_default: &PermissionMode, requested: &Per
 }
 ```
 
-- [ ] **Step 2: Add Rust error type**
+- [x] **Step 2: Add Rust error type**
 
 Create `app/src-tauri/src/error.rs`:
 
@@ -1187,7 +1187,7 @@ impl From<AppError> for ErrorResponse {
 }
 ```
 
-- [ ] **Step 3: Add app state**
+- [x] **Step 3: Add app state**
 
 Create `app/src-tauri/src/state.rs`:
 
@@ -1245,7 +1245,7 @@ impl AppState {
 }
 ```
 
-- [ ] **Step 4: Add commands**
+- [x] **Step 4: Add commands**
 
 Create `app/src-tauri/src/commands.rs`:
 
@@ -1282,7 +1282,7 @@ pub fn set_session_permission(
 }
 ```
 
-- [ ] **Step 5: Wire commands into `lib.rs`**
+- [x] **Step 5: Wire commands into `lib.rs`**
 
 Replace `app/src-tauri/src/lib.rs` with:
 
@@ -1307,7 +1307,7 @@ pub fn run() {
 }
 ```
 
-- [ ] **Step 6: Add Rust unit tests**
+- [x] **Step 6: Add Rust unit tests**
 
 Append to `app/src-tauri/src/models.rs`:
 
@@ -1334,7 +1334,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 7: Run Rust checks**
+- [x] **Step 7: Run Rust checks**
 
 Run from `E:\CodeHome\Library\app\src-tauri`:
 
@@ -1345,7 +1345,7 @@ cargo test
 
 Expected: formatting succeeds and tests pass.
 
-- [ ] **Step 8: Commit Rust command boundary**
+- [x] **Step 8: Commit Rust command boundary**
 
 Run from `E:\CodeHome\Library`:
 
@@ -1366,7 +1366,7 @@ Expected: commit succeeds.
 - Create: `app/src-tauri/src/storage/sqlite.rs`
 - Modify: `app/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Add SQLite schema**
+- [x] **Step 1: Add SQLite schema**
 
 Create `app/src-tauri/migrations/001_foundation.sql`:
 
@@ -1454,7 +1454,7 @@ CREATE TABLE IF NOT EXISTS trash_entries (
 );
 ```
 
-- [ ] **Step 2: Add storage module**
+- [x] **Step 2: Add storage module**
 
 Create `app/src-tauri/src/storage/mod.rs`:
 
@@ -1462,7 +1462,7 @@ Create `app/src-tauri/src/storage/mod.rs`:
 pub mod sqlite;
 ```
 
-- [ ] **Step 3: Add SQLite repository**
+- [x] **Step 3: Add SQLite repository**
 
 Create `app/src-tauri/src/storage/sqlite.rs`:
 
@@ -1530,7 +1530,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Export storage module in `lib.rs`**
+- [x] **Step 4: Export storage module in `lib.rs`**
 
 Modify `app/src-tauri/src/lib.rs` module declarations:
 
@@ -1542,7 +1542,7 @@ mod state;
 mod storage;
 ```
 
-- [ ] **Step 5: Run SQLite tests**
+- [x] **Step 5: Run SQLite tests**
 
 Run from `E:\CodeHome\Library\app\src-tauri`:
 
@@ -1553,7 +1553,7 @@ cargo test storage::sqlite
 
 Expected: SQLite test passes and confirms schema can create a knowledge space.
 
-- [ ] **Step 6: Commit SQLite foundation**
+- [x] **Step 6: Commit SQLite foundation**
 
 Run from `E:\CodeHome\Library`:
 
@@ -1573,7 +1573,7 @@ Expected: commit succeeds.
 - Create: `app/src-tauri/src/vector/lancedb_store.rs`
 - Modify: `app/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Add vector module**
+- [x] **Step 1: Add vector module**
 
 Create `app/src-tauri/src/vector/mod.rs`:
 
@@ -1581,7 +1581,7 @@ Create `app/src-tauri/src/vector/mod.rs`:
 pub mod lancedb_store;
 ```
 
-- [ ] **Step 2: Add LanceDB local connection wrapper**
+- [x] **Step 2: Add LanceDB local connection wrapper**
 
 Create `app/src-tauri/src/vector/lancedb_store.rs`:
 
@@ -1623,7 +1623,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Export vector module in `lib.rs`**
+- [x] **Step 3: Export vector module in `lib.rs`**
 
 Modify `app/src-tauri/src/lib.rs` module declarations:
 
@@ -1636,7 +1636,7 @@ mod storage;
 mod vector;
 ```
 
-- [ ] **Step 4: Run LanceDB test**
+- [x] **Step 4: Run LanceDB test**
 
 Run from `E:\CodeHome\Library\app\src-tauri`:
 
@@ -1647,7 +1647,7 @@ cargo test vector::lancedb_store
 
 Expected: local LanceDB connection test passes without using a cloud URI.
 
-- [ ] **Step 5: Commit LanceDB foundation**
+- [x] **Step 5: Commit LanceDB foundation**
 
 Run from `E:\CodeHome\Library`:
 
@@ -1668,7 +1668,7 @@ Expected: commit succeeds.
 - Modify: `app/src/App.tsx`
 - Create: `app/src/hooks/useWorkbenchSnapshot.test.ts`
 
-- [ ] **Step 1: Add Tauri client wrapper**
+- [x] **Step 1: Add Tauri client wrapper**
 
 Create `app/src/lib/tauriClient.ts`:
 
@@ -1686,7 +1686,7 @@ export async function getWorkbenchSnapshot(): Promise<WorkbenchSnapshot> {
 }
 ```
 
-- [ ] **Step 2: Add hook**
+- [x] **Step 2: Add hook**
 
 Create `app/src/hooks/useWorkbenchSnapshot.ts`:
 
@@ -1737,7 +1737,7 @@ export function useWorkbenchSnapshot(): WorkbenchState {
 }
 ```
 
-- [ ] **Step 3: Use hook in `App.tsx`**
+- [x] **Step 3: Use hook in `App.tsx`**
 
 In `app/src/App.tsx`, replace:
 
@@ -1763,7 +1763,7 @@ Render the error near the status line:
 {error ? <span>状态读取失败，正在显示本地示例</span> : null}
 ```
 
-- [ ] **Step 4: Update App import cleanup**
+- [x] **Step 4: Update App import cleanup**
 
 Remove this import from `app/src/App.tsx`:
 
@@ -1771,7 +1771,7 @@ Remove this import from `app/src/App.tsx`:
 import { mockWorkbench } from "./data/mockWorkbench";
 ```
 
-- [ ] **Step 5: Run frontend checks**
+- [x] **Step 5: Run frontend checks**
 
 Run from `E:\CodeHome\Library\app`:
 
@@ -1782,7 +1782,7 @@ npm run build
 
 Expected: UI tests still pass and build succeeds.
 
-- [ ] **Step 6: Run Tauri command check**
+- [x] **Step 6: Run Tauri command check**
 
 Run from `E:\CodeHome\Library\app\src-tauri`:
 
@@ -1792,7 +1792,7 @@ cargo test
 
 Expected: Rust tests pass.
 
-- [ ] **Step 7: Commit frontend command wiring**
+- [x] **Step 7: Commit frontend command wiring**
 
 Run from `E:\CodeHome\Library`:
 
@@ -1811,7 +1811,7 @@ Expected: commit succeeds.
 - Create: `app/README.md`
 - Modify: `docs/superpowers/specs/2026-06-21-personal-knowledge-base-design.md`
 
-- [ ] **Step 1: Create app README**
+- [x] **Step 1: Create app README**
 
 Create `app/README.md`:
 
@@ -1863,7 +1863,7 @@ npm run tauri dev
 前端只负责展示和请求操作。所有文件、数据库、权限和未来高风险操作都必须经过 Rust 核心。SQLite 和 LanceDB 都是本地数据库，不使用云数据库或云端向量库。
 ```
 
-- [ ] **Step 2: Add foundation milestone note to the spec**
+- [x] **Step 2: Add foundation milestone note to the spec**
 
 Append to `docs/superpowers/specs/2026-06-21-personal-knowledge-base-design.md`:
 
@@ -1876,7 +1876,7 @@ Append to `docs/superpowers/specs/2026-06-21-personal-knowledge-base-design.md`:
 第一阶段只覆盖桌面壳、中文三栏界面、Rust 命令边界、SQLite 元数据骨架和 LanceDB 本地向量库骨架。OCR、DeepSeek、文档解析、表格问答、回收站和备份导入导出将拆成后续独立计划。
 ```
 
-- [ ] **Step 3: Run full verification**
+- [x] **Step 3: Run full verification**
 
 Run from `E:\CodeHome\Library\app`:
 
@@ -1896,7 +1896,7 @@ cargo test
 
 Expected: Rust formatting check and tests pass.
 
-- [ ] **Step 4: Review changed files**
+- [x] **Step 4: Review changed files**
 
 Run from `E:\CodeHome\Library`:
 
@@ -1906,7 +1906,7 @@ git status --short
 
 Expected: only planned `app/`, `.gitignore`, `docs/` files are changed.
 
-- [ ] **Step 5: Commit foundation docs**
+- [x] **Step 5: Commit foundation docs**
 
 Run from `E:\CodeHome\Library`:
 

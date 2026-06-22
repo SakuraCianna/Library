@@ -35,10 +35,10 @@ It should not add table extraction, handwriting recognition, GPU scheduling, dis
 - Modify: `app/src-tauri/src/storage/sqlite.rs`
 - Modify: `app/src-tauri/migrations/001_foundation.sql`
 
-- [ ] Add parse job fields for `started_at`, `finished_at`, `progress_current`, `progress_total`, and `phase`.
-- [ ] Add storage helpers to update phase/progress and to safely cancel queued or running jobs.
-- [ ] Preserve old SQLite databases through schema migration helpers.
-- [ ] Add tests for state transitions, cancelled running jobs, and legacy schema upgrade.
+- [x] Add parse job fields for `started_at`, `finished_at`, `progress_current`, `progress_total`, and `phase`.
+- [x] Add storage helpers to update phase/progress and to safely cancel queued or running jobs.
+- [x] Preserve old SQLite databases through schema migration helpers.
+- [x] Add tests for state transitions, cancelled running jobs, and legacy schema upgrade.
 
 ### Task 2: Add OCR Limits
 
@@ -47,10 +47,10 @@ It should not add table extraction, handwriting recognition, GPU scheduling, dis
 - Modify: `sidecars/ocr/ocr_sidecar.py`
 - Modify: `sidecars/ocr/test_ocr_sidecar.py`
 
-- [ ] Add PDF page count detection before OCR execution.
-- [ ] Add a configurable MVP page limit, initially small and documented.
-- [ ] Keep existing 50 MB file limit.
-- [ ] Return stable errors for `OCR_INPUT_TOO_LARGE`, `OCR_TOO_MANY_PAGES`, and timeout.
+- [x] Add PDF page count detection before OCR execution.
+- [x] Add a configurable MVP page limit, initially small and documented.
+- [x] Keep existing 50 MB file limit.
+- [x] Return stable errors for `OCR_INPUT_TOO_LARGE`, `OCR_TOO_MANY_PAGES`, and timeout.
 
 ### Task 3: Background Worker Command Surface
 
@@ -59,10 +59,10 @@ It should not add table extraction, handwriting recognition, GPU scheduling, dis
 - Modify: `app/src-tauri/src/commands.rs`
 - Modify: `app/src-tauri/src/lib.rs`
 
-- [ ] Add `start_ocr_worker` command for the active space.
-- [ ] Add `cancel_ocr_job` support for running jobs.
-- [ ] Ensure only one OCR worker runs per knowledge space in the MVP.
-- [ ] Avoid holding the SQLite mutex while a child process is running.
+- [x] Add `start_ocr_worker` command for the active space.
+- [x] Add `cancel_ocr_job` support for running jobs.
+- [x] Ensure only one OCR worker runs per knowledge space in the MVP.
+- [x] Avoid holding the SQLite mutex while a child process is running.
 
 ### Task 4: Frontend Queue UX
 
@@ -73,14 +73,14 @@ It should not add table extraction, handwriting recognition, GPU scheduling, dis
 - Modify: `app/src/lib/tauriClient.ts`
 - Modify: `app/src/__tests__/App.test.tsx`
 
-- [ ] Replace “运行 OCR” one-shot action with worker start and refresh controls.
-- [ ] Show phase, progress, error message, and cancel action in the queue panel.
-- [ ] Keep status text compact on narrow viewports.
-- [ ] Add UI tests for running, cancellation, failure, and completed queue states.
+- [x] Replace “运行 OCR” one-shot action with worker start and refresh controls.
+- [x] Show phase, progress, error message, and cancel action in the queue panel.
+- [x] Keep status text compact on narrow viewports.
+- [x] Add UI tests for running, cancellation, failure, and completed queue states.
 
 ### Task 5: Verification And Review
 
-- [ ] Run sidecar tests, frontend tests/build, Rust fmt/test/check, diff check, and changed-file secret scan.
+- [x] Run sidecar tests, frontend tests/build, Rust fmt/test/check, diff check, and changed-file secret scan.
 - [ ] Run a real local OCR smoke test with downloaded PP-OCRv6 medium models.
 - [ ] Request independent reviewer subagent and fix blocking findings.
 - [ ] Commit, push, create PR, merge to `main`, and sync `main`, `origin/main`, `codex/Library`, `origin/codex/Library`.

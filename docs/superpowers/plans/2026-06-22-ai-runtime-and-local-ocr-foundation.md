@@ -52,7 +52,7 @@ Test-Path .\.env.example
 
 Expected: `Select-String` does not find every required ignore pattern, and `.env.example` is missing.
 
-- [ ] **Step 2: Update `.gitignore`**
+- [x] **Step 2: Update `.gitignore`**
 
 Append this exact block to `.gitignore`:
 
@@ -66,7 +66,7 @@ app/.models/
 app/src-tauri/models/
 ```
 
-- [ ] **Step 3: Add `.env.example`**
+- [x] **Step 3: Add `.env.example`**
 
 Create `.env.example` with this content:
 
@@ -87,7 +87,7 @@ OCR_MODEL_DIR=
 OCR_MODEL_TIER=medium
 ```
 
-- [ ] **Step 4: Verify ignore behavior**
+- [x] **Step 4: Verify ignore behavior**
 
 Run:
 
@@ -103,7 +103,7 @@ Expected: first command prints ignored paths. Second command exits non-zero and 
 **Files:**
 - Create: `scripts/下载OCR模型.ps1`
 
-- [ ] **Step 1: Write the downloader script**
+- [x] **Step 1: Write the downloader script**
 
 Create `scripts/下载OCR模型.ps1`:
 
@@ -152,7 +152,7 @@ finally {
 Write-Host "OCR 模型已下载到: $target"
 ```
 
-- [ ] **Step 2: Validate the script syntax without downloading**
+- [x] **Step 2: Validate the script syntax without downloading**
 
 Run:
 
@@ -168,7 +168,7 @@ Expected: no parser errors.
 - Create: `app/src-tauri/src/runtime.rs`
 - Modify: `app/src-tauri/src/models.rs`
 
-- [ ] **Step 1: Add Rust model types**
+- [x] **Step 1: Add Rust model types**
 
 Add these types to `app/src-tauri/src/models.rs`:
 
@@ -199,7 +199,7 @@ pub struct OcrRuntimeStatus {
 }
 ```
 
-- [ ] **Step 2: Create the runtime module**
+- [x] **Step 2: Create the runtime module**
 
 Create `app/src-tauri/src/runtime.rs`:
 
@@ -269,7 +269,7 @@ fn redact_key(value: &str) -> String {
 }
 ```
 
-- [ ] **Step 3: Add Rust tests**
+- [x] **Step 3: Add Rust tests**
 
 Add this test module to `runtime.rs`:
 
@@ -319,7 +319,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Run the focused Rust test**
+- [x] **Step 4: Run the focused Rust test**
 
 Run:
 
@@ -336,7 +336,7 @@ Expected: runtime tests pass.
 - Modify: `app/src-tauri/src/commands.rs`
 - Modify: `app/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Add command implementation**
+- [x] **Step 1: Add command implementation**
 
 Add this command to `commands.rs`:
 
@@ -359,7 +359,7 @@ use crate::error::ErrorResponse;
 use crate::models::RuntimeStatus;
 ```
 
-- [ ] **Step 2: Register runtime module and command**
+- [x] **Step 2: Register runtime module and command**
 
 In `lib.rs`, add:
 
@@ -373,7 +373,7 @@ Register command:
 commands::get_runtime_status
 ```
 
-- [ ] **Step 3: Run command compilation check**
+- [x] **Step 3: Run command compilation check**
 
 Run:
 
@@ -392,7 +392,7 @@ Expected: compile succeeds and no API key appears in output.
 - Modify: `app/src/lib/tauriClient.ts`
 - Create: `app/src/hooks/useRuntimeStatus.ts`
 
-- [ ] **Step 1: Add TypeScript types**
+- [x] **Step 1: Add TypeScript types**
 
 Add to `app/src/types/workbench.ts`:
 
@@ -417,7 +417,7 @@ export interface OcrRuntimeStatus {
 }
 ```
 
-- [ ] **Step 2: Add Tauri client fallback**
+- [x] **Step 2: Add Tauri client fallback**
 
 Add to `tauriClient.ts`:
 
@@ -448,7 +448,7 @@ export async function getRuntimeStatus(): Promise<RuntimeStatus> {
 }
 ```
 
-- [ ] **Step 3: Create `useRuntimeStatus.ts`**
+- [x] **Step 3: Create `useRuntimeStatus.ts`**
 
 ```ts
 import { useEffect, useState } from "react";
@@ -494,7 +494,7 @@ export function useRuntimeStatus(): RuntimeStatusState {
 }
 ```
 
-- [ ] **Step 4: Run front-end typecheck through build**
+- [x] **Step 4: Run front-end typecheck through build**
 
 Run:
 
@@ -512,7 +512,7 @@ Expected: TypeScript build succeeds.
 - Modify: `app/src/App.module.css`
 - Modify: `app/src/__tests__/App.test.tsx`
 
-- [ ] **Step 1: Write a UI test for runtime status**
+- [x] **Step 1: Write a UI test for runtime status**
 
 Add this expectation to the empty-state render test in `App.test.tsx`:
 
@@ -533,7 +533,7 @@ npm test -- App.test.tsx
 
 Expected: fails because runtime status is not rendered yet.
 
-- [ ] **Step 3: Render runtime status in `App.tsx`**
+- [x] **Step 3: Render runtime status in `App.tsx`**
 
 Import the hook:
 
@@ -571,7 +571,7 @@ Render this block inside `showDefaultPermissionHelp` after permission copy:
 </div>
 ```
 
-- [ ] **Step 4: Add scoped styles**
+- [x] **Step 4: Add scoped styles**
 
 Add to `App.module.css`:
 
@@ -603,7 +603,7 @@ Add to `App.module.css`:
 }
 ```
 
-- [ ] **Step 5: Run UI tests**
+- [x] **Step 5: Run UI tests**
 
 Run:
 
@@ -619,7 +619,7 @@ Expected: all Vitest tests pass.
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update README setup section**
+- [x] **Step 1: Update README setup section**
 
 Add a section named `## 本地模型与密钥配置` after quick start:
 
@@ -652,7 +652,7 @@ $env:OCR_MODEL_DIR = "D:\AIModels\Library\ocr\pp-ocrv6"
 设置面板只显示密钥是否已配置和脱敏片段，不显示完整密钥。
 ```
 
-- [ ] **Step 2: Update feature status**
+- [x] **Step 2: Update feature status**
 
 Move these items from `暂未实现` to `已实现` only after code and tests pass:
 
@@ -669,7 +669,7 @@ Keep these in `暂未实现`:
 - 表格深度理解和表格问答
 ```
 
-- [ ] **Step 3: Run full verification**
+- [x] **Step 3: Run full verification**
 
 Run:
 
@@ -693,7 +693,7 @@ Expected: all checks pass. If `cargo check` fails only because `protoc` is unava
 **Files:**
 - No source file edits beyond completed tasks.
 
-- [ ] **Step 1: Run secret scan**
+- [x] **Step 1: Run secret scan**
 
 Run:
 
