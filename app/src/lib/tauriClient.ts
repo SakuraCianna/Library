@@ -52,6 +52,7 @@ function browserSnapshotForFolder(
         path: rootPath,
         defaultPermission,
         changedFileCount: 0,
+        scanQueueCount: 0,
         documentQueueCount: 0,
         ocrQueueCount: 0,
       },

@@ -90,6 +90,7 @@ pub struct KnowledgeSpace {
     pub path: String,
     pub default_permission: PermissionMode,
     pub changed_file_count: u32,
+    pub scan_queue_count: u32,
     pub document_queue_count: u32,
     pub ocr_queue_count: u32,
 }

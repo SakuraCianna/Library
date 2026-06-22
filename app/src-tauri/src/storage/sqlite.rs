@@ -41,6 +41,16 @@ pub struct EnqueueParseJobResult {
     pub inserted: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanJobWriteOutcome {
+    Updated {
+        summary: ScanSummary,
+        queued_document_count: u32,
+    },
+    Cancelled,
+    NotRunning,
+}
+
 impl SqliteStore {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
@@ -131,6 +141,7 @@ impl SqliteStore {
                 space.root_path,
                 space.default_permission,
                 COALESCE(changed.changed_count, 0) AS changed_count,
+                COALESCE(scan_queue.queued_count, 0) AS scan_queue_count,
                 COALESCE(document_queue.queued_count, 0) AS document_queue_count,
                 COALESCE(ocr_queue.queued_count, 0) AS ocr_queue_count
              FROM knowledge_spaces space
@@ -140,6 +151,12 @@ impl SqliteStore {
                 WHERE deleted_at IS NULL AND parse_status = 'changed'
                 GROUP BY space_id
              ) changed ON changed.space_id = space.id
+             LEFT JOIN (
+                SELECT space_id, COUNT(*) AS queued_count
+                FROM parse_jobs
+                WHERE job_type = 'scan' AND status IN ('queued', 'running')
+                GROUP BY space_id
+             ) scan_queue ON scan_queue.space_id = space.id
              LEFT JOIN (
                 SELECT space_id, COUNT(*) AS queued_count
                 FROM parse_jobs
@@ -166,8 +183,9 @@ impl SqliteStore {
                     default_permission: PermissionMode::from_db(&permission)
                         .unwrap_or(PermissionMode::Readonly),
                     changed_file_count: row.get(4)?,
-                    document_queue_count: row.get(5)?,
-                    ocr_queue_count: row.get(6)?,
+                    scan_queue_count: row.get(5)?,
+                    document_queue_count: row.get(6)?,
+                    ocr_queue_count: row.get(7)?,
                 })
             })?
             .collect();
@@ -331,6 +349,69 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn complete_scan_job_if_running(
+        &mut self,
+        space_id: &str,
+        job_id: &str,
+        scanned_files: &[ScannedFile],
+    ) -> rusqlite::Result<ScanJobWriteOutcome> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let tx = self.connection.transaction()?;
+        match parse_job_status_in_tx(&tx, job_id)?.as_deref() {
+            Some("running") => {}
+            Some("cancelled") => return Ok(ScanJobWriteOutcome::Cancelled),
+            _ => return Ok(ScanJobWriteOutcome::NotRunning),
+        }
+
+        let summary = apply_scan_results_in_tx(&tx, space_id, scanned_files, &now)?;
+        let queued_document_count = enqueue_document_parse_jobs_in_tx(&tx, space_id, &now)?;
+        tx.execute(
+            "UPDATE parse_jobs
+             SET status = 'succeeded',
+                 error_message = NULL,
+                 phase = '已完成',
+                 progress_current = CASE WHEN progress_current > 0 THEN progress_current ELSE ?1 END,
+                 progress_total = CASE WHEN progress_total > 0 THEN progress_total ELSE ?1 END,
+                 finished_at = ?2,
+                 updated_at = ?2
+             WHERE id = ?3 AND status = 'running'",
+            params![scanned_files.len() as i64, now, job_id],
+        )?;
+        tx.commit()?;
+
+        Ok(ScanJobWriteOutcome::Updated {
+            summary,
+            queued_document_count,
+        })
+    }
+
+    pub fn fail_space_parse_job_if_running(
+        &mut self,
+        job_id: &str,
+        error_message: &str,
+    ) -> rusqlite::Result<ParseJobWriteOutcome> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let tx = self.connection.transaction()?;
+        match parse_job_status_in_tx(&tx, job_id)?.as_deref() {
+            Some("running") => {}
+            Some("cancelled") => return Ok(ParseJobWriteOutcome::Cancelled),
+            _ => return Ok(ParseJobWriteOutcome::NotRunning),
+        }
+
+        tx.execute(
+            "UPDATE parse_jobs
+             SET status = 'failed',
+                 error_message = ?1,
+                 phase = '失败',
+                 finished_at = ?2,
+                 updated_at = ?2
+             WHERE id = ?3 AND status = 'running'",
+            params![error_message, now, job_id],
+        )?;
+        tx.commit()?;
+        Ok(ParseJobWriteOutcome::Updated)
+    }
+
     pub fn fail_parse_job_if_running(
         &mut self,
         file_id: &str,
@@ -468,6 +549,46 @@ impl SqliteStore {
         Ok(EnqueueParseJobResult { id, inserted: true })
     }
 
+    pub fn enqueue_space_parse_job_with_status(
+        &self,
+        space_id: &str,
+        job_type: &str,
+    ) -> rusqlite::Result<EnqueueParseJobResult> {
+        if let Some(existing_id) = self
+            .connection
+            .query_row(
+                "SELECT id
+                 FROM parse_jobs
+                 WHERE space_id = ?1
+                   AND file_id IS NULL
+                   AND job_type = ?2
+                   AND status IN ('queued', 'running')
+                 ORDER BY created_at DESC
+                 LIMIT 1",
+                params![space_id, job_type],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(EnqueueParseJobResult {
+                id: existing_id,
+                inserted: false,
+            });
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let now = OffsetDateTime::now_utc().to_string();
+        self.connection.execute(
+            "INSERT INTO parse_jobs (
+                id, space_id, file_id, job_type, status, phase, progress_current,
+                progress_total, created_at, updated_at
+             )
+             VALUES (?1, ?2, NULL, ?3, 'queued', '等待执行', 0, 0, ?4, ?4)",
+            params![id, space_id, job_type, now],
+        )?;
+        Ok(EnqueueParseJobResult { id, inserted: true })
+    }
+
     pub fn enqueue_document_parse_jobs(&self, space_id: &str) -> rusqlite::Result<u32> {
         let candidates = self.list_parse_candidates(space_id)?;
         let mut inserted_count = 0_u32;
@@ -501,7 +622,10 @@ impl SqliteStore {
             "SELECT
                 job.id,
                 job.file_id,
-                COALESCE(file.relative_path, '未知文件') AS file_name,
+                CASE
+                    WHEN job.file_id IS NULL AND job.job_type = 'scan' THEN '文件夹扫描'
+                    ELSE COALESCE(file.relative_path, '未知文件')
+                END AS file_name,
                 job.job_type,
                 job.status,
                 job.error_message,
@@ -618,6 +742,54 @@ impl SqliteStore {
 
         if updated > 0 {
             Ok(Some(candidate))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn claim_next_queued_space_parse_job(
+        &mut self,
+        space_id: &str,
+        job_type: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        let now = OffsetDateTime::now_utc().to_string();
+        let tx = self.connection.transaction()?;
+        let job_id = tx
+            .query_row(
+                "SELECT id
+                 FROM parse_jobs
+                 WHERE space_id = ?1
+                   AND file_id IS NULL
+                   AND job_type = ?2
+                   AND status = 'queued'
+                 ORDER BY created_at ASC
+                 LIMIT 1",
+                params![space_id, job_type],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(job_id) = job_id else {
+            tx.commit()?;
+            return Ok(None);
+        };
+
+        let updated = tx.execute(
+            "UPDATE parse_jobs
+             SET status = 'running',
+                 error_message = NULL,
+                 started_at = COALESCE(started_at, ?1),
+                 finished_at = NULL,
+                 phase = '正在准备',
+                 progress_current = 0,
+                 progress_total = 0,
+                 updated_at = ?1
+             WHERE id = ?2 AND status = 'queued'",
+            params![now, job_id],
+        )?;
+        tx.commit()?;
+
+        if updated > 0 {
+            Ok(Some(job_id))
         } else {
             Ok(None)
         }
@@ -800,139 +972,8 @@ impl SqliteStore {
         scanned_files: &[ScannedFile],
     ) -> rusqlite::Result<ScanSummary> {
         let now = OffsetDateTime::now_utc().to_string();
-        let scan_run_id = Uuid::new_v4().to_string();
         let tx = self.connection.transaction()?;
-        tx.execute(
-            "INSERT INTO scan_runs (id, space_id, started_at, status)
-             VALUES (?1, ?2, ?3, 'running')",
-            params![scan_run_id, space_id, now],
-        )?;
-
-        let existing_files = load_existing_files(&tx, space_id)?;
-        let mut seen_keys = Vec::with_capacity(scanned_files.len());
-        let mut summary = ScanSummary::default();
-
-        for scanned_file in scanned_files {
-            let key = normalize_lookup_key(&scanned_file.relative_path);
-            seen_keys.push(key.clone());
-
-            match existing_files.iter().find(|file| file.lookup_key == key) {
-                Some(existing) if existing.deleted_at.is_none() => {
-                    let changed = existing.content_hash.as_deref()
-                        != Some(scanned_file.content_hash.as_str())
-                        || existing.modified_at.as_deref()
-                            != Some(scanned_file.modified_at.as_str())
-                        || existing.size_bytes != scanned_file.size_bytes;
-                    let status = if changed {
-                        summary.changed_count += 1;
-                        ParseStatus::Changed
-                    } else {
-                        existing.parse_status.clone()
-                    };
-
-                    tx.execute(
-                        "UPDATE files
-                         SET extension = ?1, content_hash = ?2, size_bytes = ?3,
-                             modified_at = ?4, parse_status = ?5, last_scanned_at = ?6,
-                             updated_at = ?6, deleted_at = NULL
-                         WHERE id = ?7",
-                        params![
-                            scanned_file.extension,
-                            scanned_file.content_hash,
-                            scanned_file.size_bytes,
-                            scanned_file.modified_at,
-                            status.as_str(),
-                            now,
-                            existing.id
-                        ],
-                    )?;
-                }
-                Some(existing) => {
-                    summary.added_count += 1;
-                    tx.execute(
-                        "UPDATE files
-                         SET relative_path = ?1, extension = ?2, content_hash = ?3,
-                             size_bytes = ?4, modified_at = ?5, parse_status = ?6,
-                             last_scanned_at = ?7, updated_at = ?7, deleted_at = NULL
-                         WHERE id = ?8",
-                        params![
-                            scanned_file.relative_path,
-                            scanned_file.extension,
-                            scanned_file.content_hash,
-                            scanned_file.size_bytes,
-                            scanned_file.modified_at,
-                            ParseStatus::Queued.as_str(),
-                            now,
-                            existing.id
-                        ],
-                    )?;
-                }
-                None => {
-                    summary.added_count += 1;
-                    tx.execute(
-                        "INSERT INTO files (
-                            id, space_id, relative_path, extension, content_hash, size_bytes,
-                            modified_at, parse_status, last_scanned_at, created_at, updated_at
-                         )
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9)",
-                        params![
-                            Uuid::new_v4().to_string(),
-                            space_id,
-                            scanned_file.relative_path,
-                            scanned_file.extension,
-                            scanned_file.content_hash,
-                            scanned_file.size_bytes,
-                            scanned_file.modified_at,
-                            ParseStatus::Queued.as_str(),
-                            now
-                        ],
-                    )?;
-                }
-            }
-        }
-
-        for existing in existing_files
-            .iter()
-            .filter(|file| file.deleted_at.is_none() && !seen_keys.contains(&file.lookup_key))
-        {
-            summary.deleted_count += 1;
-            tx.execute(
-                "UPDATE files
-                 SET deleted_at = ?1, updated_at = ?1
-                 WHERE id = ?2",
-                params![now, existing.id],
-            )?;
-            tx.execute(
-                "UPDATE parse_jobs
-                 SET status = 'cancelled',
-                     phase = '已取消',
-                     finished_at = ?1,
-                     updated_at = ?1
-                 WHERE file_id = ?2 AND status IN ('queued', 'running')",
-                params![now, existing.id],
-            )?;
-        }
-
-        tx.execute(
-            "UPDATE scan_runs
-             SET finished_at = ?1, status = 'succeeded', added_count = ?2,
-                 changed_count = ?3, deleted_count = ?4, failed_count = ?5,
-                 message = ?6
-             WHERE id = ?7",
-            params![
-                now,
-                summary.added_count,
-                summary.changed_count,
-                summary.deleted_count,
-                summary.failed_count,
-                format!(
-                    "新增 {} 个，变更 {} 个，删除 {} 个",
-                    summary.added_count, summary.changed_count, summary.deleted_count
-                ),
-                scan_run_id
-            ],
-        )?;
-
+        let summary = apply_scan_results_in_tx(&tx, space_id, scanned_files, &now)?;
         tx.commit()?;
         Ok(summary)
     }
@@ -1096,6 +1137,214 @@ fn copy_legacy_tables(tx: &Transaction<'_>, table_names: &[&str]) -> rusqlite::R
     }
 
     Ok(())
+}
+
+fn apply_scan_results_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+    scanned_files: &[ScannedFile],
+    now: &str,
+) -> rusqlite::Result<ScanSummary> {
+    let scan_run_id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO scan_runs (id, space_id, started_at, status)
+         VALUES (?1, ?2, ?3, 'running')",
+        params![scan_run_id, space_id, now],
+    )?;
+
+    let existing_files = load_existing_files(tx, space_id)?;
+    let mut seen_keys = Vec::with_capacity(scanned_files.len());
+    let mut summary = ScanSummary::default();
+
+    for scanned_file in scanned_files {
+        let key = normalize_lookup_key(&scanned_file.relative_path);
+        seen_keys.push(key.clone());
+
+        match existing_files.iter().find(|file| file.lookup_key == key) {
+            Some(existing) if existing.deleted_at.is_none() => {
+                let changed = existing.content_hash.as_deref()
+                    != Some(scanned_file.content_hash.as_str())
+                    || existing.modified_at.as_deref() != Some(scanned_file.modified_at.as_str())
+                    || existing.size_bytes != scanned_file.size_bytes;
+                let status = if changed {
+                    summary.changed_count += 1;
+                    ParseStatus::Changed
+                } else {
+                    existing.parse_status.clone()
+                };
+
+                tx.execute(
+                    "UPDATE files
+                     SET extension = ?1, content_hash = ?2, size_bytes = ?3,
+                         modified_at = ?4, parse_status = ?5, last_scanned_at = ?6,
+                         updated_at = ?6, deleted_at = NULL
+                     WHERE id = ?7",
+                    params![
+                        scanned_file.extension,
+                        scanned_file.content_hash,
+                        scanned_file.size_bytes,
+                        scanned_file.modified_at,
+                        status.as_str(),
+                        now,
+                        existing.id
+                    ],
+                )?;
+            }
+            Some(existing) => {
+                summary.added_count += 1;
+                tx.execute(
+                    "UPDATE files
+                     SET relative_path = ?1, extension = ?2, content_hash = ?3,
+                         size_bytes = ?4, modified_at = ?5, parse_status = ?6,
+                         last_scanned_at = ?7, updated_at = ?7, deleted_at = NULL
+                     WHERE id = ?8",
+                    params![
+                        scanned_file.relative_path,
+                        scanned_file.extension,
+                        scanned_file.content_hash,
+                        scanned_file.size_bytes,
+                        scanned_file.modified_at,
+                        ParseStatus::Queued.as_str(),
+                        now,
+                        existing.id
+                    ],
+                )?;
+            }
+            None => {
+                summary.added_count += 1;
+                tx.execute(
+                    "INSERT INTO files (
+                        id, space_id, relative_path, extension, content_hash, size_bytes,
+                        modified_at, parse_status, last_scanned_at, created_at, updated_at
+                     )
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9)",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        space_id,
+                        scanned_file.relative_path,
+                        scanned_file.extension,
+                        scanned_file.content_hash,
+                        scanned_file.size_bytes,
+                        scanned_file.modified_at,
+                        ParseStatus::Queued.as_str(),
+                        now
+                    ],
+                )?;
+            }
+        }
+    }
+
+    for existing in existing_files
+        .iter()
+        .filter(|file| file.deleted_at.is_none() && !seen_keys.contains(&file.lookup_key))
+    {
+        summary.deleted_count += 1;
+        tx.execute(
+            "UPDATE files
+             SET deleted_at = ?1, updated_at = ?1
+             WHERE id = ?2",
+            params![now, existing.id],
+        )?;
+        tx.execute(
+            "UPDATE parse_jobs
+             SET status = 'cancelled',
+                 phase = '已取消',
+                 finished_at = ?1,
+                 updated_at = ?1
+             WHERE file_id = ?2 AND status IN ('queued', 'running')",
+            params![now, existing.id],
+        )?;
+    }
+
+    tx.execute(
+        "UPDATE scan_runs
+         SET finished_at = ?1, status = 'succeeded', added_count = ?2,
+             changed_count = ?3, deleted_count = ?4, failed_count = ?5,
+             message = ?6
+         WHERE id = ?7",
+        params![
+            now,
+            summary.added_count,
+            summary.changed_count,
+            summary.deleted_count,
+            summary.failed_count,
+            format!(
+                "新增 {} 个，变更 {} 个，删除 {} 个",
+                summary.added_count, summary.changed_count, summary.deleted_count
+            ),
+            scan_run_id
+        ],
+    )?;
+
+    Ok(summary)
+}
+
+fn enqueue_document_parse_jobs_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+    now: &str,
+) -> rusqlite::Result<u32> {
+    let candidates = list_parse_candidates_in_tx(tx, space_id)?;
+    let mut inserted_count = 0_u32;
+
+    for candidate in candidates {
+        let existing_id = tx
+            .query_row(
+                "SELECT id
+                 FROM parse_jobs
+                 WHERE space_id = ?1
+                   AND file_id = ?2
+                   AND job_type = 'document'
+                   AND status IN ('queued', 'running')
+                 ORDER BY created_at DESC
+                 LIMIT 1",
+                params![space_id, candidate.file_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        if existing_id.is_some() {
+            continue;
+        }
+
+        tx.execute(
+            "INSERT INTO parse_jobs (
+                id, space_id, file_id, job_type, status, phase, progress_current,
+                progress_total, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, 'document', 'queued', '等待执行', 0, 1, ?4, ?4)",
+            params![Uuid::new_v4().to_string(), space_id, candidate.file_id, now],
+        )?;
+        inserted_count += 1;
+    }
+
+    Ok(inserted_count)
+}
+
+fn list_parse_candidates_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+) -> rusqlite::Result<Vec<FileParseCandidate>> {
+    let mut statement = tx.prepare(
+        "SELECT id, relative_path, extension
+         FROM files
+         WHERE space_id = ?1
+           AND deleted_at IS NULL
+           AND parse_status IN ('queued', 'changed', 'failed')
+         ORDER BY relative_path COLLATE NOCASE",
+    )?;
+
+    let candidates = statement
+        .query_map([space_id], |row| {
+            Ok(FileParseCandidate {
+                file_id: row.get(0)?,
+                relative_path: row.get(1)?,
+                extension: row.get(2)?,
+            })
+        })?
+        .collect();
+
+    candidates
 }
 
 fn replace_file_knowledge_block_in_tx(

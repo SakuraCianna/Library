@@ -7,13 +7,13 @@ use crate::error::AppError;
 use crate::models::{
     can_request_session_permission, ChatMessage, ChatRole, ChatScope, KnowledgeBlockPreview,
     KnowledgeSpace, OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode,
-    ScanSummary, TableInsightPreview, WorkbenchSnapshot,
+    ScanSummary, ScannedFile, TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
 use crate::parser::parse_file;
 use crate::runtime::ocr_config;
-use crate::scanner::scan_folder;
-use crate::storage::sqlite::{ParseJobWriteOutcome, SqliteStore};
+use crate::scanner::{scan_folder_with_progress, ScanProgress};
+use crate::storage::sqlite::{ParseJobWriteOutcome, ScanJobWriteOutcome, SqliteStore};
 
 pub struct AppState {
     store: Mutex<SqliteStore>,
@@ -22,8 +22,20 @@ pub struct AppState {
     active_scope: Mutex<ChatScope>,
     session_permission: Mutex<PermissionMode>,
     messages: Mutex<Vec<ChatMessage>>,
+    active_scan_workers: Mutex<HashSet<String>>,
     active_document_workers: Mutex<HashSet<String>>,
     active_ocr_workers: Mutex<HashSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ScanJobOutcome {
+    NoQueuedJob,
+    Succeeded {
+        summary: ScanSummary,
+        queued_document_count: u32,
+    },
+    Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +79,7 @@ impl AppState {
             active_scope: Mutex::new(ChatScope::CurrentFolder),
             session_permission: Mutex::new(PermissionMode::Readonly),
             messages: Mutex::new(Vec::new()),
+            active_scan_workers: Mutex::new(HashSet::new()),
             active_document_workers: Mutex::new(HashSet::new()),
             active_ocr_workers: Mutex::new(HashSet::new()),
         }
@@ -152,6 +165,203 @@ impl AppState {
         drop(store);
 
         self.snapshot()
+    }
+
+    pub fn prepare_scan_knowledge_space(&self, space_id: String) -> Result<bool, AppError> {
+        let inserted = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .get_space_root(&space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到要扫描的知识库".to_string()))?;
+            store
+                .enqueue_space_parse_job_with_status(&space_id, "scan")
+                .map_err(|error| AppError::Storage(format!("无法创建扫描任务：{error}")))?
+                .inserted
+        };
+
+        if inserted {
+            self.push_system_message("文件夹扫描任务已排队。".to_string());
+        }
+
+        self.begin_scan_worker(space_id)
+    }
+
+    #[cfg(test)]
+    pub fn scan_knowledge_space(&self, space_id: String) -> Result<WorkbenchSnapshot, AppError> {
+        let _ = self.prepare_scan_knowledge_space(space_id.clone())?;
+        let outcome = self.run_one_scan_job_with_scanner(&space_id, |root_path, _job_id| {
+            crate::scanner::scan_folder(root_path).map_err(|error| {
+                AppError::Filesystem(format!("无法扫描文件夹 {}：{}", root_path.display(), error))
+            })
+        })?;
+        self.finish_scan_worker(&space_id);
+
+        match outcome {
+            ScanJobOutcome::Succeeded { .. } | ScanJobOutcome::NoQueuedJob => self.snapshot(),
+            ScanJobOutcome::Cancelled => Err(AppError::Storage("扫描任务已取消".to_string())),
+            ScanJobOutcome::Failed => Err(AppError::Storage("扫描任务失败".to_string())),
+        }
+    }
+
+    pub fn begin_scan_worker(&self, space_id: String) -> Result<bool, AppError> {
+        let worker_space_id = space_id.clone();
+        let has_queued_job = {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            store
+                .get_space_root(&space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到要扫描的知识库".to_string()))?;
+            store
+                .has_queued_parse_job(&space_id, "scan")
+                .map_err(|error| AppError::Storage(format!("无法读取扫描队列：{error}")))?
+        };
+
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
+
+        if !has_queued_job {
+            self.push_system_message("没有待执行的扫描任务。".to_string());
+            return Ok(false);
+        }
+
+        let mut workers = self
+            .active_scan_workers
+            .lock()
+            .expect("scan worker mutex poisoned");
+        if !workers.insert(worker_space_id) {
+            drop(workers);
+            self.push_system_message("扫描后台任务已在运行。".to_string());
+            return Ok(false);
+        }
+        drop(workers);
+
+        self.push_system_message("扫描后台任务已启动。".to_string());
+        Ok(true)
+    }
+
+    pub fn run_scan_worker(&self, space_id: String) {
+        loop {
+            let outcome = self.run_one_scan_job_with_scanner(&space_id, |root_path, job_id| {
+                scan_folder_with_progress(root_path, |progress| {
+                    if self.is_parse_job_cancelled(job_id).unwrap_or(false) {
+                        return false;
+                    }
+
+                    let _ = self.update_scan_progress(job_id, progress);
+                    true
+                })
+                .map_err(|error| {
+                    AppError::Filesystem(format!(
+                        "无法扫描文件夹 {}：{}",
+                        root_path.display(),
+                        error
+                    ))
+                })
+            });
+
+            match outcome {
+                Ok(ScanJobOutcome::NoQueuedJob) => {
+                    self.push_system_message("扫描后台队列已清空。".to_string());
+                    break;
+                }
+                Ok(outcome) => self.push_scan_outcome_message(&outcome),
+                Err(error) => {
+                    self.push_system_message(format!("扫描后台任务中断：{error}"));
+                    break;
+                }
+            }
+        }
+
+        self.finish_scan_worker(&space_id);
+    }
+
+    #[cfg(test)]
+    fn run_next_scan_job_with_scanner<F>(
+        &self,
+        space_id: String,
+        scanner: F,
+    ) -> Result<ScanJobOutcome, AppError>
+    where
+        F: FnOnce(&Path, &str) -> Result<Vec<ScannedFile>, AppError>,
+    {
+        let outcome = self.run_one_scan_job_with_scanner(&space_id, scanner)?;
+        *self
+            .active_space_id
+            .lock()
+            .expect("active space mutex poisoned") = Some(space_id);
+        Ok(outcome)
+    }
+
+    fn run_one_scan_job_with_scanner<F>(
+        &self,
+        space_id: &str,
+        scanner: F,
+    ) -> Result<ScanJobOutcome, AppError>
+    where
+        F: FnOnce(&Path, &str) -> Result<Vec<ScannedFile>, AppError>,
+    {
+        let (root_path, job_id) = {
+            let mut store = self.store.lock().expect("sqlite store mutex poisoned");
+            let root_path = store
+                .get_space_root(space_id)
+                .map_err(|error| AppError::Storage(error.to_string()))?
+                .ok_or_else(|| AppError::Storage("找不到要扫描的知识库".to_string()))?
+                .root_path;
+            let job_id = store
+                .claim_next_queued_space_parse_job(space_id, "scan")
+                .map_err(|error| AppError::Storage(format!("无法领取扫描任务：{error}")))?;
+
+            (root_path, job_id)
+        };
+        let Some(job_id) = job_id else {
+            return Ok(ScanJobOutcome::NoQueuedJob);
+        };
+
+        self.update_parse_progress(&job_id, "正在遍历文件夹", 0, 0)?;
+        let root_path = Path::new(&root_path);
+        let run_result = scanner(root_path, &job_id);
+
+        match run_result {
+            Ok(scanned_files) => {
+                let outcome = {
+                    let mut store = self.store.lock().expect("sqlite store mutex poisoned");
+                    match store
+                        .complete_scan_job_if_running(space_id, &job_id, &scanned_files)
+                        .map_err(|error| AppError::Storage(format!("无法保存扫描结果：{error}")))?
+                    {
+                        ScanJobWriteOutcome::Updated {
+                            summary,
+                            queued_document_count,
+                        } => ScanJobOutcome::Succeeded {
+                            summary,
+                            queued_document_count,
+                        },
+                        ScanJobWriteOutcome::Cancelled => ScanJobOutcome::Cancelled,
+                        ScanJobWriteOutcome::NotRunning => {
+                            return Err(AppError::Storage(
+                                "扫描任务状态已变化，无法标记成功".to_string(),
+                            ));
+                        }
+                    }
+                };
+
+                Ok(outcome)
+            }
+            Err(error) => {
+                if self.is_parse_job_cancelled(&job_id)? {
+                    return Ok(ScanJobOutcome::Cancelled);
+                }
+
+                if self.record_space_parse_failure(&job_id, &error)? {
+                    Ok(ScanJobOutcome::Failed)
+                } else {
+                    Ok(ScanJobOutcome::Cancelled)
+                }
+            }
+        }
     }
 
     pub fn prepare_document_indexing(&self, space_id: String) -> Result<bool, AppError> {
@@ -566,6 +776,16 @@ impl AppState {
             .ok_or_else(|| AppError::Storage("解析任务状态已变化，无法更新进度".to_string()))
     }
 
+    fn update_scan_progress(&self, job_id: &str, progress: &ScanProgress) -> Result<(), AppError> {
+        let current_path = display_relative_file_name(&progress.current_path);
+        self.update_parse_progress(
+            job_id,
+            &format!("正在扫描 {current_path}"),
+            progress.scanned_files,
+            0,
+        )
+    }
+
     fn is_parse_job_cancelled(&self, job_id: &str) -> Result<bool, AppError> {
         let store = self.store.lock().expect("sqlite store mutex poisoned");
         let status = store
@@ -587,6 +807,32 @@ impl AppState {
             }
             DocumentJobOutcome::Cancelled(file_name) => {
                 self.push_system_message(format!("文档解析已取消：{file_name}。"));
+            }
+        }
+    }
+
+    fn push_scan_outcome_message(&self, outcome: &ScanJobOutcome) {
+        match outcome {
+            ScanJobOutcome::NoQueuedJob => {
+                self.push_system_message("没有待执行的扫描任务。".to_string());
+            }
+            ScanJobOutcome::Succeeded {
+                summary,
+                queued_document_count,
+            } => {
+                self.push_system_message(format!(
+                    "扫描完成：新增 {} 个，变更 {} 个，删除 {} 个；已排队 {} 个文档解析任务。",
+                    summary.added_count,
+                    summary.changed_count,
+                    summary.deleted_count,
+                    queued_document_count
+                ));
+            }
+            ScanJobOutcome::Failed => {
+                self.push_system_message("扫描失败。".to_string());
+            }
+            ScanJobOutcome::Cancelled => {
+                self.push_system_message("扫描已取消。".to_string());
             }
         }
     }
@@ -615,11 +861,33 @@ impl AppState {
             .remove(space_id);
     }
 
+    fn finish_scan_worker(&self, space_id: &str) {
+        self.active_scan_workers
+            .lock()
+            .expect("scan worker mutex poisoned")
+            .remove(space_id);
+    }
+
     fn finish_document_worker(&self, space_id: &str) {
         self.active_document_workers
             .lock()
             .expect("document worker mutex poisoned")
             .remove(space_id);
+    }
+
+    fn record_space_parse_failure(&self, job_id: &str, error: &AppError) -> Result<bool, AppError> {
+        let message = error.to_string();
+        let mut store = self.store.lock().expect("sqlite store mutex poisoned");
+        match store
+            .fail_space_parse_job_if_running(job_id, &message)
+            .map_err(|error| AppError::Storage(format!("无法记录扫描任务失败：{error}")))?
+        {
+            ParseJobWriteOutcome::Updated => Ok(true),
+            ParseJobWriteOutcome::Cancelled => Ok(false),
+            ParseJobWriteOutcome::NotRunning => Err(AppError::Storage(
+                "扫描任务状态已变化，无法标记失败".to_string(),
+            )),
+        }
     }
 
     fn record_parse_failure(
@@ -665,40 +933,6 @@ impl AppState {
             .active_space_id
             .lock()
             .expect("active space mutex poisoned") = Some(space_id);
-
-        self.snapshot()
-    }
-
-    pub fn scan_knowledge_space(&self, space_id: String) -> Result<WorkbenchSnapshot, AppError> {
-        let root_path = {
-            let store = self.store.lock().expect("sqlite store mutex poisoned");
-            store
-                .get_space_root(&space_id)
-                .map_err(|error| AppError::Storage(error.to_string()))?
-                .ok_or_else(|| AppError::Storage("找不到要扫描的知识库".to_string()))?
-                .root_path
-        };
-        let scanned_files = scan_folder(Path::new(&root_path)).map_err(|error| {
-            AppError::Filesystem(format!("无法扫描文件夹 {root_path}：{error}"))
-        })?;
-
-        let mut store = self.store.lock().expect("sqlite store mutex poisoned");
-        let summary: ScanSummary = store
-            .apply_scan_results(&space_id, &scanned_files)
-            .map_err(|error| AppError::Storage(format!("无法保存扫描结果：{error}")))?;
-        let queued_count = store
-            .enqueue_document_parse_jobs(&space_id)
-            .map_err(|error| AppError::Storage(format!("无法创建文档解析任务：{error}")))?;
-        *self
-            .active_space_id
-            .lock()
-            .expect("active space mutex poisoned") = Some(space_id);
-        drop(store);
-
-        self.push_system_message(format!(
-            "扫描完成：新增 {} 个，变更 {} 个，删除 {} 个；已排队 {} 个文档解析任务。",
-            summary.added_count, summary.changed_count, summary.deleted_count, queued_count
-        ));
 
         self.snapshot()
     }
@@ -915,7 +1149,7 @@ mod tests {
     use std::{env, fs};
 
     use super::{parse_file, AppState};
-    use crate::models::{ChatRole, OcrPageResult, OcrSidecarResult, PermissionMode};
+    use crate::models::{ChatRole, OcrPageResult, OcrSidecarResult, PermissionMode, ScannedFile};
     use crate::storage::sqlite::SqliteStore;
 
     #[test]
@@ -955,8 +1189,93 @@ mod tests {
         assert_eq!(scanned.files.len(), 1);
         assert_eq!(scanned.files[0].name, "README.md");
         assert_eq!(scanned.files[0].status_label, "待解析");
-        assert_eq!(scanned.parse_jobs.len(), 1);
-        assert_eq!(scanned.parse_jobs[0].job_type, "document");
+        assert!(scanned
+            .parse_jobs
+            .iter()
+            .any(|job| job.job_type == "scan" && job.status == "succeeded"));
+        assert!(scanned
+            .parse_jobs
+            .iter()
+            .any(|job| job.job_type == "document" && job.status == "queued"));
+    }
+
+    #[test]
+    fn scan_worker_writes_files_and_enqueues_document_jobs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(temp_dir.path().join("README.md"), "hello").expect("write md");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "测试知识库".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let space_id = created.active_space_id;
+
+        assert!(state
+            .prepare_scan_knowledge_space(space_id.clone())
+            .expect("scan job starts"));
+        state
+            .run_next_scan_job_with_scanner(space_id.clone(), |root_path, _job_id| {
+                crate::scanner::scan_folder(root_path).map_err(|error| {
+                    crate::error::AppError::Filesystem(format!("scan failed: {error}"))
+                })
+            })
+            .expect("scan job runs");
+        state.finish_scan_worker(&space_id);
+        let snapshot = state.snapshot().expect("snapshot builds");
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot
+            .parse_jobs
+            .iter()
+            .any(|job| job.job_type == "scan" && job.status == "succeeded"));
+        assert!(snapshot
+            .parse_jobs
+            .iter()
+            .any(|job| job.job_type == "document" && job.status == "queued"));
+    }
+
+    #[test]
+    fn cancelled_running_scan_job_does_not_write_scanned_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(temp_dir.path().join("README.md"), "hello").expect("write md");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "测试知识库".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+        let space_id = created.active_space_id;
+        state
+            .prepare_scan_knowledge_space(space_id.clone())
+            .expect("scan job starts");
+
+        state
+            .run_next_scan_job_with_scanner(space_id.clone(), |_root_path, job_id| {
+                state
+                    .cancel_parse_job(job_id.to_string())
+                    .expect("running scan cancels");
+                Ok(vec![ScannedFile {
+                    relative_path: "README.md".to_string(),
+                    extension: "md".to_string(),
+                    size_bytes: 5,
+                    modified_at: "2026-06-22T00:00:00Z".to_string(),
+                    content_hash: "hash-readme".to_string(),
+                }])
+            })
+            .expect("cancelled scan returns without failing command");
+        state.finish_scan_worker(&space_id);
+        let snapshot = state.snapshot().expect("snapshot builds");
+
+        assert!(snapshot.files.is_empty());
+        assert!(snapshot
+            .parse_jobs
+            .iter()
+            .any(|job| job.job_type == "scan" && job.status == "cancelled"));
     }
 
     #[test]

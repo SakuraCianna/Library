@@ -25,6 +25,7 @@ const realSnapshot: WorkbenchSnapshot = {
       path: "D:\\知识库\\真实",
       defaultPermission: "approval",
       changedFileCount: 0,
+      scanQueueCount: 0,
       documentQueueCount: 0,
       ocrQueueCount: 0,
     },
