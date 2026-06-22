@@ -18,6 +18,7 @@ import type {
   ChatMessage,
   ChatScope,
   KnowledgeFile,
+  OcrEnvironmentCheck,
   ParseJobSummary,
   PermissionMode,
 } from "./types/workbench";
@@ -98,6 +99,30 @@ function isOcrSupportedFile(file: KnowledgeFile) {
   );
 }
 
+function ocrCheckStatusClass(check: OcrEnvironmentCheck) {
+  return check.ok ? styles.runtimeCheckOk : styles.runtimeCheckFailed;
+}
+
+function ocrCheckDetail(check: OcrEnvironmentCheck) {
+  const missing = check.details?.missing;
+
+  if (Array.isArray(missing) && missing.length > 0) {
+    return `${check.message}：缺少 ${missing.map(String).join("、")}`;
+  }
+
+  const modelDir = check.details?.modelDir;
+  if (typeof modelDir === "string" && modelDir.trim().length > 0) {
+    return `${check.message}：${modelDir}`;
+  }
+
+  const path = check.details?.path;
+  if (typeof path === "string" && path.trim().length > 0) {
+    return `${check.message}：${path}`;
+  }
+
+  return check.message;
+}
+
 export default function App() {
   const [showDefaultPermissionHelp, setShowDefaultPermissionHelp] =
     useState(false);
@@ -118,7 +143,14 @@ export default function App() {
     setSessionPermission,
     startOcrWorker,
   } = useWorkbenchSnapshot();
-  const { runtimeStatus, runtimeStatusError } = useRuntimeStatus();
+  const {
+    runtimeStatus,
+    runtimeStatusError,
+    ocrEnvironmentReport,
+    ocrEnvironmentError,
+    checkingOcrEnvironment,
+    checkOcrEnvironment,
+  } = useRuntimeStatus();
   const activeSpace =
     snapshot.spaces.find((space) => space.id === snapshot.activeSpaceId) ??
     snapshot.spaces[0] ??
@@ -303,6 +335,46 @@ export default function App() {
                           runtimeStatus?.ocr.missingModels.join("、") ?? "OCR 模型"
                         }`)}
                 </div>
+                <div className={styles.runtimeActions}>
+                  <button
+                    className={styles.plainButton}
+                    disabled={checkingOcrEnvironment}
+                    onClick={() => void checkOcrEnvironment()}
+                    type="button"
+                  >
+                    <Icon aria-hidden icon={refreshCwIcon} />
+                    <span>{checkingOcrEnvironment ? "自检中" : "自检"}</span>
+                  </button>
+                  {ocrEnvironmentReport ? (
+                    <span
+                      className={
+                        ocrEnvironmentReport.ok
+                          ? styles.runtimeCheckOk
+                          : styles.runtimeCheckFailed
+                      }
+                    >
+                      {ocrEnvironmentReport.ok ? "通过" : "未通过"}
+                    </span>
+                  ) : null}
+                </div>
+                {ocrEnvironmentError ? (
+                  <div className={styles.runtimeIssue}>{ocrEnvironmentError}</div>
+                ) : null}
+                {ocrEnvironmentReport ? (
+                  <div className={styles.runtimeChecks}>
+                    {ocrEnvironmentReport.checks.map((check) => (
+                      <div className={styles.runtimeCheckRow} key={check.name}>
+                        <span className={ocrCheckStatusClass(check)}>
+                          {check.ok ? "OK" : "FAIL"}
+                        </span>
+                        <div>
+                          <strong>{check.name}</strong>
+                          <span>{ocrCheckDetail(check)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <button
                 className={styles.helpToggle}

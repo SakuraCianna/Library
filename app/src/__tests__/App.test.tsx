@@ -11,7 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 import { emptyWorkbench } from "../data/emptyWorkbench";
-import type { ParseJobSummary, WorkbenchSnapshot } from "../types/workbench";
+import type {
+  OcrEnvironmentReport,
+  ParseJobSummary,
+  WorkbenchSnapshot,
+} from "../types/workbench";
 
 const eventListenMock = vi.hoisted(() => vi.fn());
 
@@ -50,6 +54,25 @@ const runtimeStatus = {
     modelDir: "E:\\CodeHome\\Library\\models\\ocr\\pp-ocrv6",
     missingModels: ["PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"],
   },
+};
+
+const ocrEnvironmentReport: OcrEnvironmentReport = {
+  ok: true,
+  checks: [
+    {
+      name: "models",
+      ok: true,
+      message: "OCR model assets complete",
+      details: {
+        modelDir: "E:\\CodeHome\\Library\\models\\ocr\\pp-ocrv6",
+      },
+    },
+    {
+      name: "paddleocr",
+      ok: true,
+      message: "paddleocr installed",
+    },
+  ],
 };
 
 const answeredSnapshot: WorkbenchSnapshot = {
@@ -145,6 +168,35 @@ describe("App", () => {
 
     expect(screen.getAllByText("默认权限").length).toBeGreaterThan(0);
     expect(screen.getByText(/文件夹长期保存的 Agent 操作边界/)).toBeInTheDocument();
+  });
+
+  it("runs the OCR environment check from the runtime panel", async () => {
+    const commands: string[] = [];
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      commands.push(cmd);
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      if (cmd === "check_ocr_environment") {
+        return ocrEnvironmentReport;
+      }
+      return snapshotWithSpace;
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "真实知识库" });
+    fireEvent.click(screen.getByRole("button", { name: "打开默认权限设置" }));
+    fireEvent.click(await screen.findByRole("button", { name: "自检" }));
+
+    expect(await screen.findByText("通过")).toBeInTheDocument();
+    expect(screen.getByText("models")).toBeInTheDocument();
+    expect(screen.getByText("paddleocr")).toBeInTheDocument();
+    expect(screen.getByText(/OCR model assets complete/)).toBeInTheDocument();
+    expect(commands).toContain("check_ocr_environment");
   });
 
   it("keeps send inside composer and exposes icon actions", async () => {

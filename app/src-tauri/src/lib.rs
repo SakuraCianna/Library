@@ -35,7 +35,8 @@ pub fn run() {
             commands::start_ocr_worker,
             commands::ask_agent,
             commands::set_default_permission,
-            commands::get_runtime_status
+            commands::get_runtime_status,
+            commands::check_ocr_environment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

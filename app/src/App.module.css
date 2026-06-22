@@ -224,6 +224,73 @@
   line-height: 1.4;
 }
 
+.runtimeActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.runtimeIssue {
+  border: 1px solid #f1c5c5;
+  border-radius: var(--radius-control);
+  background: #fff5f5;
+  padding: 6px 7px;
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+
+.runtimeChecks {
+  display: grid;
+  gap: 5px;
+}
+
+.runtimeCheckRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  border: 1px solid #e3e8f1;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  padding: 6px;
+}
+
+.runtimeCheckRow div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.runtimeCheckRow strong {
+  color: var(--color-text);
+  font-size: 11px;
+}
+
+.runtimeCheckRow span {
+  overflow-wrap: anywhere;
+}
+
+.runtimeCheckOk,
+.runtimeCheckFailed {
+  border: 1px solid #d9e1ec;
+  border-radius: var(--radius-control);
+  background: #ffffff;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.runtimeCheckOk {
+  color: var(--color-success);
+}
+
+.runtimeCheckFailed {
+  color: var(--color-danger);
+}
+
 .emptyState {
   border: 1px dashed #cbd5e1;
   border-radius: var(--radius-control);

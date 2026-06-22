@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import type {
+  OcrEnvironmentReport,
   PermissionMode,
   RuntimeStatus,
   WorkbenchSnapshot,
@@ -29,6 +30,17 @@ const browserRuntimeStatus: RuntimeStatus = {
     modelDir: "桌面端读取本机模型目录",
     missingModels: ["PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"],
   },
+};
+
+const browserOcrEnvironmentReport: OcrEnvironmentReport = {
+  ok: false,
+  checks: [
+    {
+      name: "desktop-runtime",
+      ok: false,
+      message: "浏览器预览无法检查本地 OCR 环境",
+    },
+  ],
 };
 
 function isTauriRuntime() {
@@ -115,6 +127,14 @@ export async function getRuntimeStatus(): Promise<RuntimeStatus> {
   }
 
   return invoke<RuntimeStatus>("get_runtime_status");
+}
+
+export async function checkOcrEnvironment(): Promise<OcrEnvironmentReport> {
+  if (!isTauriRuntime()) {
+    return browserOcrEnvironmentReport;
+  }
+
+  return invoke<OcrEnvironmentReport>("check_ocr_environment");
 }
 
 export async function requestSessionPermission(

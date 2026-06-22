@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 use std::{env, fs};
 
 use crate::error::AppError;
-use crate::models::{OcrSidecarRequest, OcrSidecarResult, ParsedDocument};
+use crate::models::{OcrEnvironmentReport, OcrSidecarRequest, OcrSidecarResult, ParsedDocument};
 
 const SUMMARY_CHARS: usize = 180;
 const MAX_OCR_BODY_CHARS: usize = 60_000;
 const OCR_SIDECAR_TIMEOUT: Duration = Duration::from_secs(120);
+const OCR_ENV_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OCR_INPUT_BYTES: u64 = 50 * 1024 * 1024;
 const DEFAULT_MAX_OCR_PDF_PAGES: u32 = 12;
 const REQUIRED_MODEL_FILES: [&str; 3] = ["inference.json", "inference.pdiparams", "inference.yml"];
@@ -53,6 +54,24 @@ where
         &script_path,
         OCR_SIDECAR_TIMEOUT,
         is_cancelled,
+    )
+}
+
+pub fn check_ocr_environment(
+    app_data_dir: &Path,
+    resource_checker_path: Option<&Path>,
+) -> Result<OcrEnvironmentReport, AppError> {
+    let checker_path = resolve_ocr_environment_checker(resource_checker_path)?;
+    let project_root = discover_project_root().ok();
+    let python_path = discover_python_executable(project_root.as_deref());
+    let config = crate::runtime::ocr_config(app_data_dir);
+
+    run_ocr_environment_check_with_paths(
+        &python_path,
+        &checker_path,
+        &config.model_dir,
+        &config.tier,
+        OCR_ENV_CHECK_TIMEOUT,
     )
 }
 
@@ -142,6 +161,75 @@ where
     }
 
     parse_ocr_sidecar_stdout(&stdout)
+}
+
+fn run_ocr_environment_check_with_paths(
+    python_path: &Path,
+    checker_path: &Path,
+    model_dir: &Path,
+    tier: &str,
+    timeout: Duration,
+) -> Result<OcrEnvironmentReport, AppError> {
+    if !checker_path.is_file() {
+        return Err(AppError::Filesystem(format!(
+            "找不到 OCR 环境自检脚本：{}",
+            checker_path.display()
+        )));
+    }
+
+    let mut child = Command::new(python_path)
+        .arg(checker_path)
+        .arg("--model-dir")
+        .arg(model_dir)
+        .arg("--tier")
+        .arg(tier)
+        .arg("--require-runtime")
+        .arg("--json")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| AppError::Filesystem(format!("无法启动 OCR 环境自检：{error}")))?;
+
+    let stdout_handle = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Filesystem("无法读取 OCR 环境自检 stdout".to_string()))
+        .map(read_output_pipe)?;
+    let stderr_handle = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Filesystem("无法读取 OCR 环境自检 stderr".to_string()))
+        .map(read_output_pipe)?;
+
+    let start = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .map_err(|error| AppError::Filesystem(format!("无法等待 OCR 环境自检：{error}")))?
+            .is_some()
+        {
+            break;
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Filesystem(
+                "OCR_ENV_CHECK_TIMEOUT：OCR 环境自检超时".to_string(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let stdout = join_output_reader(stdout_handle, "OCR 环境自检输出")?;
+    let stderr = join_output_reader(stderr_handle, "OCR 环境自检日志")?;
+
+    parse_ocr_environment_report(&stdout).map_err(|error| {
+        AppError::Filesystem(format!(
+            "{}；日志：{}",
+            error,
+            truncate_chars(stderr.trim(), 500)
+        ))
+    })
 }
 
 fn read_output_pipe<R>(mut reader: R) -> std::thread::JoinHandle<std::io::Result<String>>
@@ -259,6 +347,20 @@ pub fn resolve_ocr_sidecar_script(
         .join("ocr_sidecar.py"))
 }
 
+pub fn resolve_ocr_environment_checker(
+    resource_checker_path: Option<&Path>,
+) -> Result<PathBuf, AppError> {
+    if let Some(resource_checker_path) = resource_checker_path.filter(|path| path.is_file()) {
+        return Ok(resource_checker_path.to_path_buf());
+    }
+
+    let project_root = discover_project_root()?;
+    Ok(project_root
+        .join("sidecars")
+        .join("ocr")
+        .join("check_ocr_environment.py"))
+}
+
 fn discover_project_root() -> Result<PathBuf, AppError> {
     let current_dir = env::current_dir()
         .map_err(|error| AppError::Filesystem(format!("无法读取当前目录：{error}")))?;
@@ -317,6 +419,11 @@ pub fn parse_ocr_sidecar_stdout(stdout: &str) -> Result<OcrSidecarResult, AppErr
     )))
 }
 
+pub fn parse_ocr_environment_report(stdout: &str) -> Result<OcrEnvironmentReport, AppError> {
+    serde_json::from_str(stdout.trim())
+        .map_err(|error| AppError::Filesystem(format!("OCR 环境自检返回了无效 JSON：{error}")))
+}
+
 pub fn build_ocr_document(
     relative_path: &str,
     result: &OcrSidecarResult,
@@ -361,8 +468,9 @@ mod tests {
     use std::{env, fs};
 
     use super::{
-        build_ocr_document, build_ocr_request, parse_ocr_sidecar_stdout,
-        resolve_ocr_sidecar_script, validate_ocr_inputs,
+        build_ocr_document, build_ocr_request, parse_ocr_environment_report,
+        parse_ocr_sidecar_stdout, resolve_ocr_environment_checker, resolve_ocr_sidecar_script,
+        validate_ocr_inputs,
     };
 
     #[test]
@@ -421,6 +529,18 @@ mod tests {
     }
 
     #[test]
+    fn resource_environment_checker_path_is_used_first() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let resource_checker = temp_dir.path().join("check_ocr_environment.py");
+        fs::write(&resource_checker, "print('{}')").expect("resource checker");
+
+        let resolved =
+            resolve_ocr_environment_checker(Some(&resource_checker)).expect("checker resolves");
+
+        assert_eq!(resolved, resource_checker);
+    }
+
+    #[test]
     fn parses_successful_sidecar_stdout() {
         let result = parse_ocr_sidecar_stdout(
             r#"{"ok":true,"result":{"text":"OCR 文本","pageCount":1,"pages":[{"pageIndex":0,"text":"OCR 文本","confidence":0.99}]}}"#,
@@ -441,6 +561,18 @@ mod tests {
 
         assert!(error.to_string().contains("OCR_EMPTY_RESULT"));
         assert!(error.to_string().contains("没有从文件中识别到文字"));
+    }
+
+    #[test]
+    fn parses_failed_environment_report_without_error() {
+        let report = parse_ocr_environment_report(
+            r#"{"ok":false,"checks":[{"name":"paddleocr","ok":false,"message":"paddleocr missing","details":{"missing":["paddleocr"]}}]}"#,
+        )
+        .expect("environment report parses");
+
+        assert!(!report.ok);
+        assert_eq!(report.checks[0].name, "paddleocr");
+        assert!(!report.checks[0].ok);
     }
 
     #[test]
