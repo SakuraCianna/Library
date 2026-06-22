@@ -6,9 +6,9 @@ use std::sync::Mutex;
 use crate::error::AppError;
 use crate::models::{
     can_request_session_permission, ChatMessage, ChatMessageSource, ChatRole, ChatScope,
-    KnowledgeBlockPreview, KnowledgeBlockSearchHit, KnowledgeSpace, OcrSidecarRequest,
-    OcrSidecarResult, ParseJobCandidate, PermissionMode, ScanSummary, ScannedFile,
-    TableInsightPreview, WorkbenchSnapshot,
+    KnowledgeBlockContext, KnowledgeBlockPreview, KnowledgeBlockSearchHit, KnowledgeSpace,
+    OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode, ScanSummary,
+    ScannedFile, TableInsightPreview, WorkbenchSnapshot,
 };
 use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
 use crate::parser::parse_file;
@@ -202,6 +202,18 @@ impl AppState {
         }
 
         Ok(source_path)
+    }
+
+    pub fn knowledge_block_context(
+        &self,
+        space_id: String,
+        block_id: String,
+    ) -> Result<KnowledgeBlockContext, AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        store
+            .knowledge_block_context(&space_id, &block_id)
+            .map_err(|error| AppError::Storage(format!("无法读取来源上下文：{error}")))?
+            .ok_or_else(|| AppError::Storage("找不到来源知识块".to_string()))
     }
 
     pub fn prepare_scan_knowledge_space(&self, space_id: String) -> Result<bool, AppError> {

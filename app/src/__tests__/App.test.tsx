@@ -101,6 +101,27 @@ const answeredSnapshot: WorkbenchSnapshot = {
   ],
 };
 
+const redisSourceContext = {
+  currentIndex: 1,
+  totalCount: 2,
+  blocks: [
+    {
+      id: "block-redis",
+      title: "Redis 缓存穿透",
+      excerpt: "缓存穿透需要空值缓存和布隆过滤器。",
+      sourceFileName: "Redis面试.md",
+      sourceLocator: "Redis面试.md#block-001",
+    },
+    {
+      id: "block-redis-2",
+      title: "Redis 缓存穿透 · 片段 2/2",
+      excerpt: "布隆过滤器需要配合参数校验，避免不存在的键落到数据库。",
+      sourceFileName: "Redis面试.md",
+      sourceLocator: "Redis面试.md#block-002",
+    },
+  ],
+};
+
 function parseJob(overrides: Partial<ParseJobSummary> = {}): ParseJobSummary {
   return {
     id: "job-ocr",
@@ -236,6 +257,12 @@ describe("App", () => {
       if (cmd === "ask_agent") {
         return answeredSnapshot;
       }
+      if (cmd === "get_knowledge_block_context") {
+        return redisSourceContext;
+      }
+      if (cmd === "open_source_file") {
+        return null;
+      }
       return snapshotWithSpace;
     });
     render(<App />);
@@ -267,6 +294,16 @@ describe("App", () => {
     expect(
       within(sourcePanel).getByText("缓存穿透需要空值缓存和布隆过滤器。"),
     ).toBeInTheDocument();
+    expect(await within(sourcePanel).findByText("片段 1/2")).toBeInTheDocument();
+
+    fireEvent.click(within(sourcePanel).getByRole("button", { name: "下一片段" }));
+    expect(
+      within(sourcePanel).getByText("Redis 缓存穿透 · 片段 2/2"),
+    ).toBeInTheDocument();
+    expect(
+      within(sourcePanel).getByText("定位：Redis面试.md#block-002"),
+    ).toBeInTheDocument();
+    expect(within(sourcePanel).getByText("片段 2/2")).toBeInTheDocument();
 
     fireEvent.click(within(sourcePanel).getByRole("button", { name: "打开文件" }));
     await waitFor(() =>
@@ -279,7 +316,7 @@ describe("App", () => {
       args: {
         request: {
           spaceId: "space-real",
-          sourceLocator: "Redis面试.md#block-001",
+          sourceLocator: "Redis面试.md#block-002",
         },
       },
     });

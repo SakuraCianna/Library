@@ -286,6 +286,14 @@ pub struct KnowledgeBlockSearchHit {
     pub source_locator: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeBlockContext {
+    pub current_index: u32,
+    pub total_count: u32,
+    pub blocks: Vec<KnowledgeBlockSearchHit>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexKnowledgeSpaceRequest {
@@ -304,6 +312,13 @@ pub struct AskAgentRequest {
 pub struct OpenSourceFileRequest {
     pub space_id: String,
     pub source_locator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeBlockContextRequest {
+    pub space_id: String,
+    pub block_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -31,6 +31,12 @@ export interface KnowledgeBlockPreview {
   sourceLocator: string;
 }
 
+export interface KnowledgeBlockContext {
+  currentIndex: number;
+  totalCount: number;
+  blocks: KnowledgeBlockPreview[];
+}
+
 export interface TableInsightPreview {
   id: string;
   title: string;

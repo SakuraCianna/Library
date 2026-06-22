@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import type {
+  KnowledgeBlockContext,
   OcrEnvironmentReport,
   PermissionMode,
   RuntimeStatus,
@@ -273,6 +274,23 @@ export async function openSourceFile(
 
   return invoke<void>("open_source_file", {
     request: { spaceId, sourceLocator },
+  });
+}
+
+export async function getKnowledgeBlockContext(
+  spaceId: string,
+  blockId: string,
+): Promise<KnowledgeBlockContext> {
+  if (!isTauriRuntime()) {
+    return {
+      currentIndex: 0,
+      totalCount: 0,
+      blocks: [],
+    };
+  }
+
+  return invoke<KnowledgeBlockContext>("get_knowledge_block_context", {
+    request: { spaceId, blockId },
   });
 }
 
