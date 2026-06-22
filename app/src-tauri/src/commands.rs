@@ -4,9 +4,9 @@ use crate::error::ErrorResponse;
 use crate::events::emit_workbench_updated;
 use crate::models::{
     AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
-    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, OcrEnvironmentReport, OpenSourceFileRequest,
-    PermissionRequest, RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest,
-    WorkbenchSnapshot,
+    EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, KnowledgeBlockContext,
+    KnowledgeBlockContextRequest, OcrEnvironmentReport, OpenSourceFileRequest, PermissionRequest,
+    RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest, WorkbenchSnapshot,
 };
 use crate::state::AppState;
 use tauri_plugin_opener::OpenerExt;
@@ -168,6 +168,16 @@ pub fn open_source_file(
         .map_err(|error| ErrorResponse {
             message: format!("无法打开来源文件：{error}"),
         })
+}
+
+#[tauri::command]
+pub fn get_knowledge_block_context(
+    state: State<'_, AppState>,
+    request: KnowledgeBlockContextRequest,
+) -> Result<KnowledgeBlockContext, ErrorResponse> {
+    state
+        .knowledge_block_context(request.space_id, request.block_id)
+        .map_err(Into::into)
 }
 
 #[tauri::command]

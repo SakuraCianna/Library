@@ -5,8 +5,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::models::{
-    FileParseCandidate, KnowledgeBlockSearchHit, KnowledgeFile, KnowledgeSpace, ParseJobCandidate,
-    ParseJobSummary, ParseStatus, ParsedDocument, PermissionMode, ScanSummary, ScannedFile,
+    FileParseCandidate, KnowledgeBlockContext, KnowledgeBlockSearchHit, KnowledgeFile,
+    KnowledgeSpace, ParseJobCandidate, ParseJobSummary, ParseStatus, ParsedDocument,
+    PermissionMode, ScanSummary, ScannedFile,
 };
 
 const DOCUMENT_PARSE_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
@@ -518,6 +519,44 @@ impl SqliteStore {
         Ok(hits)
     }
 
+    pub fn knowledge_block_context(
+        &self,
+        space_id: &str,
+        block_id: &str,
+    ) -> rusqlite::Result<Option<KnowledgeBlockContext>> {
+        let current_file_id = self
+            .connection
+            .query_row(
+                "SELECT file_id
+                 FROM knowledge_blocks
+                 WHERE space_id = ?1
+                   AND id = ?2
+                   AND searchable = 1
+                   AND deleted_at IS NULL",
+                params![space_id, block_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+
+        let Some(current_file_id) = current_file_id else {
+            return Ok(None);
+        };
+
+        let blocks = match current_file_id {
+            Some(file_id) => self.knowledge_blocks_for_file(space_id, &file_id)?,
+            None => self.knowledge_blocks_for_ids(space_id, &[block_id])?,
+        };
+        let Some(current_position) = blocks.iter().position(|block| block.id == block_id) else {
+            return Ok(None);
+        };
+
+        Ok(Some(KnowledgeBlockContext {
+            current_index: current_position as u32 + 1,
+            total_count: blocks.len() as u32,
+            blocks,
+        }))
+    }
+
     pub fn enqueue_parse_job(
         &self,
         space_id: &str,
@@ -1005,6 +1044,54 @@ impl SqliteStore {
             .collect();
 
         hits
+    }
+
+    fn knowledge_blocks_for_file(
+        &self,
+        space_id: &str,
+        file_id: &str,
+    ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, body, source_locator
+             FROM knowledge_blocks
+             WHERE space_id = ?1
+               AND file_id = ?2
+               AND searchable = 1
+               AND deleted_at IS NULL
+             ORDER BY source_locator COLLATE NOCASE ASC, fts_rowid ASC",
+        )?;
+
+        let blocks = statement
+            .query_map(params![space_id, file_id], |row| row_to_search_hit(row, ""))?
+            .collect();
+        blocks
+    }
+
+    fn knowledge_blocks_for_ids(
+        &self,
+        space_id: &str,
+        block_ids: &[&str],
+    ) -> rusqlite::Result<Vec<KnowledgeBlockSearchHit>> {
+        if block_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, body, source_locator
+             FROM knowledge_blocks
+             WHERE space_id = ?1
+               AND id = ?2
+               AND searchable = 1
+               AND deleted_at IS NULL
+             ORDER BY fts_rowid ASC",
+        )?;
+
+        let blocks = statement
+            .query_map(params![space_id, block_ids[0]], |row| {
+                row_to_search_hit(row, "")
+            })?
+            .collect();
+        blocks
     }
 
     pub fn apply_scan_results(
@@ -2165,6 +2252,10 @@ mod tests {
         let hits = store
             .search_knowledge_blocks(&space_id, "布隆过滤器", 3)
             .expect("search succeeds");
+        let context = store
+            .knowledge_block_context(&space_id, &hits[0].id)
+            .expect("context query succeeds")
+            .expect("context exists");
 
         assert_eq!(block_count, 2);
         assert_eq!(hits.len(), 1);
@@ -2172,6 +2263,10 @@ mod tests {
         assert_eq!(hits[0].source_file_name, "Redis面试.md");
         assert!(hits[0].title.contains("片段 2/2"));
         assert!(hits[0].excerpt.contains("布隆过滤器"));
+        assert_eq!(context.current_index, 2);
+        assert_eq!(context.total_count, 2);
+        assert_eq!(context.blocks[0].source_locator, "Redis面试.md#block-001");
+        assert_eq!(context.blocks[1].source_locator, "Redis面试.md#block-002");
     }
 
     #[test]

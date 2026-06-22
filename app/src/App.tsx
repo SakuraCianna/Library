@@ -1,6 +1,8 @@
 import bookmarkPlusIcon from "@iconify-icons/lucide/bookmark-plus";
 import checkIcon from "@iconify-icons/lucide/check";
 import chevronDownIcon from "@iconify-icons/lucide/chevron-down";
+import chevronLeftIcon from "@iconify-icons/lucide/chevron-left";
+import chevronRightIcon from "@iconify-icons/lucide/chevron-right";
 import eyeIcon from "@iconify-icons/lucide/eye";
 import fileSearchIcon from "@iconify-icons/lucide/file-search";
 import folderPlusIcon from "@iconify-icons/lucide/folder-plus";
@@ -14,11 +16,13 @@ import { type FormEvent, useEffect, useState } from "react";
 
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
-import { openSourceFile } from "./lib/tauriClient";
+import { getKnowledgeBlockContext, openSourceFile } from "./lib/tauriClient";
 import type {
   ChatMessage,
   ChatMessageSource,
   ChatScope,
+  KnowledgeBlockContext,
+  KnowledgeBlockPreview,
   KnowledgeFile,
   OcrEnvironmentCheck,
   ParseJobSummary,
@@ -130,6 +134,12 @@ export default function App() {
     useState(false);
   const [selectedSource, setSelectedSource] =
     useState<ChatMessageSource | null>(null);
+  const [sourceContext, setSourceContext] =
+    useState<KnowledgeBlockContext | null>(null);
+  const [sourceContextIndex, setSourceContextIndex] =
+    useState<number | null>(null);
+  const [loadingSourceContext, setLoadingSourceContext] = useState(false);
+  const [sourceContextError, setSourceContextError] = useState<string | null>(null);
   const [openingSource, setOpeningSource] = useState(false);
   const [sourceOpenError, setSourceOpenError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
@@ -197,12 +207,26 @@ export default function App() {
   const hasRunningParseJob =
     hasRunningScanJob || hasRunningDocumentJob || hasRunningOcrJob;
   const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
-  const focusedBlock = selectedSource ?? snapshot.blockPreview;
+  const selectedContextBlock =
+    selectedSource && sourceContext && sourceContextIndex !== null
+      ? sourceContext.blocks[sourceContextIndex] ?? null
+      : null;
+  const focusedBlock: KnowledgeBlockPreview | ChatMessageSource =
+    selectedContextBlock ?? selectedSource ?? snapshot.blockPreview;
   const focusedSourceLocator = focusedBlock.sourceLocator.trim();
   const canOpenFocusedSource =
     hasActiveSpace &&
     focusedSourceLocator.length > 0 &&
     focusedSourceLocator !== "暂无来源定位";
+  const sourceContextCurrent = sourceContextIndex === null ? 0 : sourceContextIndex + 1;
+  const canShowSourceContext =
+    selectedSource !== null && sourceContext !== null && sourceContext.totalCount > 1;
+  const canSelectPreviousSourceBlock =
+    canShowSourceContext && sourceContextIndex !== null && sourceContextIndex > 0;
+  const canSelectNextSourceBlock =
+    canShowSourceContext &&
+    sourceContextIndex !== null &&
+    sourceContextIndex < sourceContext.blocks.length - 1;
 
   useEffect(() => {
     const hasActivePollingWindow = Date.now() < queuePollingUntil;
@@ -224,12 +248,60 @@ export default function App() {
 
   useEffect(() => {
     setSelectedSource(null);
+    setSourceContext(null);
+    setSourceContextIndex(null);
+    setSourceContextError(null);
     setSourceOpenError(null);
   }, [snapshot.activeSpaceId]);
 
   useEffect(() => {
     setSourceOpenError(null);
   }, [selectedSource?.id, snapshot.blockPreview.sourceLocator]);
+
+  useEffect(() => {
+    setSourceContext(null);
+    setSourceContextIndex(null);
+    setSourceContextError(null);
+
+    if (!selectedSource || !activeSpace) {
+      setLoadingSourceContext(false);
+      return;
+    }
+
+    let ignore = false;
+    setLoadingSourceContext(true);
+
+    getKnowledgeBlockContext(activeSpace.id, selectedSource.id)
+      .then((context) => {
+        if (ignore) {
+          return;
+        }
+
+        setSourceContext(context);
+        const nextIndex = Math.max(0, context.currentIndex - 1);
+        setSourceContextIndex(
+          context.blocks.length > nextIndex ? nextIndex : null,
+        );
+      })
+      .catch((caughtError) => {
+        if (ignore) {
+          return;
+        }
+
+        setSourceContextError(
+          caughtError instanceof Error ? caughtError.message : "无法读取来源上下文",
+        );
+      })
+      .finally(() => {
+        if (!ignore) {
+          setLoadingSourceContext(false);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [activeSpace?.id, selectedSource]);
 
   function keepQueuePollingWarm() {
     setQueuePollingUntil(Date.now() + 15000);
@@ -262,6 +334,14 @@ export default function App() {
     } finally {
       setOpeningSource(false);
     }
+  }
+
+  function selectSourceContextBlock(nextIndex: number) {
+    if (!sourceContext || nextIndex < 0 || nextIndex >= sourceContext.blocks.length) {
+      return;
+    }
+
+    setSourceContextIndex(nextIndex);
   }
 
   return (
@@ -547,6 +627,46 @@ export default function App() {
               </div>
               <h3 className={styles.panelTitle}>{focusedBlock.title}</h3>
               <p className={styles.blockExcerpt}>{focusedBlock.excerpt}</p>
+              {selectedSource ? (
+                <div className={styles.sourceContextNav}>
+                  <button
+                    className={styles.plainButton}
+                    disabled={!canSelectPreviousSourceBlock}
+                    onClick={() =>
+                      sourceContextIndex !== null
+                        ? selectSourceContextBlock(sourceContextIndex - 1)
+                        : undefined
+                    }
+                    type="button"
+                  >
+                    <Icon aria-hidden icon={chevronLeftIcon} />
+                    <span>上一片段</span>
+                  </button>
+                  <span className={styles.sourceContextCounter}>
+                    {loadingSourceContext
+                      ? "载入片段"
+                      : canShowSourceContext
+                        ? `片段 ${sourceContextCurrent}/${sourceContext.totalCount}`
+                        : "单片段"}
+                  </span>
+                  <button
+                    className={styles.plainButton}
+                    disabled={!canSelectNextSourceBlock}
+                    onClick={() =>
+                      sourceContextIndex !== null
+                        ? selectSourceContextBlock(sourceContextIndex + 1)
+                        : undefined
+                    }
+                    type="button"
+                  >
+                    <span>下一片段</span>
+                    <Icon aria-hidden icon={chevronRightIcon} />
+                  </button>
+                </div>
+              ) : null}
+              {sourceContextError ? (
+                <div className={styles.sourceActionError}>{sourceContextError}</div>
+              ) : null}
               <div className={styles.buttonRow}>
                 <button
                   className={styles.plainButton}
