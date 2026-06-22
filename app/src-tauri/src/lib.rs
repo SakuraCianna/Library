@@ -1,6 +1,7 @@
 mod agent;
 mod commands;
 mod error;
+mod events;
 mod models;
 mod ocr;
 mod parser;

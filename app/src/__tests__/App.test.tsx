@@ -1,10 +1,23 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 import { emptyWorkbench } from "../data/emptyWorkbench";
 import type { ParseJobSummary, WorkbenchSnapshot } from "../types/workbench";
+
+const eventListenMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: eventListenMock,
+}));
 
 const snapshotWithSpace: WorkbenchSnapshot = {
   ...emptyWorkbench,
@@ -73,9 +86,14 @@ function parseJob(overrides: Partial<ParseJobSummary> = {}): ParseJobSummary {
 }
 
 describe("App", () => {
+  beforeEach(() => {
+    eventListenMock.mockResolvedValue(() => undefined);
+  });
+
   afterEach(() => {
     cleanup();
     clearMocks();
+    eventListenMock.mockReset();
     Reflect.deleteProperty(globalThis, "isTauri");
   });
 
@@ -379,6 +397,84 @@ describe("App", () => {
 
     expect((await screen.findAllByText("已完成")).length).toBeGreaterThan(0);
     expect(screen.getByText("扫描版 PDF 的本地 OCR 文本")).toBeInTheDocument();
+  });
+
+  it("refreshes the workbench when a backend worker event is emitted", async () => {
+    let emitWorkbenchUpdate: (() => void) | undefined;
+    const commands: string[] = [];
+    const snapshotWithRunningJob = {
+      ...snapshotWithSpace,
+      parseJobs: [
+        parseJob({
+          status: "running",
+          phase: "正在执行本地 OCR",
+        }),
+      ],
+    };
+    const snapshotAfterEvent = {
+      ...snapshotWithRunningJob,
+      parseJobs: [
+        parseJob({
+          status: "succeeded",
+          phase: "已完成",
+          progressCurrent: 1,
+          progressTotal: 1,
+        }),
+      ],
+      blockPreview: {
+        id: "block-event",
+        title: "scan.pdf",
+        excerpt: "事件刷新后的 OCR 文本",
+        sourceFileName: "scan.pdf",
+      },
+    };
+    let currentSnapshot = snapshotWithRunningJob;
+
+    eventListenMock.mockImplementation(
+      async (
+        _eventName: string,
+        handler: (event: {
+          payload: { spaceId: string | null; reason: string };
+        }) => void,
+      ) => {
+        emitWorkbenchUpdate = () =>
+          handler({
+            payload: {
+              spaceId: "space-real",
+              reason: "ocr-progress",
+            },
+          });
+        return () => undefined;
+      },
+    );
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      commands.push(cmd);
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return currentSnapshot;
+    });
+    render(<App />);
+
+    expect(await screen.findByText("本地 OCR · 正在执行本地 OCR")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(eventListenMock).toHaveBeenCalledWith(
+        "workbench-updated",
+        expect.any(Function),
+      ),
+    );
+
+    currentSnapshot = snapshotAfterEvent;
+    emitWorkbenchUpdate?.();
+
+    expect(await screen.findByText("事件刷新后的 OCR 文本")).toBeInTheDocument();
+    expect(
+      commands.filter((command) => command === "get_workbench_snapshot").length,
+    ).toBeGreaterThan(1);
   });
 
   it("starts document parsing through the index command", async () => {

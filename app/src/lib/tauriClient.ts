@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { emptyWorkbench } from "../data/emptyWorkbench";
@@ -7,6 +8,13 @@ import type {
   RuntimeStatus,
   WorkbenchSnapshot,
 } from "../types/workbench";
+
+export const WORKBENCH_UPDATED_EVENT = "workbench-updated";
+
+export interface WorkbenchUpdatedEvent {
+  spaceId: string | null;
+  reason: string;
+}
 
 const browserRuntimeStatus: RuntimeStatus = {
   deepseek: {
@@ -87,6 +95,18 @@ export async function getWorkbenchSnapshot(): Promise<WorkbenchSnapshot> {
   }
 
   return invoke<WorkbenchSnapshot>("get_workbench_snapshot");
+}
+
+export async function listenWorkbenchUpdates(
+  handler: (event: WorkbenchUpdatedEvent) => void,
+): Promise<(() => void) | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return listen<WorkbenchUpdatedEvent>(WORKBENCH_UPDATED_EVENT, (event) => {
+    handler(event.payload);
+  });
 }
 
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {

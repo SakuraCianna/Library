@@ -1,6 +1,7 @@
 use tauri::{path::BaseDirectory, Manager, State};
 
 use crate::error::ErrorResponse;
+use crate::events::emit_workbench_updated;
 use crate::models::{
     AskAgentRequest, CancelParseJobRequest, CreateKnowledgeSpaceRequest, DefaultPermissionRequest,
     EnqueueOcrJobRequest, IndexKnowledgeSpaceRequest, PermissionRequest, RuntimeStatus,
@@ -50,7 +51,10 @@ pub fn scan_knowledge_space(
         let app_for_worker = app.clone();
         std::thread::spawn(move || {
             let worker_state = app_for_worker.state::<AppState>();
-            worker_state.run_scan_worker(space_id);
+            let worker_space_id = space_id.clone();
+            worker_state.run_scan_worker(space_id, |reason| {
+                emit_workbench_updated(&app_for_worker, Some(&worker_space_id), reason);
+            });
         });
     }
 
@@ -72,7 +76,10 @@ pub fn index_knowledge_space(
         let app_for_worker = app.clone();
         std::thread::spawn(move || {
             let worker_state = app_for_worker.state::<AppState>();
-            worker_state.run_document_worker(space_id);
+            let worker_space_id = space_id.clone();
+            worker_state.run_document_worker(space_id, |reason| {
+                emit_workbench_updated(&app_for_worker, Some(&worker_space_id), reason);
+            });
         });
     }
 
@@ -81,20 +88,27 @@ pub fn index_knowledge_space(
 
 #[tauri::command]
 pub fn enqueue_ocr_parse_job(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: EnqueueOcrJobRequest,
 ) -> Result<WorkbenchSnapshot, ErrorResponse> {
+    let space_id = request.space_id.clone();
     state
         .enqueue_ocr_parse_job(request.space_id, request.file_id)
+        .inspect(|_| emit_workbench_updated(&app, Some(&space_id), "ocr-queued"))
         .map_err(Into::into)
 }
 
 #[tauri::command]
 pub fn cancel_parse_job(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: CancelParseJobRequest,
 ) -> Result<WorkbenchSnapshot, ErrorResponse> {
-    state.cancel_parse_job(request.job_id).map_err(Into::into)
+    state
+        .cancel_parse_job(request.job_id)
+        .inspect(|_| emit_workbench_updated(&app, None, "parse-job-cancelled"))
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -116,7 +130,10 @@ pub fn start_ocr_worker(
         let app_for_worker = app.clone();
         std::thread::spawn(move || {
             let worker_state = app_for_worker.state::<AppState>();
-            worker_state.run_ocr_worker(space_id, resource_script);
+            let worker_space_id = space_id.clone();
+            worker_state.run_ocr_worker(space_id, resource_script, |reason| {
+                emit_workbench_updated(&app_for_worker, Some(&worker_space_id), reason);
+            });
         });
     }
 
