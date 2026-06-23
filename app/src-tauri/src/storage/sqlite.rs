@@ -10,7 +10,8 @@ use crate::models::{
     BackupExportParseJob, BackupExportSpace, BackupExportTrashEntry, BackupExportWorkspace,
     FileParseCandidate, KnowledgeBlockContext, KnowledgeBlockSearchHit, KnowledgeFile,
     KnowledgeSpace, ParseJobCandidate, ParseJobSummary, ParseStatus, ParsedDocument,
-    ParsedEvidenceMetadata, PermissionMode, ScanSummary, ScannedFile, TableInsightPreview,
+    ParsedDocumentSegment, ParsedEvidenceMetadata, PermissionMode, ScanSummary, ScannedFile,
+    TableInsightPreview,
 };
 
 const DOCUMENT_PARSE_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
@@ -106,6 +107,10 @@ impl SqliteStore {
         }
 
         for (column_name, column_sql) in [
+            (
+                "source_locator",
+                "ALTER TABLE parse_jobs ADD COLUMN source_locator TEXT;",
+            ),
             (
                 "started_at",
                 "ALTER TABLE parse_jobs ADD COLUMN started_at TEXT;",
@@ -413,14 +418,16 @@ impl SqliteStore {
         for job in &backup.parse_jobs {
             tx.execute(
                 "INSERT INTO parse_jobs (
-                    id, space_id, file_id, job_type, status, error_message, started_at,
-                    finished_at, progress_current, progress_total, phase, created_at, updated_at
+                    id, space_id, file_id, source_locator, job_type, status, error_message,
+                    started_at, finished_at, progress_current, progress_total, phase,
+                    created_at, updated_at
                  )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     job.id,
                     space_id,
                     job.file_id,
+                    job.source_locator,
                     job.job_type,
                     job.status,
                     job.error_message,
@@ -664,8 +671,9 @@ impl SqliteStore {
         space_id: &str,
     ) -> rusqlite::Result<Vec<BackupExportParseJob>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, file_id, job_type, status, NULL AS error_message, started_at, finished_at,
-                    progress_current, progress_total, phase, created_at, updated_at
+            "SELECT id, file_id, source_locator, job_type, status, NULL AS error_message,
+                    started_at, finished_at, progress_current, progress_total, phase,
+                    created_at, updated_at
              FROM parse_jobs
              WHERE space_id = ?1
              ORDER BY created_at DESC",
@@ -676,16 +684,17 @@ impl SqliteStore {
                 Ok(BackupExportParseJob {
                     id: row.get(0)?,
                     file_id: row.get(1)?,
-                    job_type: row.get(2)?,
-                    status: row.get(3)?,
-                    error_message: row.get(4)?,
-                    started_at: row.get(5)?,
-                    finished_at: row.get(6)?,
-                    progress_current: row.get(7)?,
-                    progress_total: row.get(8)?,
-                    phase: row.get(9)?,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
+                    source_locator: row.get(2)?,
+                    job_type: row.get(3)?,
+                    status: row.get(4)?,
+                    error_message: row.get(5)?,
+                    started_at: row.get(6)?,
+                    finished_at: row.get(7)?,
+                    progress_current: row.get(8)?,
+                    progress_total: row.get(9)?,
+                    phase: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             })?
             .collect();
@@ -781,8 +790,28 @@ impl SqliteStore {
             Some("cancelled") => return Ok(ParseJobWriteOutcome::Cancelled),
             _ => return Ok(ParseJobWriteOutcome::NotRunning),
         }
+        let job_type = parse_job_type_in_tx(&tx, job_id)?;
+        let job_source_locator = parse_job_source_locator_in_tx(&tx, job_id)?;
 
-        replace_file_knowledge_block_in_tx(&tx, space_id, file_id, document, &now)?;
+        if job_type.as_deref() == Some("ocr") {
+            if let Some(source_locator) = job_source_locator.as_deref() {
+                replace_source_ocr_knowledge_blocks_in_tx(
+                    &tx,
+                    space_id,
+                    file_id,
+                    source_locator,
+                    document,
+                    &now,
+                )?;
+            } else {
+                replace_file_knowledge_block_in_tx(&tx, space_id, file_id, document, &now)?;
+            }
+        } else {
+            replace_file_knowledge_block_in_tx(&tx, space_id, file_id, document, &now)?;
+            if job_type.as_deref() == Some("document") {
+                enqueue_embedded_image_ocr_jobs_in_tx(&tx, space_id, file_id, document, &now)?;
+            }
+        }
         tx.execute(
             "UPDATE parse_jobs
              SET status = 'succeeded',
@@ -1042,6 +1071,17 @@ impl SqliteStore {
         file_id: &str,
         job_type: &str,
     ) -> rusqlite::Result<EnqueueParseJobResult> {
+        self.enqueue_parse_job_for_source_with_status(space_id, file_id, job_type, None)
+    }
+
+    pub fn enqueue_parse_job_for_source_with_status(
+        &self,
+        space_id: &str,
+        file_id: &str,
+        job_type: &str,
+        source_locator: Option<&str>,
+    ) -> rusqlite::Result<EnqueueParseJobResult> {
+        let source_locator = normalize_optional_source_locator(source_locator);
         if let Some(existing_id) = self
             .connection
             .query_row(
@@ -1050,10 +1090,11 @@ impl SqliteStore {
                  WHERE space_id = ?1
                    AND file_id = ?2
                    AND job_type = ?3
+                   AND ((?4 IS NULL AND source_locator IS NULL) OR source_locator = ?4)
                    AND status IN ('queued', 'running')
                  ORDER BY created_at DESC
                  LIMIT 1",
-                params![space_id, file_id, job_type],
+                params![space_id, file_id, job_type, source_locator],
                 |row| row.get::<_, String>(0),
             )
             .optional()?
@@ -1068,11 +1109,11 @@ impl SqliteStore {
         let now = OffsetDateTime::now_utc().to_string();
         self.connection.execute(
             "INSERT INTO parse_jobs (
-                id, space_id, file_id, job_type, status, phase, progress_current,
-                progress_total, created_at, updated_at
+                id, space_id, file_id, source_locator, job_type, status, phase,
+                progress_current, progress_total, created_at, updated_at
              )
-             VALUES (?1, ?2, ?3, ?4, 'queued', '等待执行', 0, 1, ?5, ?5)",
-            params![id, space_id, file_id, job_type, now],
+             VALUES (?1, ?2, ?3, ?4, ?5, 'queued', '等待执行', 0, 1, ?6, ?6)",
+            params![id, space_id, file_id, source_locator, job_type, now],
         )?;
         Ok(EnqueueParseJobResult { id, inserted: true })
     }
@@ -1144,6 +1185,7 @@ impl SqliteStore {
                 space_id,
                 &candidate.file_id,
                 "ocr",
+                None,
                 &now,
             )? {
                 inserted_count += 1;
@@ -1170,6 +1212,7 @@ impl SqliteStore {
             "SELECT
                 job.id,
                 job.file_id,
+                job.source_locator,
                 CASE
                     WHEN job.file_id IS NULL AND job.job_type = 'scan' THEN '文件夹扫描'
                     ELSE COALESCE(file.relative_path, '未知文件')
@@ -1190,19 +1233,24 @@ impl SqliteStore {
 
         let jobs = statement
             .query_map([space_id], |row| {
-                let relative_path: String = row.get(2)?;
+                let source_locator: Option<String> = row.get(2)?;
+                let relative_path: String = row.get(3)?;
                 Ok(ParseJobSummary {
                     id: row.get(0)?,
                     file_id: row.get(1)?,
-                    file_name: display_file_name(&relative_path),
-                    job_type: row.get(3)?,
-                    status: row.get(4)?,
-                    error_message: row.get(5)?,
-                    started_at: row.get(6)?,
-                    finished_at: row.get(7)?,
-                    progress_current: row.get(8)?,
-                    progress_total: row.get(9)?,
-                    phase: row.get(10)?,
+                    file_name: display_parse_job_file_name(
+                        &relative_path,
+                        source_locator.as_deref(),
+                    ),
+                    source_locator,
+                    job_type: row.get(4)?,
+                    status: row.get(5)?,
+                    error_message: row.get(6)?,
+                    started_at: row.get(7)?,
+                    finished_at: row.get(8)?,
+                    progress_current: row.get(9)?,
+                    progress_total: row.get(10)?,
+                    phase: row.get(11)?,
                 })
             })?
             .collect();
@@ -1217,7 +1265,7 @@ impl SqliteStore {
     ) -> rusqlite::Result<Option<ParseJobCandidate>> {
         self.connection
             .query_row(
-                "SELECT job.id, file.id, file.relative_path, file.extension
+                "SELECT job.id, file.id, file.relative_path, file.extension, job.source_locator
                  FROM parse_jobs job
                  JOIN files file ON file.id = job.file_id
                  WHERE job.space_id = ?1
@@ -1233,6 +1281,7 @@ impl SqliteStore {
                         file_id: row.get(1)?,
                         relative_path: row.get(2)?,
                         extension: row.get(3)?,
+                        source_locator: row.get(4)?,
                     })
                 },
             )
@@ -1248,7 +1297,7 @@ impl SqliteStore {
         let tx = self.connection.transaction()?;
         let candidate = tx
             .query_row(
-                "SELECT job.id, file.id, file.relative_path, file.extension
+                "SELECT job.id, file.id, file.relative_path, file.extension, job.source_locator
                  FROM parse_jobs job
                  JOIN files file ON file.id = job.file_id
                  WHERE job.space_id = ?1
@@ -1264,6 +1313,7 @@ impl SqliteStore {
                         file_id: row.get(1)?,
                         relative_path: row.get(2)?,
                         extension: row.get(3)?,
+                        source_locator: row.get(4)?,
                     })
                 },
             )
@@ -1886,7 +1936,7 @@ fn enqueue_document_parse_jobs_in_tx(
     let mut inserted_count = 0_u32;
 
     for candidate in candidates {
-        if enqueue_file_parse_job_in_tx(tx, space_id, &candidate.file_id, "document", now)? {
+        if enqueue_file_parse_job_in_tx(tx, space_id, &candidate.file_id, "document", None, now)? {
             inserted_count += 1;
         }
     }
@@ -1903,7 +1953,7 @@ fn enqueue_image_ocr_parse_jobs_in_tx(
     let mut inserted_count = 0_u32;
 
     for candidate in candidates {
-        if enqueue_file_parse_job_in_tx(tx, space_id, &candidate.file_id, "ocr", now)? {
+        if enqueue_file_parse_job_in_tx(tx, space_id, &candidate.file_id, "ocr", None, now)? {
             inserted_count += 1;
         }
     }
@@ -1911,13 +1961,52 @@ fn enqueue_image_ocr_parse_jobs_in_tx(
     Ok(inserted_count)
 }
 
+fn enqueue_embedded_image_ocr_jobs_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+    file_id: &str,
+    document: &ParsedDocument,
+    now: &str,
+) -> rusqlite::Result<u32> {
+    let mut inserted_count = 0_u32;
+    for segment in document.segments.iter().take(MAX_DOCUMENT_SEGMENTS) {
+        if !is_embedded_image_segment(segment) {
+            continue;
+        }
+        if enqueue_file_parse_job_in_tx(
+            tx,
+            space_id,
+            file_id,
+            "ocr",
+            Some(&segment.source_locator),
+            now,
+        )? {
+            inserted_count += 1;
+        }
+    }
+
+    Ok(inserted_count)
+}
+
+fn is_embedded_image_segment(segment: &ParsedDocumentSegment) -> bool {
+    matches!(
+        segment
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.kind.as_deref()),
+        Some("embedded_image")
+    ) && embedded_image_number_from_locator(&segment.source_locator).is_some()
+}
+
 fn enqueue_file_parse_job_in_tx(
     connection: &Connection,
     space_id: &str,
     file_id: &str,
     job_type: &str,
+    source_locator: Option<&str>,
     now: &str,
 ) -> rusqlite::Result<bool> {
+    let source_locator = normalize_optional_source_locator(source_locator);
     let existing_id = connection
         .query_row(
             "SELECT id
@@ -1925,10 +2014,11 @@ fn enqueue_file_parse_job_in_tx(
              WHERE space_id = ?1
                AND file_id = ?2
                AND job_type = ?3
+               AND ((?4 IS NULL AND source_locator IS NULL) OR source_locator = ?4)
                AND status IN ('queued', 'running')
              ORDER BY created_at DESC
              LIMIT 1",
-            params![space_id, file_id, job_type],
+            params![space_id, file_id, job_type, source_locator],
             |row| row.get::<_, String>(0),
         )
         .optional()?;
@@ -1939,14 +2029,25 @@ fn enqueue_file_parse_job_in_tx(
 
     connection.execute(
         "INSERT INTO parse_jobs (
-            id, space_id, file_id, job_type, status, phase, progress_current,
-            progress_total, created_at, updated_at
+            id, space_id, file_id, source_locator, job_type, status, phase,
+            progress_current, progress_total, created_at, updated_at
          )
-         VALUES (?1, ?2, ?3, ?4, 'queued', '等待执行', 0, 1, ?5, ?5)",
-        params![Uuid::new_v4().to_string(), space_id, file_id, job_type, now],
+         VALUES (?1, ?2, ?3, ?4, ?5, 'queued', '等待执行', 0, 1, ?6, ?6)",
+        params![
+            Uuid::new_v4().to_string(),
+            space_id,
+            file_id,
+            source_locator,
+            job_type,
+            now
+        ],
     )?;
 
     Ok(true)
+}
+
+fn normalize_optional_source_locator(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn list_parse_candidates_in_tx(
@@ -2070,6 +2171,42 @@ fn replace_file_knowledge_block_in_tx(
          WHERE id = ?3 AND space_id = ?4 AND deleted_at IS NULL",
         params![ParseStatus::Indexed.as_str(), now, file_id, space_id],
     )?;
+
+    Ok(())
+}
+
+fn replace_source_ocr_knowledge_blocks_in_tx(
+    tx: &Transaction<'_>,
+    space_id: &str,
+    file_id: &str,
+    source_locator: &str,
+    document: &ParsedDocument,
+    now: &str,
+) -> rusqlite::Result<()> {
+    let ocr_source_prefix = format!("{source_locator}#ocr");
+    let prefix_len = i64::try_from(ocr_source_prefix.len()).unwrap_or(i64::MAX);
+    tx.execute(
+        "UPDATE knowledge_blocks
+         SET searchable = 0, deleted_at = ?1, updated_at = ?1
+         WHERE space_id = ?2
+           AND file_id = ?3
+           AND deleted_at IS NULL
+           AND substr(source_locator, 1, ?4) = ?5",
+        params![now, space_id, file_id, prefix_len, ocr_source_prefix],
+    )?;
+
+    for block in document_knowledge_blocks(document).iter().rev() {
+        insert_knowledge_block_in_tx(
+            tx,
+            space_id,
+            file_id,
+            &block.title,
+            &block.body,
+            "original_file",
+            &block.source_locator,
+            now,
+        )?;
+    }
 
     Ok(())
 }
@@ -2328,9 +2465,31 @@ fn parse_job_status_in_tx(tx: &Transaction<'_>, job_id: &str) -> rusqlite::Resul
     tx.query_row(
         "SELECT status FROM parse_jobs WHERE id = ?1",
         [job_id],
-        |row| row.get(0),
+        |row| row.get::<_, String>(0),
     )
     .optional()
+}
+
+fn parse_job_type_in_tx(tx: &Transaction<'_>, job_id: &str) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT job_type FROM parse_jobs WHERE id = ?1",
+        [job_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+}
+
+fn parse_job_source_locator_in_tx(
+    tx: &Transaction<'_>,
+    job_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT source_locator FROM parse_jobs WHERE id = ?1",
+        [job_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(|source_locator| source_locator.flatten())
 }
 
 #[derive(Debug)]
@@ -2566,6 +2725,20 @@ fn display_file_name(relative_path: &str) -> String {
         .to_string()
 }
 
+fn display_parse_job_file_name(relative_path: &str, source_locator: Option<&str>) -> String {
+    if let Some(source_locator) = source_locator {
+        if let Some(image_number) = embedded_image_number_from_locator(source_locator) {
+            return format!(
+                "{} · 文档图片 {}",
+                display_file_name(strip_known_source_fragment(source_locator)),
+                image_number
+            );
+        }
+    }
+
+    display_file_name(relative_path)
+}
+
 fn display_source_file_name(source_locator: &str) -> String {
     let source_path = strip_known_source_fragment(source_locator);
     display_file_name(source_path)
@@ -2630,11 +2803,23 @@ fn is_known_source_fragment(fragment: &str) -> bool {
         || numbered_fragment(fragment, "sheet-")
 }
 
+fn embedded_image_number_from_locator(source_locator: &str) -> Option<u32> {
+    source_locator
+        .split('#')
+        .skip(1)
+        .find_map(|fragment| numbered_fragment_value(fragment, "image-"))
+}
+
 fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
-    fragment
-        .strip_prefix(prefix)
-        .map(|value| !value.is_empty() && value.chars().all(|character| character.is_ascii_digit()))
-        .unwrap_or(false)
+    numbered_fragment_value(fragment, prefix).is_some()
+}
+
+fn numbered_fragment_value(fragment: &str, prefix: &str) -> Option<u32> {
+    let value = fragment.strip_prefix(prefix)?;
+    if value.is_empty() || !value.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u32>().ok()
 }
 
 fn display_extension(extension: String) -> String {
@@ -2647,7 +2832,7 @@ fn display_extension(extension: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_source_file_name, rank_search_hits, SqliteStore};
+    use super::{display_source_file_name, rank_search_hits, ParseJobWriteOutcome, SqliteStore};
     use crate::models::{
         BackupExport, BackupExportFile, BackupExportKnowledgeBlock, BackupExportSpace,
         BackupExportWorkspace, KnowledgeBlockSearchHit, ParsedDocument, ParsedDocumentSegment,
@@ -3070,6 +3255,67 @@ mod tests {
         assert_eq!(hits[0].source_file_name, "架构说明.docx");
         assert!(hits[0].excerpt.contains("文档图片 1"));
         assert!(hits[0].excerpt.contains("110 字"));
+    }
+
+    #[test]
+    fn document_parse_enqueues_docx_embedded_image_ocr_without_replacing_original_blocks() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("DOCX", "D:\\知识库\\DOCX", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-docx", &space_id, "架构说明.docx", "queued")
+            .expect("file is inserted");
+        let job_id = store
+            .enqueue_parse_job(&space_id, "file-docx", "document")
+            .expect("document job enqueued");
+        store.mark_parse_job_running(&job_id).expect("job starts");
+
+        let document = ParsedDocument {
+            title: "架构说明.docx".to_string(),
+            body: "图片前的正文\n系统架构图".to_string(),
+            summary: "DOCX 图片证据".to_string(),
+            source_locator: "架构说明.docx".to_string(),
+            segments: vec![
+                ParsedDocumentSegment {
+                    title: "架构说明.docx".to_string(),
+                    body: "图片前的正文".to_string(),
+                    source_locator: "架构说明.docx".to_string(),
+                    evidence: None,
+                },
+                ParsedDocumentSegment {
+                    title: "架构说明.docx · 文档图片 1".to_string(),
+                    body: "架构说明.docx · 文档图片 1\n替代文本：系统架构图".to_string(),
+                    source_locator: "架构说明.docx#image-001".to_string(),
+                    evidence: Some(ParsedEvidenceMetadata {
+                        kind: Some("embedded_image".to_string()),
+                        page_number: None,
+                        page_count: None,
+                        image_number: Some(1),
+                        line_count: Some(2),
+                        char_count: Some(35),
+                        confidence_percent: None,
+                    }),
+                },
+            ],
+            table_insights: Vec::new(),
+        };
+
+        let outcome = store
+            .complete_parse_job_if_running(&space_id, "file-docx", &job_id, &document)
+            .expect("document parse completes");
+        let jobs = store.list_parse_jobs(&space_id).expect("jobs list");
+        let hits = store
+            .search_knowledge_blocks(&space_id, "图片前的正文", 3)
+            .expect("original text is searchable");
+
+        assert_eq!(outcome, ParseJobWriteOutcome::Updated);
+        assert!(hits.iter().any(|hit| hit.source_locator == "架构说明.docx"));
+        assert!(jobs.iter().any(|job| {
+            job.job_type == "ocr"
+                && job.status == "queued"
+                && job.file_name == "架构说明.docx · 文档图片 1"
+                && job.source_locator.as_deref() == Some("架构说明.docx#image-001")
+        }));
     }
 
     #[test]

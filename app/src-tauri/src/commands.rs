@@ -103,7 +103,7 @@ pub fn enqueue_ocr_parse_job(
 ) -> Result<WorkbenchSnapshot, ErrorResponse> {
     let space_id = request.space_id.clone();
     state
-        .enqueue_ocr_parse_job(request.space_id, request.file_id)
+        .enqueue_ocr_parse_job(request.space_id, request.file_id, request.source_locator)
         .inspect(|_| emit_workbench_updated(&app, Some(&space_id), "ocr-queued"))
         .map_err(Into::into)
 }

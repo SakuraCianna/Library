@@ -101,6 +101,7 @@ export interface ParseJobSummary {
   id: string;
   fileId: string | null;
   fileName: string;
+  sourceLocator: string | null;
   jobType: string;
   status: string;
   errorMessage: string | null;

@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS parse_jobs (
   id TEXT NOT NULL PRIMARY KEY,
   space_id TEXT NOT NULL REFERENCES knowledge_spaces(id),
   file_id TEXT REFERENCES files(id),
+  source_locator TEXT,
   job_type TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   error_message TEXT,
