@@ -47,7 +47,7 @@ CI 只需要 `contents: read` 权限，不读取 DeepSeek API Key，不下载 OC
 - 使用 `windows-latest` 构建 Windows 桌面端包
 - 安装 Node.js、Rust stable 和 `protoc`
 - 运行 `npm ci`
-- 运行 `npm run tauri build`
+- 运行 `npm run tauri build -- --no-sign`，显式生成未签名构建
 - 将 `app/src-tauri/target/release/bundle/**` 复制到 `release-assets/windows`
 - 写入 `release-assets/release-manifest.txt`，记录产品名、版本、来源 ref、commit、run id、是否未签名和保留天数
 - 上传 `release-assets/**` 为 GitHub Actions artifact

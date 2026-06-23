@@ -255,7 +255,7 @@ Set-Location .\sidecars\parser
 仓库提供两条 GitHub Actions 工作流：
 
 - `CI`：PR、`main`、`codex/**` 分支推送和手动触发时运行，检查前端测试、前端构建、OCR sidecar 测试、文档解析 sidecar 测试、Rust 格式、Rust 测试和 Rust 编译
-- `Release`：推送 `v*.*.*` tag 或手动触发时运行，构建 Windows Tauri 安装产物，上传带 manifest 的 `library-windows-v<version>-<safe-ref>-run<run-number>` artifact，保留 30 天；tag 触发时会创建 GitHub Release 草稿
+- `Release`：推送 `v*.*.*` tag 或手动触发时运行，使用 `npm run tauri build -- --no-sign` 构建 Windows Tauri 安装产物，上传带 manifest 的 `library-windows-v<version>-<safe-ref>-run<run-number>` artifact，保留 30 天；tag 触发时会创建 GitHub Release 草稿
 
 详细说明、未签名构建限制、Release dry run 和手动安装验收步骤见 [CI/CD 工作流](docs/ci-cd.md)。
 

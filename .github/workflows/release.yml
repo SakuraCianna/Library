@@ -85,7 +85,7 @@ jobs:
 
       - name: Build Tauri Windows bundle
         working-directory: app
-        run: npm run tauri build
+        run: npm run tauri build -- --no-sign
 
       - name: Stage Windows release artifact
         id: release-metadata
