@@ -17,6 +17,9 @@ defaults:
   run:
     shell: pwsh
 
+env:
+  RELEASE_ARTIFACT_RETENTION_DAYS: "30"
+
 jobs:
   windows-bundle:
     name: Windows bundle
@@ -24,6 +27,10 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+    outputs:
+      artifact_name: ${{ steps.release-metadata.outputs.artifact_name }}
+      artifact_retention_days: ${{ steps.release-metadata.outputs.artifact_retention_days }}
+      bundle_version: ${{ steps.release-metadata.outputs.bundle_version }}
 
     steps:
       - name: Checkout
@@ -68,17 +75,100 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Clear previous Windows bundle output
+        working-directory: app
+        run: |
+          $bundleRoot = Join-Path (Resolve-Path -LiteralPath ".").Path "src-tauri/target/release/bundle"
+          if (Test-Path -LiteralPath $bundleRoot) {
+            Remove-Item -LiteralPath $bundleRoot -Recurse -Force
+          }
+
       - name: Build Tauri Windows bundle
         working-directory: app
-        run: npm run tauri build
+        run: npm run tauri build -- --no-sign --bundles nsis
+
+      - name: Stage Windows release artifact
+        id: release-metadata
+        working-directory: app
+        run: |
+          $tauriConfig = Get-Content -Raw -Path "src-tauri/tauri.conf.json" | ConvertFrom-Json
+          $version = $tauriConfig.version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "tauri.conf.json 缺少 version，无法生成发布产物名称"
+          }
+
+          $rawRef = $env:GITHUB_REF_NAME
+          if ([string]::IsNullOrWhiteSpace($rawRef)) {
+            $rawRef = "manual"
+          }
+          $safeRef = $rawRef -replace "[^A-Za-z0-9._-]", "-"
+          $artifactName = "library-windows-v$version-$safeRef-run$env:GITHUB_RUN_NUMBER"
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "artifact_retention_days=$env:RELEASE_ARTIFACT_RETENTION_DAYS" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "bundle_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          $bundleRoot = "src-tauri/target/release/bundle"
+          if (-not (Test-Path -LiteralPath $bundleRoot)) {
+            throw "没有找到 Tauri bundle 目录：$bundleRoot"
+          }
+
+          $bundleRootPath = (Resolve-Path -LiteralPath $bundleRoot).Path
+          $unexpectedBundleDirs = Get-ChildItem -LiteralPath $bundleRootPath -Directory | Where-Object { $_.Name -ne "nsis" }
+          if ($unexpectedBundleDirs) {
+            $unexpectedNames = ($unexpectedBundleDirs | ForEach-Object { $_.Name }) -join ", "
+            throw "Release workflow 当前只允许上传 NSIS bundle，但发现其他 bundle 目录：$unexpectedNames"
+          }
+
+          $nsisBundleRoot = Join-Path $bundleRootPath "nsis"
+          if (-not (Test-Path -LiteralPath $nsisBundleRoot -PathType Container)) {
+            throw "没有找到 NSIS bundle 目录：$nsisBundleRoot"
+          }
+
+          $stagingRoot = Join-Path ".." "release-assets"
+          $windowsRoot = Join-Path $stagingRoot "windows"
+          if (Test-Path -LiteralPath $stagingRoot) {
+            Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $windowsRoot | Out-Null
+
+          $bundleFiles = Get-ChildItem -LiteralPath $nsisBundleRoot -Recurse -File
+          if (-not $bundleFiles) {
+            throw "没有找到可上传的 NSIS 构建产物"
+          }
+
+          foreach ($file in $bundleFiles) {
+            $relativePath = [System.IO.Path]::GetRelativePath($bundleRootPath, $file.FullName)
+            $targetPath = Join-Path $windowsRoot $relativePath
+            $targetDir = Split-Path -Path $targetPath -Parent
+            New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+            Copy-Item -LiteralPath $file.FullName -Destination $targetPath
+          }
+
+          $manifest = @(
+            "productName=$($tauriConfig.productName)",
+            "version=$version",
+            "artifactName=$artifactName",
+            "sourceRef=$rawRef",
+            "commit=$env:GITHUB_SHA",
+            "runId=$env:GITHUB_RUN_ID",
+            "runNumber=$env:GITHUB_RUN_NUMBER",
+            "unsigned=true",
+            "bundleTargets=nsis",
+            "bundleRoot=windows",
+            "retentionDays=$env:RELEASE_ARTIFACT_RETENTION_DAYS"
+          )
+          $manifest | Set-Content -Path (Join-Path $stagingRoot "release-manifest.txt") -Encoding utf8
+          Get-ChildItem -LiteralPath $stagingRoot -Recurse -File | ForEach-Object {
+            $_.FullName.Replace((Resolve-Path -LiteralPath $stagingRoot).Path, "release-assets")
+          }
 
       - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v7
         with:
-          name: library-windows-bundle
-          path: app/src-tauri/target/release/bundle/**
+          name: ${{ steps.release-metadata.outputs.artifact_name }}
+          path: release-assets/**
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
   publish-tag-draft:
     name: Publish tag draft
@@ -93,12 +183,14 @@ jobs:
       - name: Download Windows bundle artifact
         uses: actions/download-artifact@v8
         with:
-          name: library-windows-bundle
+          name: ${{ needs.windows-bundle.outputs.artifact_name }}
           path: release-assets
 
       - name: Create draft GitHub Release for tag
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ARTIFACT_NAME: ${{ needs.windows-bundle.outputs.artifact_name }}
+          RELEASE_ARTIFACT_RETENTION_DAYS: ${{ needs.windows-bundle.outputs.artifact_retention_days }}
         run: |
           $tag = $env:GITHUB_REF_NAME
           $bundleRoot = "release-assets"
@@ -106,8 +198,20 @@ jobs:
           if (-not $assets) {
             throw "没有找到可发布的 Tauri 构建产物"
           }
-          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          $notes = @(
+            "Windows 桌面端 NSIS 自动构建产物。",
+            "",
+            "- Actions artifact: $env:RELEASE_ARTIFACT_NAME",
+            "- Artifact retention: $env:RELEASE_ARTIFACT_RETENTION_DAYS days",
+            "- 当前未接入代码签名，正式分发前请先完成安装包验收。"
+          ) -join "`n"
+          $existingRelease = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --repo $env:GITHUB_REPOSITORY --title "个人知识库 $tag" --notes "Windows 桌面端自动构建产物。当前未接入代码签名，正式分发前请先验证安装包。" --draft
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --title "个人知识库 $tag" --notes $notes --draft
+          } else {
+            $releaseState = $existingRelease | ConvertFrom-Json
+            if (-not $releaseState.isDraft) {
+              throw "Release $tag 已经发布，拒绝覆盖正式发布资产"
+            }
           }
           gh release upload $tag $assets --repo $env:GITHUB_REPOSITORY --clobber
