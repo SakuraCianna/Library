@@ -57,6 +57,7 @@ pub fn parse_file(
                     kind: Some("pdf_page".to_string()),
                     page_number: Some(1),
                     page_count: Some(1),
+                    image_number: None,
                     line_count: Some(line_count(&pdf_text)),
                     char_count: Some(char_count(&pdf_text)),
                     confidence_percent: None,
@@ -929,6 +930,25 @@ mod tests {
         assert_eq!(document.source_locator, "Redis.md");
         assert_eq!(document.segments[0].source_locator, "Redis.md#page-001");
         assert!(document.body.contains("缓存穿透"));
+    }
+
+    #[test]
+    fn parses_parser_sidecar_stdout_with_embedded_image_evidence() {
+        let document = parse_parser_sidecar_stdout(
+            r#"{"ok":true,"result":{"title":"架构说明.docx","body":"文档图片占位","summary":"文档图片占位","sourceLocator":"架构说明.docx","segments":[{"title":"架构说明.docx · 文档图片 1","body":"当前仅登记文档内图片","sourceLocator":"架构说明.docx#image-001","evidence":{"kind":"embedded_image","imageNumber":1,"lineCount":4,"charCount":40}}],"tableInsights":[]}}"#,
+        )
+        .expect("parser sidecar stdout parses");
+
+        let evidence = document.segments[0]
+            .evidence
+            .as_ref()
+            .expect("image evidence is present");
+        assert_eq!(
+            document.segments[0].source_locator,
+            "架构说明.docx#image-001"
+        );
+        assert_eq!(evidence.kind.as_deref(), Some("embedded_image"));
+        assert_eq!(evidence.image_number, Some(1));
     }
 
     #[test]

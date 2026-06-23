@@ -480,6 +480,8 @@ pub struct ParsedEvidenceMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub char_count: Option<u32>,

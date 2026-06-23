@@ -1851,6 +1851,7 @@ fn is_known_source_fragment(fragment: &str) -> bool {
     fragment == "ocr"
         || numbered_fragment(fragment, "page-")
         || numbered_fragment(fragment, "ocr-page-")
+        || numbered_fragment(fragment, "image-")
         || numbered_fragment(fragment, "block-")
         || numbered_fragment(fragment, "ocr-block-")
         || numbered_fragment(fragment, "sheet-")
@@ -2495,6 +2496,30 @@ mod tests {
         assert_eq!(
             resolved,
             source_file.canonicalize().expect("canonical xlsx")
+        );
+    }
+
+    #[test]
+    fn resolves_docx_embedded_image_source_locator_to_original_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_file = temp_dir.path().join("架构说明.docx");
+        fs::write(&source_file, "docx").expect("write docx");
+        let state = AppState::new(SqliteStore::open_in_memory().expect("sqlite opens"));
+        let created = state
+            .create_knowledge_space(
+                "文档".to_string(),
+                temp_dir.path().to_string_lossy().to_string(),
+                PermissionMode::Approval,
+            )
+            .expect("space created");
+
+        let resolved = state
+            .resolve_source_file_path(&created.active_space_id, "架构说明.docx#image-001")
+            .expect("docx image source file resolves");
+
+        assert_eq!(
+            resolved,
+            source_file.canonicalize().expect("canonical docx")
         );
     }
 
