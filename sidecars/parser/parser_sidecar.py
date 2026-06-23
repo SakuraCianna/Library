@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from html import unescape
 import json
 from pathlib import Path
+import posixpath
 import re
 import sys
 from typing import Any
@@ -18,7 +19,20 @@ MAX_BODY_CHARS = 60_000
 SUMMARY_CHARS = 180
 MAX_TABLE_CELL_CHARS = 80
 TABLE_SAMPLE_ROWS = 3
-ALLOWED_EVIDENCE_KINDS = {"pdf_page", "ocr_page", "table_section"}
+ALLOWED_EVIDENCE_KINDS = {"pdf_page", "ocr_page", "table_section", "embedded_image"}
+DOCX_IMAGE_EXTENSIONS = {
+    ".bmp",
+    ".emf",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".svg",
+    ".tif",
+    ".tiff",
+    ".webp",
+    ".wmf",
+}
 
 
 @dataclass(frozen=True)
@@ -49,6 +63,12 @@ class ZipReadBudget:
             )
         self.used_bytes = next_total
         return archive.read(info).decode("utf-8", errors="replace")
+
+    def read_optional_text(self, archive: zipfile.ZipFile, name: str) -> str:
+        try:
+            return self.read_text(archive, name)
+        except KeyError:
+            return ""
 
 
 def parse_request(raw: str) -> ParserRequest:
@@ -107,6 +127,7 @@ def run_parse(request: ParserRequest) -> dict[str, Any]:
         )
 
     try:
+        segments: list[dict[str, Any]] = []
         if extension in {".md", ".txt"}:
             body = read_text_lossy(file_path)
             table_insights: list[dict[str, Any]] = []
@@ -114,7 +135,7 @@ def run_parse(request: ParserRequest) -> dict[str, Any]:
             body, segments = read_pdf_text(file_path, request.relative_path)
             table_insights = []
         elif extension == ".docx":
-            body = read_docx_text(file_path)
+            body, segments = read_docx_analysis(file_path, request.relative_path)
             table_insights = []
         else:
             body, table_insights = read_xlsx_analysis(file_path, request.relative_path)
@@ -129,7 +150,7 @@ def run_parse(request: ParserRequest) -> dict[str, Any]:
     return build_success_response(
         relative_path=request.relative_path,
         body=body,
-        segments=segments if extension == ".pdf" else [],
+        segments=segments,
         table_insights=table_insights,
     )
 
@@ -218,7 +239,14 @@ def normalize_evidence(value: Any) -> dict[str, Any] | None:
     if kind in ALLOWED_EVIDENCE_KINDS:
         normalized["kind"] = kind
 
-    for key in ("pageNumber", "pageCount", "lineCount", "charCount", "confidencePercent"):
+    for key in (
+        "pageNumber",
+        "pageCount",
+        "imageNumber",
+        "lineCount",
+        "charCount",
+        "confidencePercent",
+    ):
         number = bounded_positive_int(value.get(key))
         if number is not None:
             normalized[key] = number
@@ -237,9 +265,186 @@ def bounded_positive_int(value: Any) -> int | None:
 
 
 def read_docx_text(file_path: Path) -> str:
+    body, _segments = read_docx_analysis(file_path, str(file_path.name))
+    return body
+
+
+def read_docx_analysis(file_path: Path, relative_path: str) -> tuple[str, list[dict[str, Any]]]:
     with zipfile.ZipFile(file_path) as archive:
-        document = ZipReadBudget().read_text(archive, "word/document.xml")
-    return xml_to_text(document)
+        budget = ZipReadBudget()
+        document = budget.read_text(archive, "word/document.xml")
+        relationships = budget.read_optional_text(archive, "word/_rels/document.xml.rels")
+        document_text = xml_to_text(document)
+        image_segments = docx_embedded_image_segments(
+            relative_path,
+            archive,
+            document,
+            relationships,
+        )
+
+    body_parts = []
+    segments = []
+    if document_text:
+        body_parts.append(document_text)
+        if image_segments:
+            segments.append(
+                {
+                    "title": display_file_name(relative_path),
+                    "body": document_text,
+                    "sourceLocator": relative_path,
+                }
+            )
+    for segment in image_segments:
+        body_parts.append(segment["body"])
+        segments.append(segment)
+
+    return "\n".join(body_parts), segments
+
+
+def docx_embedded_image_segments(
+    relative_path: str,
+    archive: zipfile.ZipFile,
+    document_xml: str,
+    relationships_xml: str,
+) -> list[dict[str, Any]]:
+    archive_names = set(archive.namelist())
+    image_entries = docx_document_image_entries(document_xml, relationships_xml, archive_names)
+    if not image_entries:
+        alt_texts = docx_image_alt_texts(document_xml)
+        image_names = [
+            name
+            for name in archive_names
+            if name.startswith("word/media/")
+            and not name.endswith("/")
+            and display_file_name(name)
+            and Path(name).suffix.lower() in DOCX_IMAGE_EXTENSIONS
+        ]
+        image_names.sort()
+        image_entries = [
+            {
+                "target": image_name,
+                "altText": alt_texts[index] if index < len(alt_texts) else None,
+            }
+            for index, image_name in enumerate(image_names)
+        ]
+
+    if not image_entries:
+        return []
+
+    file_name = display_file_name(relative_path)
+    segments = []
+    for index, image_entry in enumerate(image_entries, start=1):
+        image_file_name = truncate_chars(display_file_name(image_entry["target"]), 120)
+        source_locator = f"{relative_path}#image-{index:03}"
+        lines = [
+            f"{file_name} · 文档图片 {index}",
+            f"来源：{source_locator}",
+            f"图片文件：{image_file_name}",
+            "说明：当前仅登记文档内图片和可用替代文本；未进行图片语义理解或 OCR。",
+        ]
+        if image_entry.get("altText"):
+            lines.append(f"替代文本：{image_entry['altText']}")
+        body = "\n".join(lines)
+        normalized_body = normalize_text(body)
+        segments.append(
+            {
+                "title": f"{file_name} · 文档图片 {index}",
+                "body": body,
+                "sourceLocator": source_locator,
+                "evidence": {
+                    "kind": "embedded_image",
+                    "imageNumber": index,
+                    "lineCount": line_count(body),
+                    "charCount": len(normalized_body),
+                },
+            }
+        )
+    return segments
+
+
+def docx_document_image_entries(
+    document_xml: str,
+    relationships_xml: str,
+    archive_names: set[str],
+) -> list[dict[str, str | None]]:
+    relationships = docx_image_relationship_targets(relationships_xml, archive_names)
+    if not relationships:
+        return []
+
+    entries = []
+    for drawing_xml in extract_prefixed_xml_blocks(document_xml, "drawing"):
+        alt_text = first_doc_pr_alt_text(drawing_xml)
+        for blip_tag in re.findall(
+            r"<(?:[A-Za-z0-9_]+:)?blip\b[^>]*>",
+            drawing_xml,
+            flags=re.S,
+        ):
+            relationship_id = (
+                xml_attribute(blip_tag, "r:embed")
+                or xml_attribute(blip_tag, "embed")
+                or xml_attribute(blip_tag, "r:link")
+                or xml_attribute(blip_tag, "link")
+            )
+            target = relationships.get(relationship_id or "")
+            if target:
+                entries.append({"target": target, "altText": alt_text})
+    return entries
+
+
+def docx_image_relationship_targets(
+    relationships_xml: str,
+    archive_names: set[str],
+) -> dict[str, str]:
+    targets = {}
+    for match in re.finditer(r"<(?:[A-Za-z0-9_]+:)?Relationship\b[^>]*/?>", relationships_xml):
+        tag = match.group(0)
+        relationship_id = xml_attribute(tag, "Id")
+        target = normalize_docx_relationship_target(xml_attribute(tag, "Target") or "")
+        relationship_type = normalize_text(xml_attribute(tag, "Type") or "")
+        if (
+            relationship_id
+            and target in archive_names
+            and target.startswith("word/media/")
+            and relationship_type.endswith("/image")
+            and Path(target).suffix.lower() in DOCX_IMAGE_EXTENSIONS
+        ):
+            targets[relationship_id] = target
+    return targets
+
+
+def normalize_docx_relationship_target(target: str) -> str:
+    normalized = unescape(target).strip().replace("\\", "/")
+    if not normalized or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", normalized):
+        return ""
+    if normalized.startswith("/"):
+        return posixpath.normpath(normalized.lstrip("/"))
+    return posixpath.normpath(posixpath.join("word", normalized))
+
+
+def docx_image_alt_texts(document_xml: str) -> list[str]:
+    alt_texts = []
+    for match in re.finditer(r"<(?:[A-Za-z0-9_]+:)?docPr\b[^>]*>", document_xml):
+        tag = match.group(0)
+        for attribute in ("descr", "title", "name"):
+            value = xml_attribute(tag, attribute)
+            normalized = normalize_text(value or "")
+            if normalized:
+                alt_texts.append(truncate_chars(normalized, 300))
+                break
+    return alt_texts
+
+
+def first_doc_pr_alt_text(xml: str) -> str | None:
+    match = re.search(r"<(?:[A-Za-z0-9_]+:)?docPr\b[^>]*>", xml)
+    if not match:
+        return None
+    tag = match.group(0)
+    for attribute in ("descr", "title", "name"):
+        value = xml_attribute(tag, attribute)
+        normalized = normalize_text(value or "")
+        if normalized:
+            return truncate_chars(normalized, 300)
+    return None
 
 
 def read_xlsx_analysis(
@@ -410,6 +615,14 @@ def cell_column_index(cell_xml: str) -> int | None:
 
 def extract_xml_blocks(xml: str, tag: str) -> list[str]:
     return re.findall(rf"<{tag}(?:\s[^>]*)?>.*?</{tag}>", xml, flags=re.S)
+
+
+def extract_prefixed_xml_blocks(xml: str, tag: str) -> list[str]:
+    return re.findall(
+        rf"<(?:[A-Za-z0-9_]+:)?{tag}(?:\s[^>]*)?>.*?</(?:[A-Za-z0-9_]+:)?{tag}>",
+        xml,
+        flags=re.S,
+    )
 
 
 def extract_pdf_literal_strings(content: str) -> str:

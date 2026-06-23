@@ -373,6 +373,37 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders embedded document image source evidence labels", async () => {
+    const snapshotWithImageEvidence: WorkbenchSnapshot = {
+      ...snapshotWithSpace,
+      blockPreview: {
+        id: "block-docx-image",
+        title: "架构说明.docx · 文档图片 1",
+        excerpt:
+          "证据范围：文档图片 1 · 5 行 · 110 字 正文：当前仅登记文档内图片和可用替代文本。",
+        sourceFileName: "架构说明.docx",
+        sourceLocator: "架构说明.docx#image-001",
+      },
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return snapshotWithImageEvidence;
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("证据：文档图片 1")).toBeInTheDocument();
+    expect(
+      screen.getByText("细节：文档图片 1 · 5 行 · 110 字"),
+    ).toBeInTheDocument();
+  });
+
   it("opens the default permission explanation from the gear button", async () => {
     Object.defineProperty(globalThis, "isTauri", {
       configurable: true,

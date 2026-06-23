@@ -209,6 +209,8 @@ function sourceEvidenceLabel(sourceLocator: string) {
       if (ocrPage !== null) return `OCR 第 ${ocrPage} 页`;
       const sheet = numberedSourceFragment(fragment, "sheet-");
       if (sheet !== null) return `工作表 ${sheet}`;
+      const image = numberedSourceFragment(fragment, "image-");
+      if (image !== null) return `文档图片 ${image}`;
       const block = numberedSourceFragment(fragment, "block-");
       if (block !== null) return `片段 ${block}`;
       const ocrBlock = numberedSourceFragment(fragment, "ocr-block-");

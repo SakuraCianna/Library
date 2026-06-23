@@ -2197,10 +2197,13 @@ fn evidence_metadata_summary(evidence: &ParsedEvidenceMetadata) -> Option<String
         Some("ocr_page") => "OCR",
         Some("pdf_page") => "PDF",
         Some("table_section") => "表格",
+        Some("embedded_image") => "文档图片",
         _ => "文档",
     };
 
-    if let Some(page_number) = evidence.page_number {
+    if let Some(image_number) = evidence.image_number {
+        parts.push(format!("{source_label} {image_number}"));
+    } else if let Some(page_number) = evidence.page_number {
         if let Some(page_count) = evidence.page_count.filter(|count| *count > 0) {
             parts.push(format!("{source_label} 第 {page_number}/{page_count} 页"));
         } else {
@@ -2301,7 +2304,9 @@ fn append_source_block_locator(source_locator: &str, block_number: usize) -> Str
 
 fn source_locator_has_page_fragment(source_locator: &str) -> bool {
     source_locator.split('#').skip(1).any(|fragment| {
-        numbered_fragment(fragment, "page-") || numbered_fragment(fragment, "ocr-page-")
+        numbered_fragment(fragment, "page-")
+            || numbered_fragment(fragment, "ocr-page-")
+            || numbered_fragment(fragment, "image-")
     })
 }
 
@@ -2619,6 +2624,7 @@ fn is_known_source_fragment(fragment: &str) -> bool {
     fragment == "ocr"
         || numbered_fragment(fragment, "page-")
         || numbered_fragment(fragment, "ocr-page-")
+        || numbered_fragment(fragment, "image-")
         || numbered_fragment(fragment, "block-")
         || numbered_fragment(fragment, "ocr-block-")
         || numbered_fragment(fragment, "sheet-")
@@ -2980,6 +2986,7 @@ mod tests {
                         kind: Some("pdf_page".to_string()),
                         page_number: Some(2),
                         page_count: Some(3),
+                        image_number: None,
                         line_count: Some(1),
                         char_count: Some(9),
                         confidence_percent: None,
@@ -3010,6 +3017,59 @@ mod tests {
         assert_eq!(context.blocks[0].source_locator, "report.pdf#page-001");
         assert_eq!(context.blocks[1].source_locator, "report.pdf#page-002");
         assert!(context.blocks[1].excerpt.contains("证据范围"));
+    }
+
+    #[test]
+    fn stores_docx_embedded_image_segments_as_searchable_evidence() {
+        let mut store = SqliteStore::open_in_memory().expect("in-memory sqlite opens");
+        let space_id = store
+            .create_knowledge_space("DOCX", "D:\\知识库\\DOCX", PermissionMode::Approval)
+            .expect("space is inserted");
+        insert_file(&store, "file-docx", &space_id, "架构说明.docx", "queued")
+            .expect("file is inserted");
+        let document = ParsedDocument {
+            title: "架构说明.docx".to_string(),
+            body: "正文和文档图片占位".to_string(),
+            summary: "DOCX 图片证据".to_string(),
+            source_locator: "架构说明.docx".to_string(),
+            segments: vec![
+                ParsedDocumentSegment {
+                    title: "架构说明.docx".to_string(),
+                    body: "正文介绍系统结构。".to_string(),
+                    source_locator: "架构说明.docx".to_string(),
+                    evidence: None,
+                },
+                ParsedDocumentSegment {
+                    title: "架构说明.docx · 文档图片 1".to_string(),
+                    body: "当前仅登记文档内图片和可用替代文本。替代文本：系统架构图".to_string(),
+                    source_locator: "架构说明.docx#image-001".to_string(),
+                    evidence: Some(ParsedEvidenceMetadata {
+                        kind: Some("embedded_image".to_string()),
+                        page_number: None,
+                        page_count: None,
+                        image_number: Some(1),
+                        line_count: Some(5),
+                        char_count: Some(110),
+                        confidence_percent: None,
+                    }),
+                },
+            ],
+            table_insights: Vec::new(),
+        };
+
+        store
+            .replace_file_knowledge_block(&space_id, "file-docx", &document)
+            .expect("knowledge blocks are stored");
+
+        let hits = store
+            .search_knowledge_blocks(&space_id, "系统架构图", 3)
+            .expect("search succeeds");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_locator, "架构说明.docx#image-001");
+        assert_eq!(hits[0].source_file_name, "架构说明.docx");
+        assert!(hits[0].excerpt.contains("文档图片 1"));
+        assert!(hits[0].excerpt.contains("110 字"));
     }
 
     #[test]
@@ -3553,6 +3613,10 @@ mod tests {
         assert_eq!(
             display_source_file_name("reports\\经营报表.xlsx#sheet-001"),
             "经营报表.xlsx"
+        );
+        assert_eq!(
+            display_source_file_name("docs\\架构说明.docx#image-001"),
+            "架构说明.docx"
         );
         assert_eq!(display_source_file_name("Redis面试.md"), "Redis面试.md");
     }

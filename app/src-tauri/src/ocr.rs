@@ -763,6 +763,7 @@ pub fn build_ocr_document(
                     kind: Some("ocr_page".to_string()),
                     page_number: Some(page_number),
                     page_count: Some(result.page_count),
+                    image_number: None,
                     line_count: Some(page.line_count.unwrap_or_else(|| line_count(&page.text))),
                     char_count: Some(page.char_count.unwrap_or_else(|| char_count(&page_body))),
                     confidence_percent: page.confidence.map(confidence_percent),
