@@ -74,6 +74,7 @@ def build_success_response(
     *,
     relative_path: str,
     body: str,
+    segments: list[dict[str, Any]] | None = None,
     table_insights: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     normalized_body = normalize_text(body)
@@ -84,6 +85,7 @@ def build_success_response(
             "body": truncate_chars(normalized_body, MAX_BODY_CHARS),
             "summary": truncate_chars(normalized_body, SUMMARY_CHARS),
             "sourceLocator": relative_path,
+            "segments": normalize_segments(relative_path, segments or []),
             "tableInsights": table_insights or [],
         },
     }
@@ -108,7 +110,7 @@ def run_parse(request: ParserRequest) -> dict[str, Any]:
             body = read_text_lossy(file_path)
             table_insights: list[dict[str, Any]] = []
         elif extension == ".pdf":
-            body = read_pdf_text(file_path)
+            body, segments = read_pdf_text(file_path, request.relative_path)
             table_insights = []
         elif extension == ".docx":
             body = read_docx_text(file_path)
@@ -126,6 +128,7 @@ def run_parse(request: ParserRequest) -> dict[str, Any]:
     return build_success_response(
         relative_path=request.relative_path,
         body=body,
+        segments=segments if extension == ".pdf" else [],
         table_insights=table_insights,
     )
 
@@ -134,23 +137,66 @@ def read_text_lossy(file_path: Path) -> str:
     return file_path.read_bytes().decode("utf-8", errors="replace")
 
 
-def read_pdf_text(file_path: Path) -> str:
+def read_pdf_text(file_path: Path, relative_path: str) -> tuple[str, list[dict[str, Any]]]:
     try:
         from pypdf import PdfReader
 
         reader = PdfReader(file_path)
         pages = [page.extract_text() or "" for page in reader.pages]
-        text = "\n".join(page for page in pages if page.strip())
+        page_segments = page_text_segments(relative_path, pages)
+        text = "\n".join(segment["body"] for segment in page_segments)
         if normalize_text(text):
-            return text
+            return text, page_segments
     except Exception:
         pass
 
     content = file_path.read_bytes().decode("latin-1", errors="ignore")
     literal_text = extract_pdf_literal_strings(content)
     if len(literal_text.strip()) >= 4:
-        return literal_text
-    return extract_readable_runs(content)
+        return literal_text, page_text_segments(relative_path, [literal_text])
+    readable_runs = extract_readable_runs(content)
+    return readable_runs, page_text_segments(relative_path, [readable_runs])
+
+
+def page_text_segments(relative_path: str, pages: list[str]) -> list[dict[str, Any]]:
+    file_name = display_file_name(relative_path)
+    segments = []
+    for index, page in enumerate(pages, start=1):
+        body = normalize_text(page)
+        if not body:
+            continue
+        segments.append(
+            {
+                "title": f"{file_name} · 第 {index} 页",
+                "body": body,
+                "sourceLocator": f"{relative_path}#page-{index:03}",
+            }
+        )
+    return segments
+
+
+def normalize_segments(
+    relative_path: str,
+    segments: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    normalized = []
+    file_name = display_file_name(relative_path)
+    for index, segment in enumerate(segments, start=1):
+        body = normalize_text(str(segment.get("body") or ""))
+        if not body:
+            continue
+        title = normalize_text(str(segment.get("title") or "")) or f"{file_name} · 第 {index} 页"
+        source_locator = normalize_text(str(segment.get("sourceLocator") or ""))
+        if not source_locator:
+            source_locator = f"{relative_path}#page-{index:03}"
+        normalized.append(
+            {
+                "title": title,
+                "body": truncate_chars(body, MAX_BODY_CHARS),
+                "sourceLocator": source_locator,
+            }
+        )
+    return normalized
 
 
 def read_docx_text(file_path: Path) -> str:

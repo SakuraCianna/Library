@@ -1849,6 +1849,8 @@ fn strip_known_source_fragment(source_locator: &str) -> &str {
 
 fn is_known_source_fragment(fragment: &str) -> bool {
     fragment == "ocr"
+        || numbered_fragment(fragment, "page-")
+        || numbered_fragment(fragment, "ocr-page-")
         || numbered_fragment(fragment, "block-")
         || numbered_fragment(fragment, "ocr-block-")
         || numbered_fragment(fragment, "sheet-")
@@ -2454,6 +2456,22 @@ mod tests {
             legacy_resolved,
             source_file.canonicalize().expect("canonical pdf")
         );
+
+        let page_resolved = state
+            .resolve_source_file_path(&created.active_space_id, "scan.pdf#ocr-page-002#block-001")
+            .expect("ocr page source file resolves");
+        assert_eq!(
+            page_resolved,
+            source_file.canonicalize().expect("canonical pdf")
+        );
+
+        let parsed_page_resolved = state
+            .resolve_source_file_path(&created.active_space_id, "scan.pdf#page-001")
+            .expect("pdf page source file resolves");
+        assert_eq!(
+            parsed_page_resolved,
+            source_file.canonicalize().expect("canonical pdf")
+        );
     }
 
     #[test]
@@ -2673,6 +2691,7 @@ mod tests {
                     body: "Excel 工作簿原始文本".to_string(),
                     summary: "Excel 工作簿原始文本".to_string(),
                     source_locator: candidate.relative_path.clone(),
+                    segments: Vec::new(),
                     table_insights: vec![ParsedTableInsight {
                         title: "经营报表.xlsx · 工作表 1".to_string(),
                         body: "经营报表.xlsx · 工作表 1 结构：3 行，3 列 表头：月份、营收、成本 样例 1：2026-06 | 120 | 70".to_string(),
@@ -2797,6 +2816,7 @@ mod tests {
                         body: format!("这段取消后的文档文本不应入库：{}", candidate_root.display()),
                         summary: "不应入库".to_string(),
                         source_locator: candidate.relative_path.clone(),
+                        segments: Vec::new(),
                         table_insights: Vec::new(),
                     })
                 },
@@ -3258,7 +3278,10 @@ mod tests {
             .expect("ocr job runs");
         let indexed = state.snapshot().expect("snapshot builds");
         assert_eq!(indexed.block_preview.source_file_name, "scan.pdf");
-        assert_eq!(indexed.block_preview.source_locator, "scan.pdf#ocr");
+        assert_eq!(
+            indexed.block_preview.source_locator,
+            "scan.pdf#ocr-page-001"
+        );
 
         let answered = state
             .ask_agent(indexed.active_space_id, "扫描版".to_string())

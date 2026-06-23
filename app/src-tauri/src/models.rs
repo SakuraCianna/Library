@@ -455,7 +455,17 @@ pub struct ParsedDocument {
     pub body: String,
     pub summary: String,
     pub source_locator: String,
+    #[serde(default)]
+    pub segments: Vec<ParsedDocumentSegment>,
     pub table_insights: Vec<ParsedTableInsight>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedDocumentSegment {
+    pub title: String,
+    pub body: String,
+    pub source_locator: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

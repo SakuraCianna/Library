@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use std::{env, io::Write};
 
 use crate::error::AppError;
-use crate::models::{FileParseCandidate, ParsedDocument, ParsedTableInsight};
+use crate::models::{
+    FileParseCandidate, ParsedDocument, ParsedDocumentSegment, ParsedTableInsight,
+};
 
 const MAX_BODY_CHARS: usize = 60_000;
 const SUMMARY_CHARS: usize = 180;
@@ -35,6 +37,7 @@ pub fn parse_file(
     let file_path = resolve_file_path(root_path, &candidate.relative_path)?;
     let extension = candidate.extension.trim_start_matches('.').to_lowercase();
     let mut table_insights = Vec::new();
+    let mut segments = Vec::new();
     let raw_text = match extension.as_str() {
         "md" | "txt" => read_text_lossy(&file_path)?,
         "docx" => read_docx_text(&file_path)?,
@@ -43,7 +46,15 @@ pub fn parse_file(
             table_insights = analysis.table_insights;
             analysis.body
         }
-        "pdf" => read_pdf_text_lossy(&file_path)?,
+        "pdf" => {
+            let pdf_text = read_pdf_text_lossy(&file_path)?;
+            segments.push(ParsedDocumentSegment {
+                title: format!("{} · 第 1 页", display_file_name(&candidate.relative_path)),
+                body: pdf_text.clone(),
+                source_locator: format!("{}#page-001", candidate.relative_path),
+            });
+            pdf_text
+        }
         _ => {
             return Err(AppError::Filesystem(format!(
                 "暂不支持解析 {} 文件",
@@ -65,6 +76,7 @@ pub fn parse_file(
         summary: summarize(&body),
         body: truncate_chars(&body, MAX_BODY_CHARS),
         source_locator: candidate.relative_path.clone(),
+        segments,
         table_insights,
     })
 }
@@ -849,6 +861,8 @@ mod tests {
         .expect("pdf parses");
 
         assert!(document.body.contains("缓存穿透"));
+        assert_eq!(document.segments.len(), 1);
+        assert_eq!(document.segments[0].source_locator, "note.pdf#page-001");
     }
 
     #[test]
@@ -882,13 +896,25 @@ mod tests {
     #[test]
     fn parses_successful_parser_sidecar_stdout() {
         let document = parse_parser_sidecar_stdout(
-            r#"{"ok":true,"result":{"title":"Redis.md","body":"缓存穿透","summary":"缓存穿透","sourceLocator":"Redis.md","tableInsights":[]}}"#,
+            r#"{"ok":true,"result":{"title":"Redis.md","body":"缓存穿透","summary":"缓存穿透","sourceLocator":"Redis.md","segments":[{"title":"Redis.md · 第 1 页","body":"缓存穿透","sourceLocator":"Redis.md#page-001"}],"tableInsights":[]}}"#,
         )
         .expect("parser sidecar stdout parses");
 
         assert_eq!(document.title, "Redis.md");
         assert_eq!(document.source_locator, "Redis.md");
+        assert_eq!(document.segments[0].source_locator, "Redis.md#page-001");
         assert!(document.body.contains("缓存穿透"));
+    }
+
+    #[test]
+    fn parses_legacy_parser_sidecar_stdout_without_segments() {
+        let document = parse_parser_sidecar_stdout(
+            r#"{"ok":true,"result":{"title":"Redis.md","body":"缓存穿透","summary":"缓存穿透","sourceLocator":"Redis.md","tableInsights":[]}}"#,
+        )
+        .expect("legacy parser sidecar stdout parses");
+
+        assert_eq!(document.title, "Redis.md");
+        assert!(document.segments.is_empty());
     }
 
     #[test]

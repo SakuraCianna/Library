@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 use std::{env, fs};
 
 use crate::error::AppError;
-use crate::models::{OcrEnvironmentReport, OcrSidecarRequest, OcrSidecarResult, ParsedDocument};
+use crate::models::{
+    OcrEnvironmentReport, OcrSidecarRequest, OcrSidecarResult, ParsedDocument,
+    ParsedDocumentSegment,
+};
 
 const SUMMARY_CHARS: usize = 180;
 const MAX_OCR_BODY_CHARS: usize = 60_000;
@@ -742,11 +745,30 @@ pub fn build_ocr_document(
         return Err(AppError::Filesystem("OCR 结果为空".to_string()));
     }
 
+    let file_name = display_file_name(relative_path);
+    let segments = result
+        .pages
+        .iter()
+        .filter_map(|page| {
+            let page_body = normalize_text(&page.text);
+            if page_body.is_empty() {
+                return None;
+            }
+            let page_number = page.page_index.saturating_add(1);
+            Some(ParsedDocumentSegment {
+                title: format!("{file_name} · OCR 第 {page_number} 页"),
+                body: truncate_chars(&page_body, MAX_OCR_BODY_CHARS),
+                source_locator: format!("{relative_path}#ocr-page-{page_number:03}"),
+            })
+        })
+        .collect();
+
     Ok(ParsedDocument {
-        title: display_file_name(relative_path),
+        title: file_name,
         summary: truncate_chars(&body, SUMMARY_CHARS),
         body: truncate_chars(&body, MAX_OCR_BODY_CHARS),
         source_locator: format!("{relative_path}#ocr"),
+        segments,
         table_insights: Vec::new(),
     })
 }
@@ -979,6 +1001,12 @@ mod tests {
 
         assert_eq!(document.title, "扫描资料.pdf");
         assert_eq!(document.source_locator, "扫描资料.pdf#ocr");
+        assert_eq!(document.segments.len(), 2);
+        assert_eq!(
+            document.segments[0].source_locator,
+            "扫描资料.pdf#ocr-page-001"
+        );
+        assert_eq!(document.segments[1].title, "扫描资料.pdf · OCR 第 2 页");
         assert!(document.body.contains("第一页文字"));
         assert!(document.summary.contains("第一页文字"));
     }

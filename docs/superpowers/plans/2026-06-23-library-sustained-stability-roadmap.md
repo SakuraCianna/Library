@@ -219,13 +219,13 @@ Set-Location E:\CodeHome\Library
 - Modify: `README.md`
 - Inspect: `app/src-tauri/tauri.conf.json`
 
-- [ ] Verify the release workflow still builds on Windows with the current Node, Rust, and `protoc` setup.
+- [x] Verify the release workflow still builds on Windows with the current Node, Rust, and `protoc` setup.
 - [x] Document unsigned build limitations and manual installer smoke-test steps.
 - [x] Add release artifact naming and retention expectations.
 - [x] Limit the current release workflow to unsigned NSIS artifacts until MSI/WiX, signing, and updater work are handled as separate modules.
 - [x] Keep automatic update and code signing as separate modules unless signing material is available.
-- [ ] Run the full verification gate and the release workflow dry run when available.
-- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+- [x] Run the full verification gate and the release workflow dry run when available.
+- [x] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ### Module 8: High-Fidelity Document Evidence
 
@@ -245,14 +245,14 @@ Set-Location E:\CodeHome\Library
 - Modify: `app/src/__tests__/App.test.tsx`
 - Modify: `README.md`
 
-- [ ] Add tests for page/section metadata from parser and OCR sidecars.
-- [ ] Preserve local-only parsing and OCR boundaries; do not add cloud document extraction.
-- [ ] Store bounded evidence metadata without leaking absolute paths or temporary OCR directories.
-- [ ] Show page/section evidence in source detail UI without making the interface feel like a terminal.
-- [ ] Keep complex formula reasoning and cross-sheet reasoning separate unless this module explicitly proves the needed data shape.
-- [ ] Run the full verification gate and OCR environment check.
+- [x] Add tests for page/section metadata from parser and OCR sidecars.
+- [x] Preserve local-only parsing and OCR boundaries; do not add cloud document extraction.
+- [x] Store bounded evidence metadata without leaking absolute paths or temporary OCR directories.
+- [x] Show page/section evidence in source detail UI without making the interface feel like a terminal.
+- [x] Keep complex formula reasoning and cross-sheet reasoning separate unless this module explicitly proves the needed data shape.
+- [x] Run the full verification gate and OCR environment check.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.
 
 ## Next Immediate Target
 
-After Module 7's release workflow dry run, reviewer, PR, merge, and branch sync are complete, start Module 8: High-Fidelity Document Evidence. The durable target is page/section-level evidence that makes parser and OCR results easier to inspect before deeper PDF layout work or complex table reasoning begins.
+After Module 8's first page-level evidence slice, continue with higher-fidelity layout metadata for difficult PDFs and OCR output, then revisit complex table reasoning only after the stored evidence shape is proven stable.
