@@ -81,6 +81,13 @@ def test_run_parse_extracts_text_pdf_fallback(tmp_path: Path):
             "title": "note.pdf · 第 1 页",
             "body": "PDF cache penetration note",
             "sourceLocator": "note.pdf#page-001",
+            "evidence": {
+                "kind": "pdf_page",
+                "pageNumber": 1,
+                "pageCount": 1,
+                "lineCount": 1,
+                "charCount": 26,
+            },
         }
     ]
 
@@ -99,6 +106,33 @@ def test_run_parse_extracts_docx_text(tmp_path: Path):
 
     assert response["ok"] is True
     assert "文档解析 Sidecar" in response["result"]["body"]
+
+
+def test_normalize_segments_filters_unknown_evidence_kind():
+    segments = parser_sidecar.normalize_segments(
+        "docs\\report.pdf",
+        [
+            {
+                "title": "report.pdf · 第 1 页",
+                "body": "第一页正文",
+                "sourceLocator": "docs\\report.pdf#page-001",
+                "evidence": {
+                    "kind": "E:\\Secret\\debug-path",
+                    "pageNumber": 1,
+                    "lineCount": 2,
+                },
+            }
+        ],
+    )
+
+    assert segments == [
+        {
+            "title": "report.pdf · 第 1 页",
+            "body": "第一页正文",
+            "sourceLocator": "docs\\report.pdf#page-001",
+            "evidence": {"pageNumber": 1, "lineCount": 2},
+        }
+    ]
 
 
 def test_run_parse_extracts_xlsx_table_insight(tmp_path: Path):

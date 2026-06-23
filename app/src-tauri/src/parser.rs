@@ -7,7 +7,8 @@ use std::{env, io::Write};
 
 use crate::error::AppError;
 use crate::models::{
-    FileParseCandidate, ParsedDocument, ParsedDocumentSegment, ParsedTableInsight,
+    FileParseCandidate, ParsedDocument, ParsedDocumentSegment, ParsedEvidenceMetadata,
+    ParsedTableInsight,
 };
 
 const MAX_BODY_CHARS: usize = 60_000;
@@ -52,6 +53,14 @@ pub fn parse_file(
                 title: format!("{} · 第 1 页", display_file_name(&candidate.relative_path)),
                 body: pdf_text.clone(),
                 source_locator: format!("{}#page-001", candidate.relative_path),
+                evidence: Some(ParsedEvidenceMetadata {
+                    kind: Some("pdf_page".to_string()),
+                    page_number: Some(1),
+                    page_count: Some(1),
+                    line_count: Some(line_count(&pdf_text)),
+                    char_count: Some(char_count(&pdf_text)),
+                    confidence_percent: None,
+                }),
             });
             pdf_text
         }
@@ -786,6 +795,15 @@ fn summarize(body: &str) -> String {
     truncate_chars(body, SUMMARY_CHARS)
 }
 
+fn line_count(value: &str) -> u32 {
+    let count = value.lines().filter(|line| !line.trim().is_empty()).count();
+    u32::try_from(count.max(1)).unwrap_or(u32::MAX)
+}
+
+fn char_count(value: &str) -> u32 {
+    u32::try_from(value.chars().count()).unwrap_or(u32::MAX)
+}
+
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     let mut output = value.chars().take(max_chars).collect::<String>();
 
@@ -863,6 +881,13 @@ mod tests {
         assert!(document.body.contains("缓存穿透"));
         assert_eq!(document.segments.len(), 1);
         assert_eq!(document.segments[0].source_locator, "note.pdf#page-001");
+        assert_eq!(
+            document.segments[0]
+                .evidence
+                .as_ref()
+                .and_then(|evidence| evidence.page_number),
+            Some(1)
+        );
     }
 
     #[test]

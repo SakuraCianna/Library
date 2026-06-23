@@ -8,7 +8,7 @@ use std::{env, fs};
 use crate::error::AppError;
 use crate::models::{
     OcrEnvironmentReport, OcrSidecarRequest, OcrSidecarResult, ParsedDocument,
-    ParsedDocumentSegment,
+    ParsedDocumentSegment, ParsedEvidenceMetadata,
 };
 
 const SUMMARY_CHARS: usize = 180;
@@ -759,6 +759,14 @@ pub fn build_ocr_document(
                 title: format!("{file_name} · OCR 第 {page_number} 页"),
                 body: truncate_chars(&page_body, MAX_OCR_BODY_CHARS),
                 source_locator: format!("{relative_path}#ocr-page-{page_number:03}"),
+                evidence: Some(ParsedEvidenceMetadata {
+                    kind: Some("ocr_page".to_string()),
+                    page_number: Some(page_number),
+                    page_count: Some(result.page_count),
+                    line_count: Some(page.line_count.unwrap_or_else(|| line_count(&page.text))),
+                    char_count: Some(page.char_count.unwrap_or_else(|| char_count(&page_body))),
+                    confidence_percent: page.confidence.map(confidence_percent),
+                }),
             })
         })
         .collect();
@@ -775,6 +783,19 @@ pub fn build_ocr_document(
 
 fn normalize_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn line_count(value: &str) -> u32 {
+    let count = value.lines().filter(|line| !line.trim().is_empty()).count();
+    u32::try_from(count.max(1)).unwrap_or(u32::MAX)
+}
+
+fn char_count(value: &str) -> u32 {
+    u32::try_from(value.chars().count()).unwrap_or(u32::MAX)
+}
+
+fn confidence_percent(confidence: f32) -> u32 {
+    confidence.clamp(0.0, 1.0).mul_add(100.0, 0.0).round() as u32
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
@@ -993,7 +1014,7 @@ mod tests {
     #[test]
     fn builds_parsed_document_from_ocr_result() {
         let result = parse_ocr_sidecar_stdout(
-            r#"{"ok":true,"result":{"text":"第一页文字\n\n第二页文字","pageCount":2,"pages":[{"pageIndex":0,"text":"第一页文字","confidence":0.9},{"pageIndex":1,"text":"第二页文字","confidence":0.8}]}}"#,
+            r#"{"ok":true,"result":{"text":"第一页文字\n\n第二页文字","pageCount":2,"pages":[{"pageIndex":0,"text":"第一页文字","confidence":0.9,"lineCount":1,"charCount":5},{"pageIndex":1,"text":"第二页文字","confidence":0.8,"lineCount":1,"charCount":5}]}}"#,
         )
         .expect("sidecar output parses");
 
@@ -1006,9 +1027,43 @@ mod tests {
             document.segments[0].source_locator,
             "扫描资料.pdf#ocr-page-001"
         );
+        assert_eq!(
+            document.segments[0]
+                .evidence
+                .as_ref()
+                .and_then(|evidence| evidence.confidence_percent),
+            Some(90)
+        );
+        assert_eq!(
+            document.segments[0]
+                .evidence
+                .as_ref()
+                .and_then(|evidence| evidence.page_count),
+            Some(2)
+        );
         assert_eq!(document.segments[1].title, "扫描资料.pdf · OCR 第 2 页");
         assert!(document.body.contains("第一页文字"));
         assert!(document.summary.contains("第一页文字"));
+    }
+
+    #[test]
+    fn builds_ocr_evidence_metadata_from_legacy_sidecar_page_shape() {
+        let result = parse_ocr_sidecar_stdout(
+            r#"{"ok":true,"result":{"text":"第一行文字\n第二行文字","pageCount":1,"pages":[{"pageIndex":0,"text":"第一行文字\n第二行文字","confidence":0.91}]}}"#,
+        )
+        .expect("legacy sidecar output parses");
+
+        let document = build_ocr_document("扫描资料.pdf", &result).expect("document builds");
+        let evidence = document.segments[0]
+            .evidence
+            .as_ref()
+            .expect("evidence metadata is generated");
+
+        assert_eq!(evidence.page_number, Some(1));
+        assert_eq!(evidence.page_count, Some(1));
+        assert_eq!(evidence.line_count, Some(2));
+        assert_eq!(evidence.char_count, Some(11));
+        assert_eq!(evidence.confidence_percent, Some(91));
     }
 
     fn env_lock() -> &'static Mutex<()> {

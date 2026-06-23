@@ -18,6 +18,7 @@ MAX_BODY_CHARS = 60_000
 SUMMARY_CHARS = 180
 MAX_TABLE_CELL_CHARS = 80
 TABLE_SAMPLE_ROWS = 3
+ALLOWED_EVIDENCE_KINDS = {"pdf_page", "ocr_page", "table_section"}
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,13 @@ def page_text_segments(relative_path: str, pages: list[str]) -> list[dict[str, A
                 "title": f"{file_name} · 第 {index} 页",
                 "body": body,
                 "sourceLocator": f"{relative_path}#page-{index:03}",
+                "evidence": {
+                    "kind": "pdf_page",
+                    "pageNumber": index,
+                    "pageCount": len(pages),
+                    "lineCount": line_count(page),
+                    "charCount": len(body),
+                },
             }
         )
     return segments
@@ -178,7 +186,7 @@ def page_text_segments(relative_path: str, pages: list[str]) -> list[dict[str, A
 def normalize_segments(
     relative_path: str,
     segments: list[dict[str, Any]],
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     normalized = []
     file_name = display_file_name(relative_path)
     for index, segment in enumerate(segments, start=1):
@@ -189,14 +197,43 @@ def normalize_segments(
         source_locator = normalize_text(str(segment.get("sourceLocator") or ""))
         if not source_locator:
             source_locator = f"{relative_path}#page-{index:03}"
-        normalized.append(
-            {
-                "title": title,
-                "body": truncate_chars(body, MAX_BODY_CHARS),
-                "sourceLocator": source_locator,
-            }
-        )
+        normalized_segment: dict[str, Any] = {
+            "title": title,
+            "body": truncate_chars(body, MAX_BODY_CHARS),
+            "sourceLocator": source_locator,
+        }
+        evidence = normalize_evidence(segment.get("evidence"))
+        if evidence is not None:
+            normalized_segment["evidence"] = evidence
+        normalized.append(normalized_segment)
     return normalized
+
+
+def normalize_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    normalized: dict[str, Any] = {}
+    kind = normalize_text(str(value.get("kind") or ""))
+    if kind in ALLOWED_EVIDENCE_KINDS:
+        normalized["kind"] = kind
+
+    for key in ("pageNumber", "pageCount", "lineCount", "charCount", "confidencePercent"):
+        number = bounded_positive_int(value.get(key))
+        if number is not None:
+            normalized[key] = number
+
+    return normalized or None
+
+
+def bounded_positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return min(number, 1_000_000)
 
 
 def read_docx_text(file_path: Path) -> str:
@@ -445,6 +482,11 @@ def xml_to_text(xml: str) -> str:
 
 def normalize_text(value: str) -> str:
     return " ".join(value.split())
+
+
+def line_count(value: str) -> int:
+    count = sum(1 for line in value.splitlines() if line.strip())
+    return max(1, count)
 
 
 def truncate_chars(value: str, max_chars: int) -> str:

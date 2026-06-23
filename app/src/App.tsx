@@ -221,6 +221,23 @@ function sourceEvidenceLabel(sourceLocator: string) {
   return labels.length > 0 ? labels.join(" · ") : "文件级来源";
 }
 
+function sourceEvidenceDetail(excerpt: string) {
+  const marker = "证据范围：";
+  const markerIndex = excerpt.indexOf(marker);
+  if (markerIndex < 0) return null;
+
+  const rest = excerpt.slice(markerIndex + marker.length).trim();
+  const endMarkers = [" 正文：", " 正文摘录："];
+  const endIndex = endMarkers
+    .map((endMarker) => rest.indexOf(endMarker))
+    .filter((index) => index >= 0)
+    .sort((left, right) => left - right)[0];
+  const detail =
+    endIndex === undefined ? rest : rest.slice(0, endIndex).trim();
+
+  return detail.length > 0 ? detail : null;
+}
+
 function numberedSourceFragment(fragment: string, prefix: string) {
   if (!fragment.startsWith(prefix)) return null;
   const value = fragment.slice(prefix.length);
@@ -328,6 +345,7 @@ export default function App() {
       : null;
   const focusedBlock: KnowledgeBlockPreview | ChatMessageSource =
     selectedContextBlock ?? selectedSource ?? snapshot.blockPreview;
+  const focusedEvidenceDetail = sourceEvidenceDetail(focusedBlock.excerpt);
   const focusedSourceLocator = focusedBlock.sourceLocator.trim();
   const canOpenFocusedSource =
     hasActiveSpace &&
@@ -810,6 +828,9 @@ export default function App() {
                 <span>{focusedBlock.sourceFileName}</span>
                 <span>定位：{focusedBlock.sourceLocator}</span>
                 <span>证据：{sourceEvidenceLabel(focusedBlock.sourceLocator)}</span>
+                {focusedEvidenceDetail ? (
+                  <span>细节：{focusedEvidenceDetail}</span>
+                ) : null}
               </div>
               <h3 className={styles.panelTitle}>{focusedBlock.title}</h3>
               <p className={styles.blockExcerpt}>{focusedBlock.excerpt}</p>
@@ -1105,32 +1126,42 @@ export default function App() {
                   {sourcesVisible ? (
                     filteredSources(message.sources).length > 0 ? (
                       <ul className={styles.messageSourceList}>
-                        {filteredSources(message.sources).map((source) => (
-                          <li
-                            className={styles.messageSourceItem}
-                            key={source.id}
-                          >
-                            <button
-                              className={styles.messageSourceButton}
-                              onClick={() => setSelectedSource(source)}
-                              type="button"
-                              aria-label={`查看来源 ${source.sourceFileName} ${source.title}`}
+                        {filteredSources(message.sources).map((source) => {
+                          const evidenceDetail = sourceEvidenceDetail(
+                            source.excerpt,
+                          );
+                          return (
+                            <li
+                              className={styles.messageSourceItem}
+                              key={source.id}
                             >
-                              <span className={styles.messageSourceHeader}>
-                                <strong>{source.sourceFileName}</strong>
-                                <span>{sourceKindLabel(source.sourceKind)}</span>
-                              </span>
-                              <span>{source.title}</span>
-                              <span>定位：{source.sourceLocator}</span>
-                              <span>
-                                证据：{sourceEvidenceLabel(source.sourceLocator)}
-                              </span>
-                              <span className={styles.messageSourceExcerpt}>
-                                {source.excerpt}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
+                              <button
+                                className={styles.messageSourceButton}
+                                onClick={() => setSelectedSource(source)}
+                                type="button"
+                                aria-label={`查看来源 ${source.sourceFileName} ${source.title}`}
+                              >
+                                <span className={styles.messageSourceHeader}>
+                                  <strong>{source.sourceFileName}</strong>
+                                  <span>
+                                    {sourceKindLabel(source.sourceKind)}
+                                  </span>
+                                </span>
+                                <span>{source.title}</span>
+                                <span>定位：{source.sourceLocator}</span>
+                                <span>
+                                  {`证据：${sourceEvidenceLabel(source.sourceLocator)}`}
+                                </span>
+                                {evidenceDetail ? (
+                                  <span>细节：{evidenceDetail}</span>
+                                ) : null}
+                                <span className={styles.messageSourceExcerpt}>
+                                  {source.excerpt}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
                       </ul>
                     ) : (
                       <div className={styles.sourceEmpty}>

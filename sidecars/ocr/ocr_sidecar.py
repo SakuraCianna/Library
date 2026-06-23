@@ -425,6 +425,8 @@ def extract_ocr_pages(
                 "pageIndex": int(page_index),
                 "text": "\n".join(texts),
                 "confidence": confidence,
+                "lineCount": len(texts),
+                "charCount": sum(len(text) for text in texts),
             }
         )
 

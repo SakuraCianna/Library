@@ -10,7 +10,7 @@ use crate::models::{
     BackupExportParseJob, BackupExportSpace, BackupExportTrashEntry, BackupExportWorkspace,
     FileParseCandidate, KnowledgeBlockContext, KnowledgeBlockSearchHit, KnowledgeFile,
     KnowledgeSpace, ParseJobCandidate, ParseJobSummary, ParseStatus, ParsedDocument,
-    PermissionMode, ScanSummary, ScannedFile, TableInsightPreview,
+    ParsedEvidenceMetadata, PermissionMode, ScanSummary, ScannedFile, TableInsightPreview,
 };
 
 const DOCUMENT_PARSE_EXTENSIONS: [&str; 5] = ["pdf", "docx", "xlsx", "md", "txt"];
@@ -2118,10 +2118,15 @@ fn document_knowledge_blocks(document: &ParsedDocument) -> Vec<DocumentKnowledge
 
                 let bounded_body = take_chars(&segment.body, *remaining_chars);
                 *remaining_chars = remaining_chars.saturating_sub(bounded_body.chars().count());
-                Some(segmented_knowledge_blocks(
+                let evidence_summary = segment
+                    .evidence
+                    .as_ref()
+                    .and_then(evidence_metadata_summary);
+                Some(segmented_knowledge_blocks_with_evidence(
                     &segment.title,
                     &bounded_body,
                     &segment.source_locator,
+                    evidence_summary.as_deref(),
                 ))
             })
             .flatten()
@@ -2143,6 +2148,15 @@ fn segmented_knowledge_blocks(
     body: &str,
     source_locator: &str,
 ) -> Vec<DocumentKnowledgeBlock> {
+    segmented_knowledge_blocks_with_evidence(title, body, source_locator, None)
+}
+
+fn segmented_knowledge_blocks_with_evidence(
+    title: &str,
+    body: &str,
+    source_locator: &str,
+    evidence_summary: Option<&str>,
+) -> Vec<DocumentKnowledgeBlock> {
     let chunks = split_knowledge_block_body(body);
     let total = chunks.len();
 
@@ -2162,13 +2176,55 @@ fn segmented_knowledge_blocks(
                 append_source_block_locator(source_locator, block_number)
             };
 
+            let body = body.trim().to_string();
+            let body = match evidence_summary.filter(|summary| !summary.trim().is_empty()) {
+                Some(summary) => format!("证据范围：{}\n正文：{}", summary.trim(), body),
+                None => body,
+            };
+
             DocumentKnowledgeBlock {
                 title,
-                body: body.trim().to_string(),
+                body,
                 source_locator,
             }
         })
         .collect()
+}
+
+fn evidence_metadata_summary(evidence: &ParsedEvidenceMetadata) -> Option<String> {
+    let mut parts = Vec::new();
+    let source_label = match evidence.kind.as_deref() {
+        Some("ocr_page") => "OCR",
+        Some("pdf_page") => "PDF",
+        Some("table_section") => "表格",
+        _ => "文档",
+    };
+
+    if let Some(page_number) = evidence.page_number {
+        if let Some(page_count) = evidence.page_count.filter(|count| *count > 0) {
+            parts.push(format!("{source_label} 第 {page_number}/{page_count} 页"));
+        } else {
+            parts.push(format!("{source_label} 第 {page_number} 页"));
+        }
+    } else if let Some(page_count) = evidence.page_count.filter(|count| *count > 0) {
+        parts.push(format!("{source_label} 共 {page_count} 页"));
+    }
+
+    if let Some(line_count) = evidence.line_count.filter(|count| *count > 0) {
+        parts.push(format!("{line_count} 行"));
+    }
+    if let Some(char_count) = evidence.char_count.filter(|count| *count > 0) {
+        parts.push(format!("{char_count} 字"));
+    }
+    if let Some(confidence_percent) = evidence.confidence_percent {
+        parts.push(format!("置信度 {}%", confidence_percent.min(100)));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
 }
 
 fn split_knowledge_block_body(body: &str) -> Vec<String> {
@@ -2466,8 +2522,16 @@ fn is_query_punctuation(character: char) -> bool {
 }
 
 fn build_excerpt(body: &str, term: &str) -> String {
+    let evidence_prefix = body.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.starts_with("证据范围：") {
+            Some(trimmed.split_whitespace().collect::<Vec<_>>().join(" "))
+        } else {
+            None
+        }
+    });
     let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let excerpt = if !term.is_empty() {
+    let mut excerpt = if !term.is_empty() {
         normalized
             .find(term)
             .map(|index| normalized[index..].to_string())
@@ -2475,6 +2539,11 @@ fn build_excerpt(body: &str, term: &str) -> String {
     } else {
         normalized
     };
+    if let Some(evidence_prefix) = evidence_prefix {
+        if !excerpt.starts_with(&evidence_prefix) {
+            excerpt = format!("{evidence_prefix} 正文摘录：{excerpt}");
+        }
+    }
 
     let mut output = excerpt.chars().take(180).collect::<String>();
     if excerpt.chars().count() > 180 {
@@ -2576,7 +2645,7 @@ mod tests {
     use crate::models::{
         BackupExport, BackupExportFile, BackupExportKnowledgeBlock, BackupExportSpace,
         BackupExportWorkspace, KnowledgeBlockSearchHit, ParsedDocument, ParsedDocumentSegment,
-        ParsedTableInsight, PermissionMode, ScannedFile,
+        ParsedEvidenceMetadata, ParsedTableInsight, PermissionMode, ScannedFile,
     };
     use rusqlite::{params, Connection};
 
@@ -2901,11 +2970,20 @@ mod tests {
                     title: "report.pdf · 第 1 页".to_string(),
                     body: "第一页介绍总览".to_string(),
                     source_locator: "report.pdf#page-001".to_string(),
+                    evidence: None,
                 },
                 ParsedDocumentSegment {
                     title: "report.pdf · 第 2 页".to_string(),
                     body: "第二页包含发票金额".to_string(),
                     source_locator: "report.pdf#page-002".to_string(),
+                    evidence: Some(ParsedEvidenceMetadata {
+                        kind: Some("pdf_page".to_string()),
+                        page_number: Some(2),
+                        page_count: Some(3),
+                        line_count: Some(1),
+                        char_count: Some(9),
+                        confidence_percent: None,
+                    }),
                 },
             ],
             table_insights: Vec::new(),
@@ -2926,9 +3004,12 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_locator, "report.pdf#page-002");
         assert_eq!(hits[0].source_file_name, "report.pdf");
+        assert!(hits[0].excerpt.contains("PDF 第 2/3 页"));
+        assert!(hits[0].excerpt.contains("9 字"));
         assert_eq!(context.total_count, 2);
         assert_eq!(context.blocks[0].source_locator, "report.pdf#page-001");
         assert_eq!(context.blocks[1].source_locator, "report.pdf#page-002");
+        assert!(context.blocks[1].excerpt.contains("证据范围"));
     }
 
     #[test]
@@ -2948,6 +3029,7 @@ mod tests {
                 title: "scan.pdf · OCR 第 1 页".to_string(),
                 body: "发票金额".repeat(700),
                 source_locator: "scan.pdf#ocr-page-001".to_string(),
+                evidence: None,
             }],
             table_insights: Vec::new(),
         };

@@ -466,6 +466,25 @@ pub struct ParsedDocumentSegment {
     pub title: String,
     pub body: String,
     pub source_locator: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<ParsedEvidenceMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedEvidenceMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_percent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -561,6 +580,10 @@ pub struct OcrPageResult {
     pub page_index: u32,
     pub text: String,
     pub confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

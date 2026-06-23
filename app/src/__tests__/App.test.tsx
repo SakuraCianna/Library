@@ -317,7 +317,7 @@ describe("App", () => {
       blockPreview: {
         id: "block-pdf-page",
         title: "report.pdf · 第 1 页",
-        excerpt: "PDF 第一页证据。",
+        excerpt: "证据范围：PDF 第 1/3 页 · 8 行 · 120 字 正文：PDF 第一页证据。",
         sourceFileName: "report.pdf",
         sourceLocator: "report.pdf#page-001",
       },
@@ -336,7 +336,8 @@ describe("App", () => {
             {
               id: "block-ocr-page",
               title: "scan.pdf · OCR 第 1 页 · 片段 1/2",
-              excerpt: "扫描版发票金额。",
+              excerpt:
+                "证据范围：OCR 第 1/2 页 · 5 行 · 80 字 · 置信度 91% 正文摘录：扫描版发票金额。",
               sourceFileName: "scan.pdf",
               sourceLocator: "scan.pdf#ocr-page-001#block-001",
               sourceKind: "ocr",
@@ -360,7 +361,15 @@ describe("App", () => {
 
     expect(await screen.findByText("证据：PDF 第 1 页")).toBeInTheDocument();
     expect(
+      screen.getByText("细节：PDF 第 1/3 页 · 8 行 · 120 字"),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText("证据：OCR 第 1 页 · 片段 1"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "细节：OCR 第 1/2 页 · 5 行 · 80 字 · 置信度 91%",
+      ),
     ).toBeInTheDocument();
   });
 
