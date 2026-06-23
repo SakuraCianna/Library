@@ -168,8 +168,20 @@ def test_extract_ocr_pages_normalizes_paddle_result_shape():
     pages = extract_ocr_pages(raw_results)
 
     assert pages == [
-        {"pageIndex": 0, "text": "HELLO\nOCR", "confidence": 0.935},
-        {"pageIndex": 1, "text": "PAGE TWO", "confidence": 0.77},
+        {
+            "pageIndex": 0,
+            "text": "HELLO\nOCR",
+            "confidence": 0.935,
+            "lineCount": 2,
+            "charCount": 8,
+        },
+        {
+            "pageIndex": 1,
+            "text": "PAGE TWO",
+            "confidence": 0.77,
+            "lineCount": 1,
+            "charCount": 8,
+        },
     ]
 
 

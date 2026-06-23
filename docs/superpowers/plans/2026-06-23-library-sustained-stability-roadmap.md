@@ -251,8 +251,11 @@ Set-Location E:\CodeHome\Library
 - [x] Show page/section evidence in source detail UI without making the interface feel like a terminal.
 - [x] Keep complex formula reasoning and cross-sheet reasoning separate unless this module explicitly proves the needed data shape.
 - [x] Run the full verification gate and OCR environment check.
-- [ ] Finish with reviewer, commit, PR, merge, and branch sync.
+- [x] Add bounded evidence-range details for PDF/OCR pages, including page counts, line counts, character counts, and OCR confidence percentages where available.
+- [x] Preserve legacy parser/OCR JSON compatibility by making evidence metadata optional.
+- [x] Surface evidence-range details in source cards and source detail UI without exposing absolute paths.
+- [ ] Finish this evidence metadata slice with reviewer, commit, PR, merge, and branch sync.
 
 ## Next Immediate Target
 
-After Module 8's first page-level evidence slice, continue with higher-fidelity layout metadata for difficult PDFs and OCR output, then revisit complex table reasoning only after the stored evidence shape is proven stable.
+After the bounded page evidence metadata slice, continue toward higher-fidelity layout metadata for difficult PDFs and OCR output, then revisit complex table reasoning only after the stored evidence shape is proven stable.

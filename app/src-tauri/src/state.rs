@@ -3087,6 +3087,8 @@ mod tests {
                             page_index: 0,
                             text: "扫描版 PDF 的本地 OCR 文本".to_string(),
                             confidence: Some(0.93),
+                            line_count: None,
+                            char_count: None,
                         }],
                     })
                 },
@@ -3146,6 +3148,8 @@ mod tests {
                             page_index: 0,
                             text: "截图里的本地 OCR 文本".to_string(),
                             confidence: Some(0.91),
+                            line_count: None,
+                            char_count: None,
                         }],
                     })
                 },
@@ -3222,6 +3226,8 @@ mod tests {
                             page_index: 0,
                             text: "分段进度后的 OCR 文本".to_string(),
                             confidence: Some(0.93),
+                            line_count: None,
+                            char_count: None,
                         }],
                     })
                 },
@@ -3271,6 +3277,8 @@ mod tests {
                             page_index: 0,
                             text: "扫描版 PDF 的本地 OCR 文本".to_string(),
                             confidence: Some(0.93),
+                            line_count: None,
+                            char_count: None,
                         }],
                     })
                 },
@@ -3426,6 +3434,8 @@ mod tests {
                             page_index: 0,
                             text: "这段取消后的 OCR 文本不应入库".to_string(),
                             confidence: Some(0.91),
+                            line_count: None,
+                            char_count: None,
                         }],
                     })
                 },
