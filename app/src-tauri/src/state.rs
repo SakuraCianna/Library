@@ -14,7 +14,10 @@ use crate::models::{
     OcrSidecarRequest, OcrSidecarResult, ParseJobCandidate, PermissionMode, ScanSummary,
     ScannedFile, TableInsightPreview, WorkbenchSnapshot,
 };
-use crate::ocr::{build_ocr_document, build_ocr_request, validate_ocr_inputs};
+use crate::ocr::{
+    build_ocr_document, prepare_docx_embedded_image_ocr_request, prepare_file_ocr_request,
+    PreparedOcrRequest,
+};
 use crate::parser::parse_file_with_sidecar;
 use crate::runtime::ocr_config;
 use crate::scanner::{scan_folder_with_progress, ScanProgress};
@@ -71,6 +74,84 @@ impl AppState {
         Ok(Self::new_with_app_data_dir(store, app_data_dir))
     }
 
+    fn prepare_ocr_request_for_candidate(
+        root_path: &Path,
+        relative_path: &str,
+        extension: &str,
+        source_locator: Option<&str>,
+        model_dir: &Path,
+        tier: &str,
+    ) -> Result<PreparedOcrRequest, AppError> {
+        let input_path = root_path.join(relative_path);
+        if let Some(source_locator) = source_locator {
+            Self::validate_embedded_image_source_locator(relative_path, extension, source_locator)?;
+            return prepare_docx_embedded_image_ocr_request(
+                &input_path,
+                source_locator,
+                model_dir,
+                tier,
+            );
+        }
+
+        if !is_ocr_supported_extension(extension) {
+            return Err(AppError::Storage(
+                "当前 OCR 队列仅支持 PDF、图片文件或 DOCX 文档图片".to_string(),
+            ));
+        }
+
+        prepare_file_ocr_request(&input_path, relative_path, model_dir, tier)
+    }
+
+    fn validate_embedded_image_source_locator(
+        relative_path: &str,
+        extension: &str,
+        source_locator: &str,
+    ) -> Result<(), AppError> {
+        if extension.trim_start_matches('.').to_lowercase() != "docx" {
+            return Err(AppError::Storage(
+                "只有 DOCX 文档图片支持内嵌图片 OCR".to_string(),
+            ));
+        }
+        if Self::embedded_image_number_from_locator(source_locator).is_none() {
+            return Err(AppError::Storage(
+                "DOCX 文档图片 OCR 需要 #image-N 来源定位".to_string(),
+            ));
+        }
+
+        let source_path = source_locator_to_relative_path(source_locator)?;
+        let expected = PathBuf::from(relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if source_path != expected {
+            return Err(AppError::PermissionDenied(
+                "OCR 来源定位不属于当前文件".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn display_ocr_job_name(candidate: &ParseJobCandidate) -> String {
+        if let Some(source_locator) = candidate.source_locator.as_deref() {
+            if let Some(image_number) = Self::embedded_image_number_from_locator(source_locator) {
+                return format!(
+                    "{} · 文档图片 {}",
+                    display_relative_file_name(&candidate.relative_path),
+                    image_number
+                );
+            }
+        }
+
+        display_relative_file_name(&candidate.relative_path)
+    }
+
+    fn embedded_image_number_from_locator(source_locator: &str) -> Option<u32> {
+        source_locator.split('#').skip(1).find_map(|fragment| {
+            let number = fragment.strip_prefix("image-")?;
+            if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
+                return None;
+            }
+            number.parse::<u32>().ok()
+        })
+    }
     #[cfg(test)]
     pub fn new(store: SqliteStore) -> Self {
         let app_data_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -645,6 +726,7 @@ impl AppState {
         &self,
         space_id: String,
         file_id: String,
+        source_locator: Option<String>,
     ) -> Result<WorkbenchSnapshot, AppError> {
         let (root_path, candidate) = {
             let store = self.store.lock().expect("sqlite store mutex poisoned");
@@ -660,20 +742,29 @@ impl AppState {
 
             (root_path, candidate)
         };
-        if !is_ocr_supported_extension(&candidate.extension) {
-            return Err(AppError::Storage(
-                "当前 OCR 队列仅支持 PDF 或图片文件".to_string(),
-            ));
-        }
+        let source_locator = source_locator.and_then(|locator| {
+            let trimmed = locator.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
         let config = ocr_config(&self.app_data_dir);
-        let input_path = Path::new(&root_path).join(&candidate.relative_path);
-        validate_ocr_inputs(&input_path, &config.model_dir, &config.tier)?;
-        let request = build_ocr_request(&input_path, &config.model_dir, &config.tier);
+        let prepared = Self::prepare_ocr_request_for_candidate(
+            Path::new(&root_path),
+            &candidate.relative_path,
+            &candidate.extension,
+            source_locator.as_deref(),
+            &config.model_dir,
+            &config.tier,
+        )?;
 
         {
             let store = self.store.lock().expect("sqlite store mutex poisoned");
             store
-                .enqueue_parse_job(&space_id, &candidate.file_id, "ocr")
+                .enqueue_parse_job_for_source_with_status(
+                    &space_id,
+                    &candidate.file_id,
+                    "ocr",
+                    source_locator.as_deref(),
+                )
                 .map_err(|error| AppError::Storage(format!("无法创建 OCR 解析任务：{error}")))?;
         }
 
@@ -684,7 +775,7 @@ impl AppState {
         self.push_system_message(format!(
             "OCR 解析任务已排队：{}（{}）。",
             display_relative_file_name(&candidate.relative_path),
-            request.tier
+            prepared.request().tier
         ));
         self.snapshot()
     }
@@ -845,20 +936,20 @@ impl AppState {
         let Some(candidate) = candidate else {
             return Ok(OcrJobOutcome::NoQueuedJob);
         };
-        let file_name = display_relative_file_name(&candidate.relative_path);
-        if !is_ocr_supported_extension(&candidate.extension) {
-            return Err(AppError::Storage(
-                "当前 OCR 队列仅支持 PDF 或图片文件".to_string(),
-            ));
-        }
-
+        let file_name = Self::display_ocr_job_name(&candidate);
         let config = ocr_config(&self.app_data_dir);
-        let input_path = Path::new(&root_path).join(&candidate.relative_path);
-        let request = build_ocr_request(&input_path, &config.model_dir, &config.tier);
+        let root_path = Path::new(&root_path);
         let run_result = (|| {
             self.update_parse_progress(&candidate.job_id, "正在验证 OCR 输入", 0, 1)?;
             notify("ocr-progress");
-            validate_ocr_inputs(&input_path, &config.model_dir, &config.tier)?;
+            let prepared = Self::prepare_ocr_request_for_candidate(
+                root_path,
+                &candidate.relative_path,
+                &candidate.extension,
+                candidate.source_locator.as_deref(),
+                &config.model_dir,
+                &config.tier,
+            )?;
             self.update_parse_progress(&candidate.job_id, "正在执行本地 OCR", 0, 1)?;
             notify("ocr-progress");
             let mut on_progress = |progress: crate::ocr::OcrProgressUpdate| {
@@ -874,10 +965,10 @@ impl AppState {
                     notify("ocr-progress");
                 }
             };
-            let ocr_result = runner(&candidate, &request, &mut on_progress)?;
+            let ocr_result = runner(&candidate, prepared.request(), &mut on_progress)?;
             self.update_parse_progress(&candidate.job_id, "正在写入索引", 1, 1)?;
             notify("ocr-progress");
-            build_ocr_document(&candidate.relative_path, &ocr_result)
+            build_ocr_document(prepared.source_locator(), &ocr_result)
         })();
 
         match run_result {
@@ -1548,6 +1639,9 @@ fn validate_backup_restore_payload(backup: &BackupExport) -> Result<(), AppError
     for job in &backup.parse_jobs {
         validate_required_backup_field(&job.id, "parseJob.id")?;
         validate_backup_job_status(&job.status)?;
+        if let Some(source_locator) = &job.source_locator {
+            validate_backup_relative_locator(source_locator)?;
+        }
         if let Some(file_id) = &job.file_id {
             validate_backup_reference(&file_ids, file_id, "parseJob.fileId")?;
         }
@@ -2218,6 +2312,49 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn restore_space_backup_preflight_rejects_parse_job_source_locator_path_traversal() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let state = AppState::new_with_app_data_dir(
+            SqliteStore::open_in_memory().expect("sqlite opens"),
+            app_data_dir.path().to_path_buf(),
+        );
+        let backup_path = write_backup_fixture(app_data_dir.path(), "library-backup.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&backup_path).expect("backup readable"))
+                .expect("backup json parses");
+        json["parseJobs"] = serde_json::json!([
+            {
+                "id": "job-traversal",
+                "fileId": "file-redis",
+                "sourceLocator": "..\\secret.docx#image-001",
+                "jobType": "ocr",
+                "status": "queued",
+                "errorMessage": null,
+                "startedAt": null,
+                "finishedAt": null,
+                "progressCurrent": 0,
+                "progressTotal": 1,
+                "phase": "等待执行",
+                "createdAt": "2026-06-23T00:00:00Z",
+                "updatedAt": "2026-06-23T00:00:00Z"
+            }
+        ]);
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&json).expect("backup serializes"),
+        )
+        .expect("backup overwritten");
+
+        let result =
+            state.preflight_space_backup_restore(backup_path.to_string_lossy().to_string());
+
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::PermissionDenied(message))
+                if message.contains("越界路径")
+        ));
+    }
     #[test]
     fn restore_space_backup_preflight_rejects_invalid_parse_job_status() {
         let app_data_dir = tempfile::tempdir().expect("app data dir");
@@ -2943,7 +3080,7 @@ mod tests {
             .expect("space scanned");
 
         let queued = state
-            .enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone(), None)
             .expect("ocr job queued");
 
         assert!(queued.parse_jobs.iter().any(|job| {
@@ -2978,7 +3115,7 @@ mod tests {
             .expect("space scanned");
 
         let queued = state
-            .enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone(), None)
             .expect("ocr job queued");
 
         assert_eq!(queued.files[0].extension, ".png");
@@ -3064,12 +3201,12 @@ mod tests {
             .expect("space scanned");
 
         let result =
-            state.enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone());
+            state.enqueue_ocr_parse_job(scanned.active_space_id, scanned.files[0].id.clone(), None);
 
         assert!(result
             .expect_err("md file is rejected")
             .to_string()
-            .contains("仅支持 PDF 或图片"));
+            .contains("仅支持 PDF、图片文件或 DOCX 文档图片"));
     }
 
     #[test]
@@ -3098,7 +3235,11 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
         state
-            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(
+                scanned.active_space_id.clone(),
+                scanned.files[0].id.clone(),
+                None,
+            )
             .expect("ocr job queued");
 
         state
@@ -3158,7 +3299,11 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
         state
-            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(
+                scanned.active_space_id.clone(),
+                scanned.files[0].id.clone(),
+                None,
+            )
             .expect("ocr job queued");
 
         state
@@ -3221,7 +3366,11 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
         state
-            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(
+                scanned.active_space_id.clone(),
+                scanned.files[0].id.clone(),
+                None,
+            )
             .expect("ocr job queued");
 
         state
@@ -3288,7 +3437,11 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
         state
-            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(
+                scanned.active_space_id.clone(),
+                scanned.files[0].id.clone(),
+                None,
+            )
             .expect("ocr job queued");
         let space_id = scanned.active_space_id.clone();
         state
@@ -3362,7 +3515,11 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
         state
-            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(
+                scanned.active_space_id.clone(),
+                scanned.files[0].id.clone(),
+                None,
+            )
             .expect("ocr job queued");
 
         state
@@ -3394,6 +3551,7 @@ mod tests {
             .enqueue_ocr_parse_job(
                 snapshot.active_space_id.clone(),
                 snapshot.files[0].id.clone(),
+                None,
             )
             .expect("failed ocr job can be retried");
         let ocr_jobs = retried
@@ -3442,7 +3600,11 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
         state
-            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(
+                scanned.active_space_id.clone(),
+                scanned.files[0].id.clone(),
+                None,
+            )
             .expect("ocr job queued");
 
         state
@@ -3504,7 +3666,11 @@ mod tests {
             .scan_knowledge_space(created.active_space_id)
             .expect("space scanned");
         state
-            .enqueue_ocr_parse_job(scanned.active_space_id.clone(), scanned.files[0].id.clone())
+            .enqueue_ocr_parse_job(
+                scanned.active_space_id.clone(),
+                scanned.files[0].id.clone(),
+                None,
+            )
             .expect("ocr job queued");
 
         state

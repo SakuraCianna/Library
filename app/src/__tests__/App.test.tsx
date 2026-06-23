@@ -252,6 +252,7 @@ function parseJob(overrides: Partial<ParseJobSummary> = {}): ParseJobSummary {
     id: "job-ocr",
     fileId: "file-pdf",
     fileName: "scan.pdf",
+    sourceLocator: null,
     jobType: "ocr",
     status: "queued",
     errorMessage: null,

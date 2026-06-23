@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,6 +22,11 @@ const DEFAULT_MAX_OCR_IMAGE_PIXELS: u64 = 25_000_000;
 const OCR_TEMP_ROOT_NAME: &str = "library-ocr-runs";
 const OCR_TEMP_DIR_PREFIX: &str = "run-";
 const REQUIRED_MODEL_FILES: [&str; 3] = ["inference.json", "inference.pdiparams", "inference.yml"];
+const DOCX_IMAGE_EXTENSIONS: [&str; 11] = [
+    ".bmp", ".emf", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp", ".wmf",
+];
+const OCR_SUPPORTED_DOCX_IMAGE_EXTENSIONS: [&str; 7] =
+    ["bmp", "jpeg", "jpg", "png", "tif", "tiff", "webp"];
 
 #[derive(Debug, serde::Deserialize)]
 struct OcrSidecarEnvelope {
@@ -40,6 +46,22 @@ pub struct OcrProgressUpdate {
     pub phase: String,
     pub current: u32,
     pub total: u32,
+}
+
+pub struct PreparedOcrRequest {
+    request: OcrSidecarRequest,
+    source_locator: String,
+    _temp_dir: Option<OcrSidecarTempDir>,
+}
+
+impl PreparedOcrRequest {
+    pub fn request(&self) -> &OcrSidecarRequest {
+        &self.request
+    }
+
+    pub fn source_locator(&self) -> &str {
+        &self.source_locator
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -383,6 +405,211 @@ fn remove_controlled_ocr_temp_dir(path: &Path) -> std::io::Result<()> {
     }
 
     fs::remove_dir_all(target)
+}
+
+fn docx_embedded_image_target(docx_path: &Path, image_number: u32) -> Result<String, AppError> {
+    let mut archive = open_docx_archive(docx_path)?;
+    let archive_names = archive
+        .file_names()
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let document_xml = read_docx_zip_text(&mut archive, "word/document.xml")?;
+    let relationships_xml =
+        read_docx_zip_text(&mut archive, "word/_rels/document.xml.rels").unwrap_or_default();
+    let image_targets =
+        docx_referenced_image_targets(&document_xml, &relationships_xml, &archive_names);
+    let target_index = usize::try_from(image_number.saturating_sub(1)).unwrap_or(usize::MAX);
+
+    image_targets.get(target_index).cloned().ok_or_else(|| {
+        AppError::Filesystem(format!(
+            "DOCX 内未找到可 OCR 的第 {image_number} 张内嵌图片"
+        ))
+    })
+}
+
+fn extract_docx_image_to_path(
+    docx_path: &Path,
+    image_target: &str,
+    output_path: &Path,
+) -> Result<(), AppError> {
+    let mut archive = open_docx_archive(docx_path)?;
+    let mut image_file = archive.by_name(image_target).map_err(|error| {
+        AppError::Filesystem(format!("无法读取 DOCX 内嵌图片 {image_target}：{error}"))
+    })?;
+    if image_file.size() > MAX_OCR_INPUT_BYTES {
+        return Err(AppError::Filesystem(format!(
+            "OCR_INPUT_TOO_LARGE：DOCX 内嵌图片过大，当前上限为 {} MB",
+            MAX_OCR_INPUT_BYTES / 1024 / 1024
+        )));
+    }
+    let mut image_bytes = Vec::new();
+    image_file
+        .read_to_end(&mut image_bytes)
+        .map_err(|error| AppError::Filesystem(format!("无法解压 DOCX 内嵌图片：{error}")))?;
+    fs::write(output_path, image_bytes)
+        .map_err(|error| AppError::Filesystem(format!("无法写入 OCR 临时图片：{error}")))?;
+    Ok(())
+}
+
+fn open_docx_archive(path: &Path) -> Result<zip::ZipArchive<fs::File>, AppError> {
+    let file = fs::File::open(path)
+        .map_err(|error| AppError::Filesystem(format!("无法打开 DOCX 文件：{error}")))?;
+    zip::ZipArchive::new(file)
+        .map_err(|error| AppError::Filesystem(format!("无法读取 DOCX 压缩结构：{error}")))
+}
+
+fn read_docx_zip_text(
+    archive: &mut zip::ZipArchive<fs::File>,
+    name: &str,
+) -> Result<String, AppError> {
+    let mut file = archive
+        .by_name(name)
+        .map_err(|error| AppError::Filesystem(format!("无法读取 DOCX 内容 {name}：{error}")))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|error| AppError::Filesystem(format!("无法解析 DOCX XML {name}：{error}")))?;
+    Ok(content)
+}
+
+fn docx_referenced_image_targets(
+    document_xml: &str,
+    relationships_xml: &str,
+    archive_names: &HashSet<String>,
+) -> Vec<String> {
+    let relationships = docx_image_relationship_targets(relationships_xml, archive_names);
+    extract_xml_start_tags(document_xml, "blip")
+        .into_iter()
+        .filter_map(|tag| {
+            let relationship_id = xml_attribute(tag, "r:embed")
+                .or_else(|| xml_attribute(tag, "embed"))
+                .or_else(|| xml_attribute(tag, "r:link"))
+                .or_else(|| xml_attribute(tag, "link"))?;
+            relationships.get(&relationship_id).cloned()
+        })
+        .collect()
+}
+
+fn docx_image_relationship_targets(
+    relationships_xml: &str,
+    archive_names: &HashSet<String>,
+) -> HashMap<String, String> {
+    extract_xml_start_tags(relationships_xml, "Relationship")
+        .into_iter()
+        .filter_map(|tag| {
+            let relationship_id = xml_attribute(tag, "Id")?;
+            let relationship_type = xml_attribute(tag, "Type").unwrap_or_default();
+            let target = normalize_docx_relationship_target(&xml_attribute(tag, "Target")?)?;
+            if relationship_type.trim().ends_with("/image")
+                && archive_names.contains(&target)
+                && target.starts_with("word/media/")
+                && is_docx_image_target(&target)
+            {
+                Some((relationship_id, target))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn normalize_docx_relationship_target(target: &str) -> Option<String> {
+    let normalized = unescape_xml(target).trim().replace('\\', "/");
+    if normalized.is_empty() || normalized.contains('\0') {
+        return None;
+    }
+    if normalized
+        .split('/')
+        .next()
+        .map(|part| part.contains(':'))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let joined = if normalized.starts_with('/') {
+        normalized.trim_start_matches('/').to_string()
+    } else if normalized.starts_with("word/") {
+        normalized
+    } else {
+        format!("word/{normalized}")
+    };
+    let parts = joined.split('/').collect::<Vec<_>>();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+fn is_docx_image_target(target: &str) -> bool {
+    let target = target.to_ascii_lowercase();
+    DOCX_IMAGE_EXTENSIONS
+        .iter()
+        .any(|extension| target.ends_with(extension))
+}
+
+fn is_ocr_supported_docx_image_extension(extension: &str) -> bool {
+    let extension = extension.trim_start_matches('.').to_ascii_lowercase();
+    OCR_SUPPORTED_DOCX_IMAGE_EXTENSIONS
+        .iter()
+        .any(|supported| *supported == extension)
+}
+
+fn extract_xml_start_tags<'a>(xml: &'a str, local_name: &str) -> Vec<&'a str> {
+    let mut tags = Vec::new();
+    let mut cursor = xml;
+    while let Some(start) = cursor.find('<') {
+        let candidate = &cursor[start..];
+        let Some(end) = candidate.find('>') else {
+            break;
+        };
+        let tag = &candidate[..=end];
+        if xml_tag_local_name(tag) == Some(local_name) {
+            tags.push(tag);
+        }
+        cursor = &candidate[end + 1..];
+    }
+    tags
+}
+
+fn xml_tag_local_name(tag: &str) -> Option<&str> {
+    let trimmed = tag.trim_start_matches('<').trim_start();
+    if trimmed.starts_with('/') || trimmed.starts_with('?') || trimmed.starts_with('!') {
+        return None;
+    }
+    let name_end = trimmed
+        .find(|character: char| character.is_whitespace() || character == '>' || character == '/')
+        .unwrap_or(trimmed.len());
+    let name = &trimmed[..name_end];
+    name.rsplit(':').next()
+}
+
+fn xml_attribute(tag: &str, attribute: &str) -> Option<String> {
+    let marker = format!("{attribute}=\"");
+    let start = tag.find(&marker)? + marker.len();
+    let rest = &tag[start..];
+    let end = rest.find('"')?;
+    Some(unescape_xml(&rest[..end]))
+}
+
+fn unescape_xml(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn embedded_image_number_from_locator(source_locator: &str) -> Option<u32> {
+    source_locator.split('#').skip(1).find_map(|fragment| {
+        let number = fragment.strip_prefix("image-")?;
+        if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
+            return None;
+        }
+        number.parse::<u32>().ok()
+    })
 }
 
 fn run_ocr_environment_check_with_paths(
@@ -818,13 +1045,15 @@ fn display_file_name(relative_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
     use std::{env, fs};
 
     use super::{
         build_ocr_document, build_ocr_request, handle_ocr_stream_line,
-        parse_ocr_environment_report, parse_ocr_sidecar_stdout, request_with_temp_dir,
+        parse_ocr_environment_report, parse_ocr_sidecar_stdout,
+        prepare_docx_embedded_image_ocr_request, request_with_temp_dir,
         resolve_ocr_environment_checker, resolve_ocr_sidecar_script, validate_ocr_inputs,
         OcrProgressUpdate, OcrSidecarTempDir,
     };
@@ -1067,6 +1296,75 @@ mod tests {
         assert_eq!(evidence.confidence_percent, Some(91));
     }
 
+    #[test]
+    fn extracts_referenced_docx_embedded_image_for_ocr_request() {
+        let _env_lock = env_lock().lock().expect("env lock");
+        let _page_guard = EnvVarGuard::set("OCR_MAX_PDF_PAGES", "12");
+        let _image_guard = EnvVarGuard::set("OCR_MAX_IMAGE_PIXELS", "25000000");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let docx_path = temp_dir.path().join("report.docx");
+        let model_dir = temp_dir.path().join("models");
+        create_complete_model_dir(&model_dir);
+        write_docx_with_referenced_and_unused_images(&docx_path);
+
+        let prepared = prepare_docx_embedded_image_ocr_request(
+            &docx_path,
+            "docs\\report.docx#image-001",
+            &model_dir,
+            "medium",
+        )
+        .expect("embedded image ocr request is prepared");
+
+        assert_eq!(prepared.source_locator(), "docs\\report.docx#image-001");
+        assert!(prepared
+            .request()
+            .file_path
+            .ends_with("embedded-image-001.png"));
+        assert_eq!(
+            fs::read(prepared.request().file_path.as_str()).expect("extracted image reads"),
+            b"referenced"
+        );
+    }
+
+    #[test]
+    fn preserves_docx_embedded_image_numbering_when_unsupported_images_come_first() {
+        let _env_lock = env_lock().lock().expect("env lock");
+        let _page_guard = EnvVarGuard::set("OCR_MAX_PDF_PAGES", "12");
+        let _image_guard = EnvVarGuard::set("OCR_MAX_IMAGE_PIXELS", "25000000");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let docx_path = temp_dir.path().join("mixed.docx");
+        let model_dir = temp_dir.path().join("models");
+        create_complete_model_dir(&model_dir);
+        write_docx_with_svg_then_png(&docx_path);
+
+        let unsupported = prepare_docx_embedded_image_ocr_request(
+            &docx_path,
+            "docs\\mixed.docx#image-001",
+            &model_dir,
+            "medium",
+        );
+        match unsupported {
+            Ok(_) => panic!("svg image should be rejected without renumbering later images"),
+            Err(error) => assert!(error.to_string().contains("不支持 OCR")),
+        }
+
+        let prepared = prepare_docx_embedded_image_ocr_request(
+            &docx_path,
+            "docs\\mixed.docx#image-002",
+            &model_dir,
+            "medium",
+        )
+        .expect("second embedded image keeps parser numbering");
+
+        assert!(prepared
+            .request()
+            .file_path
+            .ends_with("embedded-image-002.png"));
+        assert_eq!(
+            fs::read(prepared.request().file_path.as_str()).expect("extracted image reads"),
+            b"second-png"
+        );
+    }
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -1094,4 +1392,121 @@ mod tests {
             }
         }
     }
+
+    fn create_complete_model_dir(model_dir: &Path) {
+        fs::create_dir(model_dir).expect("model dir");
+        for model_name in ["PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"] {
+            let model_path = model_dir.join(model_name);
+            fs::create_dir(&model_path).expect("model subdir");
+            for file_name in ["inference.json", "inference.pdiparams", "inference.yml"] {
+                fs::write(model_path.join(file_name), "model").expect("model file");
+            }
+        }
+    }
+
+    fn write_docx_with_referenced_and_unused_images(path: &Path) {
+        let file = fs::File::create(path).expect("docx file");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("word/document.xml", options)
+            .expect("document xml starts");
+        zip.write_all(
+            br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:body><w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Picture 1" descr="Architecture diagram"/><a:graphic><a:graphicData><a:pic><a:blipFill><a:blip r:embed="rId5"/></a:blipFill></a:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+        )
+        .expect("document xml writes");
+
+        zip.start_file("word/_rels/document.xml.rels", options)
+            .expect("rels starts");
+        zip.write_all(
+            br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/><Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/unused.png"/></Relationships>"#,
+        )
+        .expect("rels writes");
+
+        zip.start_file("word/media/image1.png", options)
+            .expect("image starts");
+        zip.write_all(b"referenced").expect("image writes");
+        zip.start_file("word/media/unused.png", options)
+            .expect("unused starts");
+        zip.write_all(b"unused").expect("unused writes");
+        zip.finish().expect("docx finalized");
+    }
+
+    fn write_docx_with_svg_then_png(path: &Path) {
+        let file = fs::File::create(path).expect("docx file");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("word/document.xml", options)
+            .expect("document xml starts");
+        zip.write_all(
+            br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:body><w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:pic><a:blipFill><a:blip r:embed="rIdSvg"/></a:blipFill></a:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:pic><a:blipFill><a:blip r:embed="rIdPng"/></a:blipFill></a:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+        )
+        .expect("document xml writes");
+
+        zip.start_file("word/_rels/document.xml.rels", options)
+            .expect("rels starts");
+        zip.write_all(
+            br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdSvg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/diagram.svg"/><Relationship Id="rIdPng" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/scan.png"/></Relationships>"#,
+        )
+        .expect("rels writes");
+
+        zip.start_file("word/media/diagram.svg", options)
+            .expect("svg starts");
+        zip.write_all(b"<svg></svg>").expect("svg writes");
+        zip.start_file("word/media/scan.png", options)
+            .expect("png starts");
+        zip.write_all(b"second-png").expect("png writes");
+        zip.finish().expect("docx finalized");
+    }
+}
+
+pub fn prepare_file_ocr_request(
+    file_path: &Path,
+    source_locator: &str,
+    model_dir: &Path,
+    tier: &str,
+) -> Result<PreparedOcrRequest, AppError> {
+    validate_ocr_inputs(file_path, model_dir, tier)?;
+    Ok(PreparedOcrRequest {
+        request: build_ocr_request(file_path, model_dir, tier),
+        source_locator: source_locator.to_string(),
+        _temp_dir: None,
+    })
+}
+
+pub fn prepare_docx_embedded_image_ocr_request(
+    docx_path: &Path,
+    source_locator: &str,
+    model_dir: &Path,
+    tier: &str,
+) -> Result<PreparedOcrRequest, AppError> {
+    let image_number = embedded_image_number_from_locator(source_locator).ok_or_else(|| {
+        AppError::Filesystem("DOCX 内嵌图片 OCR 缺少有效的 #image-N 来源定位".to_string())
+    })?;
+    let image_target = docx_embedded_image_target(docx_path, image_number)?;
+    let temp_dir = OcrSidecarTempDir::create()?;
+    let extension = Path::new(&image_target)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
+    if !is_ocr_supported_docx_image_extension(&extension) {
+        return Err(AppError::Filesystem(format!(
+            "DOCX 第 {image_number} 张内嵌图片格式 .{extension} 当前不支持 OCR"
+        )));
+    }
+    let image_path = temp_dir
+        .path()
+        .join(format!("embedded-image-{image_number:03}.{extension}"));
+    extract_docx_image_to_path(docx_path, &image_target, &image_path)?;
+    validate_ocr_inputs(&image_path, model_dir, tier)?;
+
+    Ok(PreparedOcrRequest {
+        request: build_ocr_request(&image_path, model_dir, tier),
+        source_locator: source_locator.to_string(),
+        _temp_dir: Some(temp_dir),
+    })
 }

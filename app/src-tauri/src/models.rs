@@ -392,6 +392,8 @@ pub struct BackupExportKnowledgeBlock {
 pub struct BackupExportParseJob {
     pub id: String,
     pub file_id: Option<String>,
+    #[serde(default)]
+    pub source_locator: Option<String>,
     pub job_type: String,
     pub status: String,
     pub error_message: Option<String>,
@@ -446,6 +448,7 @@ pub struct ParseJobCandidate {
     pub file_id: String,
     pub relative_path: String,
     pub extension: String,
+    pub source_locator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -549,6 +552,8 @@ pub struct KnowledgeBlockContextRequest {
 pub struct EnqueueOcrJobRequest {
     pub space_id: String,
     pub file_id: String,
+    #[serde(default)]
+    pub source_locator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -602,6 +607,7 @@ pub struct ParseJobSummary {
     pub id: String,
     pub file_id: Option<String>,
     pub file_name: String,
+    pub source_locator: Option<String>,
     pub job_type: String,
     pub status: String,
     pub error_message: Option<String>,
