@@ -76,6 +76,13 @@ def test_run_parse_extracts_text_pdf_fallback(tmp_path: Path):
 
     assert response["ok"] is True
     assert "PDF cache penetration note" in response["result"]["body"]
+    assert response["result"]["segments"] == [
+        {
+            "title": "note.pdf · 第 1 页",
+            "body": "PDF cache penetration note",
+            "sourceLocator": "note.pdf#page-001",
+        }
+    ]
 
 
 def test_run_parse_extracts_docx_text(tmp_path: Path):

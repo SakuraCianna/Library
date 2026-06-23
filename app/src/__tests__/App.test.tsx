@@ -311,6 +311,59 @@ describe("App", () => {
     ).toBeDisabled();
   });
 
+  it("renders page-level source evidence labels", async () => {
+    const snapshotWithPageEvidence: WorkbenchSnapshot = {
+      ...snapshotWithSpace,
+      blockPreview: {
+        id: "block-pdf-page",
+        title: "report.pdf · 第 1 页",
+        excerpt: "PDF 第一页证据。",
+        sourceFileName: "report.pdf",
+        sourceLocator: "report.pdf#page-001",
+      },
+      messages: [
+        {
+          id: "msg-user-ocr-page",
+          role: "user",
+          content: "扫描版发票金额在哪里？",
+          sources: [],
+        },
+        {
+          id: "msg-assistant-ocr-page",
+          role: "assistant",
+          content: "扫描版发票金额在 OCR 第 1 页。",
+          sources: [
+            {
+              id: "block-ocr-page",
+              title: "scan.pdf · OCR 第 1 页 · 片段 1/2",
+              excerpt: "扫描版发票金额。",
+              sourceFileName: "scan.pdf",
+              sourceLocator: "scan.pdf#ocr-page-001#block-001",
+              sourceKind: "ocr",
+            },
+          ],
+        },
+      ],
+    };
+    Object.defineProperty(globalThis, "isTauri", {
+      configurable: true,
+      value: true,
+    });
+    mockIPC((cmd) => {
+      if (cmd === "get_runtime_status") {
+        return runtimeStatus;
+      }
+      return snapshotWithPageEvidence;
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("证据：PDF 第 1 页")).toBeInTheDocument();
+    expect(
+      screen.getByText("证据：OCR 第 1 页 · 片段 1"),
+    ).toBeInTheDocument();
+  });
+
   it("opens the default permission explanation from the gear button", async () => {
     Object.defineProperty(globalThis, "isTauri", {
       configurable: true,
@@ -567,6 +620,7 @@ describe("App", () => {
     expect(
       within(sourcePanel).getByText("定位：Redis面试.md#block-001"),
     ).toBeInTheDocument();
+    expect(within(sourcePanel).getByText("证据：片段 1")).toBeInTheDocument();
     expect(
       within(sourcePanel).getByText("缓存穿透需要空值缓存和布隆过滤器。"),
     ).toBeInTheDocument();
@@ -583,6 +637,7 @@ describe("App", () => {
     expect(
       within(sourcePanel).getByText("定位：Redis面试.md#block-002"),
     ).toBeInTheDocument();
+    expect(within(sourcePanel).getByText("证据：片段 2")).toBeInTheDocument();
     expect(within(sourcePanel).getByText("片段 2/2")).toBeInTheDocument();
 
     fireEvent.click(
@@ -961,7 +1016,7 @@ describe("App", () => {
         title: "scan.pdf",
         excerpt: "扫描版 PDF 的本地 OCR 文本",
         sourceFileName: "scan.pdf",
-        sourceLocator: "scan.pdf#ocr",
+        sourceLocator: "scan.pdf#ocr-page-001",
       },
     };
     Object.defineProperty(globalThis, "isTauri", {
@@ -984,6 +1039,7 @@ describe("App", () => {
 
     expect((await screen.findAllByText("已完成")).length).toBeGreaterThan(0);
     expect(screen.getByText("扫描版 PDF 的本地 OCR 文本")).toBeInTheDocument();
+    expect(screen.getByText("证据：OCR 第 1 页")).toBeInTheDocument();
   });
 
   it("refreshes the workbench when a backend worker event is emitted", async () => {
@@ -1013,7 +1069,7 @@ describe("App", () => {
         title: "scan.pdf",
         excerpt: "事件刷新后的 OCR 文本",
         sourceFileName: "scan.pdf",
-        sourceLocator: "scan.pdf#ocr",
+        sourceLocator: "scan.pdf#ocr-page-001",
       },
     };
     let currentSnapshot = snapshotWithRunningJob;

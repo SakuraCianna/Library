@@ -195,6 +195,39 @@ function sourceKindLabel(sourceKind?: string) {
   return "原始文件";
 }
 
+function sourceEvidenceLabel(sourceLocator: string) {
+  const fragments = sourceLocator
+    .split("#")
+    .slice(1)
+    .map((fragment) => fragment.trim())
+    .filter(Boolean);
+  const labels = fragments
+    .map((fragment) => {
+      const page = numberedSourceFragment(fragment, "page-");
+      if (page !== null) return `PDF 第 ${page} 页`;
+      const ocrPage = numberedSourceFragment(fragment, "ocr-page-");
+      if (ocrPage !== null) return `OCR 第 ${ocrPage} 页`;
+      const sheet = numberedSourceFragment(fragment, "sheet-");
+      if (sheet !== null) return `工作表 ${sheet}`;
+      const block = numberedSourceFragment(fragment, "block-");
+      if (block !== null) return `片段 ${block}`;
+      const ocrBlock = numberedSourceFragment(fragment, "ocr-block-");
+      if (ocrBlock !== null) return `OCR 片段 ${ocrBlock}`;
+      if (fragment === "ocr") return "OCR 结果";
+      return null;
+    })
+    .filter((label): label is string => label !== null);
+
+  return labels.length > 0 ? labels.join(" · ") : "文件级来源";
+}
+
+function numberedSourceFragment(fragment: string, prefix: string) {
+  if (!fragment.startsWith(prefix)) return null;
+  const value = fragment.slice(prefix.length);
+  if (!/^\d+$/.test(value)) return null;
+  return Number.parseInt(value, 10).toString();
+}
+
 export default function App() {
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const settingsModalRef = useRef<HTMLElement | null>(null);
@@ -776,6 +809,7 @@ export default function App() {
               <div className={styles.sourceMetaLine}>
                 <span>{focusedBlock.sourceFileName}</span>
                 <span>定位：{focusedBlock.sourceLocator}</span>
+                <span>证据：{sourceEvidenceLabel(focusedBlock.sourceLocator)}</span>
               </div>
               <h3 className={styles.panelTitle}>{focusedBlock.title}</h3>
               <p className={styles.blockExcerpt}>{focusedBlock.excerpt}</p>
@@ -1088,6 +1122,9 @@ export default function App() {
                               </span>
                               <span>{source.title}</span>
                               <span>定位：{source.sourceLocator}</span>
+                              <span>
+                                证据：{sourceEvidenceLabel(source.sourceLocator)}
+                              </span>
                               <span className={styles.messageSourceExcerpt}>
                                 {source.excerpt}
                               </span>
