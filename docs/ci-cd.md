@@ -44,12 +44,12 @@ CI 只需要 `contents: read` 权限，不读取 DeepSeek API Key，不下载 OC
 
 执行内容：
 
-- 使用 `windows-latest` 构建 Windows 桌面端包
+- 使用 `windows-latest` 构建 Windows 桌面端 NSIS 安装包
 - 安装 Node.js、Rust stable 和 `protoc`
 - 运行 `npm ci`
-- 运行 `npm run tauri build -- --no-sign`，显式生成未签名构建
-- 将 `app/src-tauri/target/release/bundle/**` 复制到 `release-assets/windows`
-- 写入 `release-assets/release-manifest.txt`，记录产品名、版本、来源 ref、commit、run id、是否未签名和保留天数
+- 运行 `npm run tauri build -- --no-sign --bundles nsis`，显式生成未签名 NSIS 构建
+- 校验 `app/src-tauri/target/release/bundle` 只包含 `nsis` 目标，并将 `bundle/nsis/**` 复制到 `release-assets/windows/nsis`
+- 写入 `release-assets/release-manifest.txt`，记录产品名、版本、来源 ref、commit、run id、是否未签名、bundle 目标和保留天数
 - 上传 `release-assets/**` 为 GitHub Actions artifact
 - 当触发来源是 tag push 时，单独使用最小写权限创建 GitHub Release 草稿并上传构建产物
 
@@ -72,13 +72,13 @@ library-windows-v0.1.0-codex-Library-run123
 artifact 内容固定包含：
 
 - `release-manifest.txt`
-- `windows/**`，即 Tauri 生成的 Windows bundle 文件
+- `windows/nsis/**`，即 Tauri 生成的 Windows NSIS bundle 文件
 
 artifact 保留 30 天。GitHub Actions artifact 保留策略允许设置 1 到 90 天；本项目使用 30 天，便于回看最近 dry run，同时避免长期占用 artifact 存储。
 
 ### 未签名构建限制
 
-当前发布产物未接入 Windows 代码签名，也没有接入自动更新。未签名构建只适合仓库维护者做本机验收，不应作为可信正式版本对外分发。Windows 或浏览器可能显示未知发布者、SmartScreen 或类似警告；只有确认 artifact 来自本仓库可信 workflow run 后，才应继续手动安装验收。
+当前发布产物未接入 Windows 代码签名，也没有接入自动更新。Release workflow 当前只构建未签名 NSIS 安装包；MSI/WiX、代码签名和自动更新仍属于后续独立模块。未签名构建只适合仓库维护者做本机验收，不应作为可信正式版本对外分发。Windows 或浏览器可能显示未知发布者、SmartScreen 或类似警告；只有确认 artifact 来自本仓库可信 workflow run 后，才应继续手动安装验收。
 
 代码签名证书、签名密钥、自动更新私钥和分发渠道配置必须作为后续独立模块处理，不写入仓库、README、PR 描述或 workflow 日志。
 
@@ -87,7 +87,7 @@ artifact 保留 30 天。GitHub Actions artifact 保留策略允许设置 1 到 
 每次准备发版前，至少完成一次 Windows 手动安装验收：
 
 1. 在 GitHub Actions 的 `Release` workflow run 页面下载最新 `library-windows-v<version>-<safe-ref>-run<run-number>` artifact。
-2. 解压后先打开 `release-manifest.txt`，确认 `version`、`commit`、`sourceRef` 和 `unsigned=true` 符合预期。
+2. 解压后先打开 `release-manifest.txt`，确认 `version`、`commit`、`sourceRef`、`unsigned=true` 和 `bundleTargets=nsis` 符合预期。
 3. 在 `windows` 目录中选择 Tauri 生成的安装包执行安装；优先使用普通测试账户或一次性测试环境，不要覆盖正在使用的生产知识库目录。
 4. 启动“个人知识库”，确认主窗口可打开，设置页可进入，模型/OCR 状态不会显示原始密钥。
 5. 使用一个临时空文件夹创建知识库，执行扫描，确认不会报启动或权限边界错误。

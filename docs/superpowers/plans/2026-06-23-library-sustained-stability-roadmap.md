@@ -222,6 +222,7 @@ Set-Location E:\CodeHome\Library
 - [ ] Verify the release workflow still builds on Windows with the current Node, Rust, and `protoc` setup.
 - [x] Document unsigned build limitations and manual installer smoke-test steps.
 - [x] Add release artifact naming and retention expectations.
+- [x] Limit the current release workflow to unsigned NSIS artifacts until MSI/WiX, signing, and updater work are handled as separate modules.
 - [x] Keep automatic update and code signing as separate modules unless signing material is available.
 - [ ] Run the full verification gate and the release workflow dry run when available.
 - [ ] Finish with reviewer, commit, PR, merge, and branch sync.

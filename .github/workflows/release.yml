@@ -85,7 +85,7 @@ jobs:
 
       - name: Build Tauri Windows bundle
         working-directory: app
-        run: npm run tauri build -- --no-sign
+        run: npm run tauri build -- --no-sign --bundles nsis
 
       - name: Stage Windows release artifact
         id: release-metadata
@@ -113,6 +113,17 @@ jobs:
           }
 
           $bundleRootPath = (Resolve-Path -LiteralPath $bundleRoot).Path
+          $unexpectedBundleDirs = Get-ChildItem -LiteralPath $bundleRootPath -Directory | Where-Object { $_.Name -ne "nsis" }
+          if ($unexpectedBundleDirs) {
+            $unexpectedNames = ($unexpectedBundleDirs | ForEach-Object { $_.Name }) -join ", "
+            throw "Release workflow 当前只允许上传 NSIS bundle，但发现其他 bundle 目录：$unexpectedNames"
+          }
+
+          $nsisBundleRoot = Join-Path $bundleRootPath "nsis"
+          if (-not (Test-Path -LiteralPath $nsisBundleRoot -PathType Container)) {
+            throw "没有找到 NSIS bundle 目录：$nsisBundleRoot"
+          }
+
           $stagingRoot = Join-Path ".." "release-assets"
           $windowsRoot = Join-Path $stagingRoot "windows"
           if (Test-Path -LiteralPath $stagingRoot) {
@@ -120,9 +131,9 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path $windowsRoot | Out-Null
 
-          $bundleFiles = Get-ChildItem -LiteralPath $bundleRootPath -Recurse -File
+          $bundleFiles = Get-ChildItem -LiteralPath $nsisBundleRoot -Recurse -File
           if (-not $bundleFiles) {
-            throw "没有找到可上传的 Tauri 构建产物"
+            throw "没有找到可上传的 NSIS 构建产物"
           }
 
           foreach ($file in $bundleFiles) {
@@ -142,6 +153,7 @@ jobs:
             "runId=$env:GITHUB_RUN_ID",
             "runNumber=$env:GITHUB_RUN_NUMBER",
             "unsigned=true",
+            "bundleTargets=nsis",
             "bundleRoot=windows",
             "retentionDays=$env:RELEASE_ARTIFACT_RETENTION_DAYS"
           )
@@ -187,7 +199,7 @@ jobs:
             throw "没有找到可发布的 Tauri 构建产物"
           }
           $notes = @(
-            "Windows 桌面端自动构建产物。",
+            "Windows 桌面端 NSIS 自动构建产物。",
             "",
             "- Actions artifact: $env:RELEASE_ARTIFACT_NAME",
             "- Artifact retention: $env:RELEASE_ARTIFACT_RETENTION_DAYS days",
