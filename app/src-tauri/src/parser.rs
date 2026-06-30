@@ -95,8 +95,48 @@ pub fn parse_file_with_sidecar(
     root_path: &Path,
     candidate: &FileParseCandidate,
     resource_script_path: Option<&Path>,
+    app_data_dir: &Path,
 ) -> Result<ParsedDocument, AppError> {
     let file_path = resolve_file_path(root_path, &candidate.relative_path)?;
+
+    let ext = candidate.extension.to_lowercase();
+    if ["png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"].contains(&ext.as_str()) {
+        let vision_config = crate::runtime::vision_config(app_data_dir);
+        let request = crate::models::VisionSidecarRequest {
+            file_path: file_path.to_string_lossy().to_string(),
+            model_dir: vision_config.model_dir.to_string_lossy().to_string(),
+            prompt: "".to_string(),
+        };
+
+        if !crate::runtime::runtime_status(app_data_dir).vision.configured {
+            let file_name = crate::state::display_relative_file_name(&candidate.relative_path);
+            return Ok(ParsedDocument {
+                title: file_name.clone(),
+                body: "Vision 模型未配置，无法生成图片描述".to_string(),
+                summary: "Vision 模型未配置".to_string(),
+                source_locator: candidate.relative_path.clone(),
+                segments: vec![],
+                table_insights: vec![],
+            });
+        }
+
+        let result = crate::vision::run_vision_sidecar_cancellable(
+            &request,
+            resource_script_path,
+            || false,
+        )?;
+        
+        let file_name = crate::state::display_relative_file_name(&candidate.relative_path);
+        return Ok(ParsedDocument {
+            title: file_name,
+            body: result.caption.clone(),
+            summary: result.caption,
+            source_locator: candidate.relative_path.clone(),
+            segments: vec![],
+            table_insights: vec![],
+        });
+    }
+
     let script_path = match resolve_parser_sidecar_script(resource_script_path) {
         Ok(script_path) => script_path,
         Err(error) => {
@@ -109,13 +149,61 @@ pub fn parse_file_with_sidecar(
     let project_root = discover_project_root().ok();
     let python_path = discover_python_executable(project_root.as_deref())?;
 
-    run_parser_sidecar_with_paths(
+    let mut document = run_parser_sidecar_with_paths(
         &file_path,
         &candidate.relative_path,
         &python_path,
         &script_path,
         PARSER_SIDECAR_TIMEOUT,
-    )
+    )?;
+
+    if crate::runtime::runtime_status(app_data_dir).vision.configured {
+        let vision_config = crate::runtime::vision_config(app_data_dir);
+        let model_dir = vision_config.model_dir.to_string_lossy().to_string();
+
+        for segment in &mut document.segments {
+            if let Some(evidence) = &segment.evidence {
+                if evidence.kind.as_deref() == Some("embedded_image") {
+                    let source_locator = &segment.source_locator;
+                        if let Some(image_number) = crate::ocr::embedded_image_number_from_locator(source_locator) {
+                            if let Ok(image_target) = crate::ocr::docx_embedded_image_target(&file_path, image_number) {
+                                let extension = std::path::Path::new(&image_target)
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("png")
+                                    .to_ascii_lowercase();
+
+                                if crate::ocr::is_ocr_supported_docx_image_extension(&extension) {
+                                    if let Ok(temp_dir) = crate::ocr::OcrSidecarTempDir::create() {
+                                        let extension_str = extension.as_str();
+                                        let image_path = temp_dir.path().join(format!("embedded-image-{image_number:03}.{extension_str}"));
+                                        if crate::ocr::extract_docx_image_to_path(&file_path, &image_target, &image_path).is_ok() {
+                                            let request = crate::models::VisionSidecarRequest {
+                                                file_path: image_path.to_string_lossy().to_string(),
+                                                model_dir: model_dir.clone(),
+                                                prompt: "".to_string(),
+                                            };
+                                            if let Ok(result) = crate::vision::run_vision_sidecar_cancellable(
+                                                &request,
+                                                resource_script_path,
+                                                || false,
+                                            ) {
+                                                if !result.caption.is_empty() {
+                                                    segment.body.push_str("\n\n[图片描述] ");
+                                                    segment.body.push_str(&result.caption);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    Ok(document)
 }
 
 #[derive(Debug)]
@@ -1045,6 +1133,7 @@ mod tests {
                 extension: "md".to_string(),
             },
             Some(&temp_dir.path().join("missing_parser.py")),
+            temp_dir.path(),
         )
         .expect("fallback parser succeeds");
 

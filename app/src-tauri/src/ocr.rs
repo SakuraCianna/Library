@@ -341,12 +341,12 @@ where
     })
 }
 
-struct OcrSidecarTempDir {
+pub struct OcrSidecarTempDir {
     path: PathBuf,
 }
 
 impl OcrSidecarTempDir {
-    fn create() -> Result<Self, AppError> {
+    pub fn create() -> Result<Self, AppError> {
         let root = ocr_temp_root();
         fs::create_dir_all(&root)
             .map_err(|error| AppError::Filesystem(format!("无法创建 OCR 临时目录：{error}")))?;
@@ -357,7 +357,7 @@ impl OcrSidecarTempDir {
         Ok(Self { path })
     }
 
-    fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -407,7 +407,7 @@ fn remove_controlled_ocr_temp_dir(path: &Path) -> std::io::Result<()> {
     fs::remove_dir_all(target)
 }
 
-fn docx_embedded_image_target(docx_path: &Path, image_number: u32) -> Result<String, AppError> {
+pub fn docx_embedded_image_target(docx_path: &Path, image_number: u32) -> Result<String, AppError> {
     let mut archive = open_docx_archive(docx_path)?;
     let archive_names = archive
         .file_names()
@@ -427,7 +427,7 @@ fn docx_embedded_image_target(docx_path: &Path, image_number: u32) -> Result<Str
     })
 }
 
-fn extract_docx_image_to_path(
+pub fn extract_docx_image_to_path(
     docx_path: &Path,
     image_target: &str,
     output_path: &Path,
@@ -549,7 +549,7 @@ fn is_docx_image_target(target: &str) -> bool {
         .any(|extension| target.ends_with(extension))
 }
 
-fn is_ocr_supported_docx_image_extension(extension: &str) -> bool {
+pub fn is_ocr_supported_docx_image_extension(extension: &str) -> bool {
     let extension = extension.trim_start_matches('.').to_ascii_lowercase();
     OCR_SUPPORTED_DOCX_IMAGE_EXTENSIONS
         .iter()
@@ -602,7 +602,7 @@ fn unescape_xml(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn embedded_image_number_from_locator(source_locator: &str) -> Option<u32> {
+pub fn embedded_image_number_from_locator(source_locator: &str) -> Option<u32> {
     source_locator.split('#').skip(1).find_map(|fragment| {
         let number = fragment.strip_prefix("image-")?;
         if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {

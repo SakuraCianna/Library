@@ -588,6 +588,7 @@ impl AppState {
                         root_path,
                         &file_candidate,
                         resource_script_path.as_deref(),
+                        &self.app_data_dir,
                     )
                 },
                 &mut notify,
@@ -1958,7 +1959,7 @@ fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn display_relative_file_name(relative_path: &str) -> String {
+pub fn display_relative_file_name(relative_path: &str) -> String {
     relative_path
         .rsplit(['\\', '/'])
         .next()
