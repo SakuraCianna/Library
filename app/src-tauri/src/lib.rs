@@ -8,6 +8,7 @@ mod parser;
 mod runtime;
 mod scanner;
 mod state;
+mod vision;
 pub mod storage;
 pub mod vector;
 

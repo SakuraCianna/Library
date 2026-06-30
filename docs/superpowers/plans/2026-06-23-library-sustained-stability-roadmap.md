@@ -256,7 +256,7 @@ Set-Location E:\CodeHome\Library
 - [x] Surface evidence-range details in source cards and source detail UI without exposing absolute paths.
 - [x] Register DOCX embedded images as local document-image evidence placeholders with `#image-N` locators and available alt text, without claiming OCR or visual semantic understanding.
 - [x] Add DOCX embedded-image OCR queueing and media extraction while preserving original document-image evidence and local-only boundaries.
-- [ ] Finish this embedded-image OCR slice with reviewer, commit, PR, merge, and branch sync.
+- [x] Finish this embedded-image OCR slice with reviewer, commit, PR, merge, and branch sync.
 
 ## Next Immediate Target
 

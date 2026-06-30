@@ -158,6 +158,7 @@ pub struct PendingAction {
 pub struct RuntimeStatus {
     pub deepseek: DeepSeekRuntimeStatus,
     pub ocr: OcrRuntimeStatus,
+    pub vision: VisionRuntimeStatus,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -176,6 +177,14 @@ pub struct OcrRuntimeStatus {
     pub tier: String,
     pub model_dir: String,
     pub missing_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionRuntimeStatus {
+    pub configured: bool,
+    pub model_dir: String,
+    pub missing_models: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -599,6 +608,21 @@ pub struct OcrSidecarResult {
     pub text: String,
     pub page_count: u32,
     pub pages: Vec<OcrPageResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionSidecarRequest {
+    pub file_path: String,
+    pub model_dir: String,
+    #[serde(default)]
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionSidecarResult {
+    pub caption: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
