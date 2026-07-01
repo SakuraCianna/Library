@@ -161,11 +161,23 @@ def read_text_lossy(file_path: Path) -> str:
 
 def read_pdf_text(file_path: Path, relative_path: str) -> tuple[str, list[dict[str, Any]]]:
     try:
-        from pypdf import PdfReader
+        import pdfplumber
 
-        reader = PdfReader(file_path)
-        pages = [page.extract_text() or "" for page in reader.pages]
-        page_segments = page_text_segments(relative_path, pages)
+        pages_text = []
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                width = page.width
+                height = page.height
+                # Crop top 5% and bottom 5% to remove headers/footers
+                bbox = (0, height * 0.05, width, height * 0.95)
+                try:
+                    cropped_page = page.crop(bbox)
+                    text = cropped_page.extract_text()
+                except ValueError:
+                    text = page.extract_text()
+                pages_text.append(text or "")
+
+        page_segments = page_text_segments(relative_path, pages_text)
         text = "\n".join(segment["body"] for segment in page_segments)
         if normalize_text(text):
             return text, page_segments
