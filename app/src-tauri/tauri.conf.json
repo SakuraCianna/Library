@@ -23,7 +23,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "PUBLIC_KEY_PLACEHOLDER",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExMzY4RTAyQ0JBQTZBRUMKUldUc2FxckxBbzQyRWJLMmExVUdIOG42dWVLc3FNV2t0clFYbUJ3MXpOam0zMFUxOHljRkMydlYK",
       "endpoints": [
         "https://github.com/SakuraCianna/Library/releases/latest/download/latest.json"
       ]
