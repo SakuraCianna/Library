@@ -86,9 +86,7 @@ impl SqliteStore {
 
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         let connection = Connection::open_in_memory()?;
-        connection.execute_batch(
-            "PRAGMA foreign_keys = ON;",
-        )?;
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let mut store = Self { connection };
         store.apply_foundation_schema()?;
         Ok(store)
@@ -150,14 +148,16 @@ impl SqliteStore {
             "CREATE TABLE IF NOT EXISTS user_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            );"
+            );",
         )?;
 
         Ok(())
     }
 
     pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
-        let mut statement = self.connection.prepare("SELECT value FROM user_settings WHERE key = ?")?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT value FROM user_settings WHERE key = ?")?;
         let mut rows = statement.query([key])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))

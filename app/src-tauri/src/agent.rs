@@ -74,9 +74,11 @@ async fn call_deepseek(
         .build()
         .ok()?;
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    
-    let tone_instruction = tone.map(|t| format!(" 请保持{}的语气。", t)).unwrap_or_default();
-    
+
+    let tone_instruction = tone
+        .map(|t| format!(" 请保持{}的语气。", t))
+        .unwrap_or_default();
+
     let payload = ChatCompletionRequest {
         model: config.model.clone(),
         messages: vec![
@@ -98,10 +100,17 @@ async fn call_deepseek(
     let mut base_delay = 1;
 
     while attempts < max_attempts {
-        if let Ok(response) = client.post(&url).bearer_auth(config.api_key.trim()).json(&payload).send().await {
+        if let Ok(response) = client
+            .post(&url)
+            .bearer_auth(config.api_key.trim())
+            .json(&payload)
+            .send()
+            .await
+        {
             if response.status().is_success() {
                 if let Ok(body) = response.json::<ChatCompletionResponse>().await {
-                    return body.choices
+                    return body
+                        .choices
                         .into_iter()
                         .find_map(|choice| choice.message.content)
                         .map(|content| content.trim().to_string())
@@ -109,7 +118,7 @@ async fn call_deepseek(
                 }
             }
         }
-        
+
         attempts += 1;
         if attempts < max_attempts {
             tokio::time::sleep(Duration::from_secs(base_delay)).await;

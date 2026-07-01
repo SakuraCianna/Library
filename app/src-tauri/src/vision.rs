@@ -17,6 +17,7 @@ struct VisionSidecarEnvelope {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct VisionSidecarError {
     code: String,
     message: String,
