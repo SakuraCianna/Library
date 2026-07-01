@@ -73,6 +73,12 @@ pub enum ScanJobWriteOutcome {
 impl SqliteStore {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
+        connection.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA foreign_keys = ON;",
+        )?;
         let mut store = Self { connection };
         store.apply_foundation_schema()?;
         Ok(store)
@@ -80,6 +86,9 @@ impl SqliteStore {
 
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         let connection = Connection::open_in_memory()?;
+        connection.execute_batch(
+            "PRAGMA foreign_keys = ON;",
+        )?;
         let mut store = Self { connection };
         store.apply_foundation_schema()?;
         Ok(store)

@@ -17,6 +17,7 @@ import {
   type FormEvent,
   type MouseEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -248,6 +249,61 @@ function numberedSourceFragment(fragment: string, prefix: string) {
   return Number.parseInt(value, 10).toString();
 }
 
+interface ChatInputBoxProps {
+  hasActiveSpace: boolean;
+  loading: boolean;
+  onAsk: (question: string) => void;
+}
+
+function ChatInputBox({ hasActiveSpace, loading, onAsk }: ChatInputBoxProps) {
+  const [question, setQuestion] = useState("");
+  const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canAskAgent) return;
+    const submittedQuestion = question.trim();
+    setQuestion("");
+    onAsk(submittedQuestion);
+  }
+
+  return (
+    <form
+      aria-label="智能助手输入区"
+      className={styles.composer}
+      onSubmit={handleSubmit}
+    >
+      <div className={styles.composerInput}>
+        <textarea
+          aria-label="向智能助手提问"
+          className={styles.composerBox}
+          placeholder={hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"}
+          rows={3}
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              if (canAskAgent) {
+                // @ts-expect-error valid form submission simulation
+                handleSubmit(event);
+              }
+            }
+          }}
+        />
+        <button
+          className={styles.sendButton}
+          disabled={!canAskAgent}
+          type="submit"
+        >
+          <Icon aria-hidden icon={sendIcon} />
+          <span>发送</span>
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export default function App() {
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const settingsModalRef = useRef<HTMLElement | null>(null);
@@ -269,7 +325,6 @@ export default function App() {
   );
   const [openingSource, setOpeningSource] = useState(false);
   const [sourceOpenError, setSourceOpenError] = useState<string | null>(null);
-  const [question, setQuestion] = useState("");
   const [queuePollingUntil, setQueuePollingUntil] = useState(0);
   const [sourcesVisible, setSourcesVisible] = useState(true);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
@@ -315,25 +370,39 @@ export default function App() {
   const scanQueueCount = activeSpace?.scanQueueCount ?? 0;
   const documentQueueCount = activeSpace?.documentQueueCount ?? 0;
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
-  const hasQueuedScanJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "scan" && job.status === "queued",
-  );
-  const hasRunningScanJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "scan" && job.status === "running",
-  );
-  const hasQueuedDocumentJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "document" && job.status === "queued",
-  );
-  const hasRunningDocumentJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "document" && job.status === "running",
-  );
-  const hasQueuedOcrJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "ocr" && job.status === "queued",
-  );
-  const hasRunningOcrJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "ocr" && job.status === "running",
-  );
-  const activeParseFileIds = new Set(
+  const {
+    hasQueuedScanJob,
+    hasRunningScanJob,
+    hasQueuedDocumentJob,
+    hasRunningDocumentJob,
+    hasQueuedOcrJob,
+    hasRunningOcrJob,
+  } = useMemo(() => {
+    let qScan = false, rScan = false;
+    let qDoc = false, rDoc = false;
+    let qOcr = false, rOcr = false;
+    for (const job of snapshot.parseJobs) {
+      if (job.jobType === "scan") {
+        if (job.status === "queued") qScan = true;
+        if (job.status === "running") rScan = true;
+      } else if (job.jobType === "document") {
+        if (job.status === "queued") qDoc = true;
+        if (job.status === "running") rDoc = true;
+      } else if (job.jobType === "ocr") {
+        if (job.status === "queued") qOcr = true;
+        if (job.status === "running") rOcr = true;
+      }
+    }
+    return {
+      hasQueuedScanJob: qScan,
+      hasRunningScanJob: rScan,
+      hasQueuedDocumentJob: qDoc,
+      hasRunningDocumentJob: rDoc,
+      hasQueuedOcrJob: qOcr,
+      hasRunningOcrJob: rOcr,
+    };
+  }, [snapshot.parseJobs]);
+  const activeParseFileIds = useMemo(() => new Set(
     snapshot.parseJobs
       .filter(
         (job) =>
@@ -341,10 +410,9 @@ export default function App() {
           Boolean(job.fileId),
       )
       .flatMap((job) => (job.fileId ? [job.fileId] : [])),
-  );
+  ), [snapshot.parseJobs]);
   const hasRunningParseJob =
     hasRunningScanJob || hasRunningDocumentJob || hasRunningOcrJob;
-  const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
   const selectedContextBlock =
     selectedSource && sourceContext && sourceContextIndex !== null
       ? (sourceContext.blocks[sourceContextIndex] ?? null)
@@ -525,17 +593,6 @@ export default function App() {
 
   function keepQueuePollingWarm() {
     setQueuePollingUntil(Date.now() + 15000);
-  }
-
-  function handleAskAgent(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!canAskAgent) {
-      return;
-    }
-
-    const submittedQuestion = question.trim();
-    setQuestion("");
-    void askAgentQuestion(submittedQuestion);
   }
 
   async function handleOpenFocusedSource() {
@@ -1254,32 +1311,11 @@ export default function App() {
           ) : null}
         </section>
 
-        <form
-          aria-label="智能助手输入区"
-          className={styles.composer}
-          onSubmit={handleAskAgent}
-        >
-          <div className={styles.composerInput}>
-            <textarea
-              aria-label="向智能助手提问"
-              className={styles.composerBox}
-              placeholder={
-                hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"
-              }
-              rows={3}
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-            />
-            <button
-              className={styles.sendButton}
-              disabled={!canAskAgent}
-              type="submit"
-            >
-              <Icon aria-hidden icon={sendIcon} />
-              <span>发送</span>
-            </button>
-          </div>
-        </form>
+        <ChatInputBox
+          hasActiveSpace={hasActiveSpace}
+          loading={loading}
+          onAsk={(q) => void askAgentQuestion(q)}
+        />
       </aside>
 
       {settingsOpen ? (
