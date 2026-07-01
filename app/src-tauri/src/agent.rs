@@ -5,13 +5,17 @@ use crate::models::KnowledgeBlockSearchHit;
 
 const MAX_CONTEXT_CHARS: usize = 4_000;
 
-pub async fn answer_question(question: &str, hits: &[KnowledgeBlockSearchHit]) -> String {
+pub async fn answer_question(
+    question: &str,
+    hits: &[KnowledgeBlockSearchHit],
+    tone: Option<String>,
+) -> String {
     let local_answer = build_local_answer(question, hits);
     let Some(config) = crate::runtime::deepseek_config() else {
         return local_answer;
     };
 
-    match call_deepseek(&config, question, hits).await {
+    match call_deepseek(&config, question, hits, tone.as_deref()).await {
         Some(answer) => answer,
         None => format!("{local_answer}\n\nDeepSeek 暂时不可用，已使用本地索引生成回答。"),
     }
@@ -58,6 +62,7 @@ async fn call_deepseek(
     config: &crate::runtime::DeepSeekConfig,
     question: &str,
     hits: &[KnowledgeBlockSearchHit],
+    tone: Option<&str>,
 ) -> Option<String> {
     if hits.is_empty() {
         return None;
@@ -69,12 +74,15 @@ async fn call_deepseek(
         .build()
         .ok()?;
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    
+    let tone_instruction = tone.map(|t| format!(" 请保持{}的语气。", t)).unwrap_or_default();
+    
     let payload = ChatCompletionRequest {
         model: config.model.clone(),
         messages: vec![
             ChatMessagePayload {
                 role: "system".to_string(),
-                content: "你是本地优先桌面知识库助手。只能基于给定本地索引内容回答；回答要简洁，不要编造来源，并在末尾列出用到的来源编号和来源文件。".to_string(),
+                content: format!("你是本地优先桌面知识库助手。只能基于给定本地索引内容回答；回答要简洁，不要编造来源，并在末尾列出用到的来源编号和来源文件。{}", tone_instruction),
             },
             ChatMessagePayload {
                 role: "user".to_string(),
@@ -84,24 +92,32 @@ async fn call_deepseek(
         stream: false,
         temperature: 0.2,
     };
-    let response = client
-        .post(url)
-        .bearer_auth(config.api_key.trim())
-        .json(&payload)
-        .send()
-        .await
-        .ok()?;
 
-    if !response.status().is_success() {
-        return None;
+    let mut attempts = 0;
+    let max_attempts = 3;
+    let mut base_delay = 1;
+
+    while attempts < max_attempts {
+        if let Ok(response) = client.post(&url).bearer_auth(config.api_key.trim()).json(&payload).send().await {
+            if response.status().is_success() {
+                if let Ok(body) = response.json::<ChatCompletionResponse>().await {
+                    return body.choices
+                        .into_iter()
+                        .find_map(|choice| choice.message.content)
+                        .map(|content| content.trim().to_string())
+                        .filter(|content| !content.is_empty());
+                }
+            }
+        }
+        
+        attempts += 1;
+        if attempts < max_attempts {
+            tokio::time::sleep(Duration::from_secs(base_delay)).await;
+            base_delay *= 2;
+        }
     }
 
-    let body = response.json::<ChatCompletionResponse>().await.ok()?;
-    body.choices
-        .into_iter()
-        .find_map(|choice| choice.message.content)
-        .map(|content| content.trim().to_string())
-        .filter(|content| !content.is_empty())
+    None
 }
 
 fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {

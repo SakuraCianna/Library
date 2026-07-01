@@ -21,15 +21,22 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExMzY4RTAyQ0JBQTZBRUMKUldUc2FxckxBbzQyRWJLMmExVUdIOG42dWVLc3FNV2t0clFYbUJ3MXpOam0zMFUxOHljRkMydlYK",
+      "endpoints": [
+        "https://github.com/SakuraCianna/Library/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
     "resources": {
       "../../sidecars/ocr/check_ocr_environment.py": "sidecars/ocr/check_ocr_environment.py",
       "../../sidecars/ocr/ocr_sidecar.py": "sidecars/ocr/ocr_sidecar.py",
-      "../../sidecars/ocr/requirements.txt": "sidecars/ocr/requirements.txt",
       "../../sidecars/parser/parser_sidecar.py": "sidecars/parser/parser_sidecar.py",
-      "../../sidecars/parser/requirements.txt": "sidecars/parser/requirements.txt"
+      "../../sidecars/requirements.txt": "sidecars/requirements.txt"
     },
     "icon": [
       "icons/32x32.png",

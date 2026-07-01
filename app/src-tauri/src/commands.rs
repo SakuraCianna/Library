@@ -254,3 +254,13 @@ pub fn check_ocr_environment(app: tauri::AppHandle) -> Result<OcrEnvironmentRepo
     crate::ocr::check_ocr_environment(&app_data_dir, resource_checker.as_deref())
         .map_err(Into::into)
 }
+
+#[tauri::command]
+pub fn get_agent_tone(state: State<'_, AppState>) -> Result<Option<String>, ErrorResponse> {
+    state.get_agent_tone().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn set_agent_tone(state: State<'_, AppState>, tone: String) -> Result<(), ErrorResponse> {
+    state.set_agent_tone(&tone).map_err(Into::into)
+}

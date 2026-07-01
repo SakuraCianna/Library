@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use crate::models::{DeepSeekRuntimeStatus, OcrRuntimeStatus, RuntimeStatus};
+use crate::models::{DeepSeekRuntimeStatus, OcrRuntimeStatus, RuntimeStatus, VisionRuntimeStatus};
 
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-flash";
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
@@ -23,6 +23,11 @@ pub struct OcrConfig {
     pub model_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisionConfig {
+    pub model_dir: PathBuf,
+}
+
 pub fn runtime_status(app_data_dir: &Path) -> RuntimeStatus {
     let local_env = load_local_env();
     let api_key = config_value("DEEPSEEK_API_KEY", &local_env);
@@ -31,8 +36,16 @@ pub fn runtime_status(app_data_dir: &Path) -> RuntimeStatus {
     let base_url = config_value("DEEPSEEK_BASE_URL", &local_env)
         .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_string());
     let ocr = ocr_config_from_values(app_data_dir, &local_env);
+    let vision = vision_config_from_values(app_data_dir, &local_env);
 
-    build_runtime_status(api_key.as_deref(), model, base_url, ocr.tier, ocr.model_dir)
+    build_runtime_status(
+        api_key.as_deref(),
+        model,
+        base_url,
+        ocr.tier,
+        ocr.model_dir,
+        vision.model_dir,
+    )
 }
 
 pub fn deepseek_config() -> Option<DeepSeekConfig> {
@@ -66,14 +79,32 @@ fn ocr_config_from_values(app_data_dir: &Path, local_env: &HashMap<String, Strin
     OcrConfig { tier, model_dir }
 }
 
+pub fn vision_config(app_data_dir: &Path) -> VisionConfig {
+    let local_env = load_local_env();
+    vision_config_from_values(app_data_dir, &local_env)
+}
+
+fn vision_config_from_values(
+    app_data_dir: &Path,
+    local_env: &HashMap<String, String>,
+) -> VisionConfig {
+    let model_dir = config_value("VISION_MODEL_DIR", local_env)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_vision_model_dir(app_data_dir));
+
+    VisionConfig { model_dir }
+}
+
 fn build_runtime_status(
     api_key: Option<&str>,
     model: String,
     base_url: String,
     tier: String,
-    model_dir: PathBuf,
+    ocr_model_dir: PathBuf,
+    vision_model_dir: PathBuf,
 ) -> RuntimeStatus {
-    let missing_models = missing_ocr_assets(&model_dir, &tier);
+    let missing_ocr_models = missing_ocr_assets(&ocr_model_dir, &tier);
+    let missing_vision_models = missing_vision_assets(&vision_model_dir);
 
     let configured = api_key
         .map(|value| !value.trim().is_empty())
@@ -89,10 +120,15 @@ fn build_runtime_status(
                 .unwrap_or_else(|| "未配置".to_string()),
         },
         ocr: OcrRuntimeStatus {
-            configured: missing_models.is_empty(),
+            configured: missing_ocr_models.is_empty(),
             tier,
-            model_dir: model_dir.to_string_lossy().to_string(),
-            missing_models,
+            model_dir: ocr_model_dir.to_string_lossy().to_string(),
+            missing_models: missing_ocr_models,
+        },
+        vision: VisionRuntimeStatus {
+            configured: !missing_vision_models,
+            model_dir: vision_model_dir.to_string_lossy().to_string(),
+            missing_models: missing_vision_models,
         },
     }
 }
@@ -130,6 +166,32 @@ fn default_ocr_model_dir(app_data_dir: &Path) -> PathBuf {
     }
 
     app_data_dir.join("models").join("ocr").join("pp-ocrv6")
+}
+
+fn missing_vision_assets(model_dir: &Path) -> bool {
+    let required = ["config.json", "model.safetensors", "tokenizer.json"];
+    for file in required {
+        if !model_dir.join(file).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+fn default_vision_model_dir(app_data_dir: &Path) -> PathBuf {
+    if let Ok(current_dir) = env::current_dir() {
+        for ancestor in current_dir.ancestors() {
+            let candidate = ancestor.join("models").join("vision").join("moondream2");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    app_data_dir
+        .join("models")
+        .join("vision")
+        .join("moondream2")
 }
 
 fn config_value(key: &str, local_env: &HashMap<String, String>) -> Option<String> {
@@ -242,6 +304,7 @@ mod tests {
             "https://api.deepseek.com".to_string(),
             "medium".to_string(),
             temp_dir.path().to_path_buf(),
+            temp_dir.path().to_path_buf(),
         );
 
         assert!(status.deepseek.configured);
@@ -259,6 +322,7 @@ mod tests {
             "https://api.deepseek.com".to_string(),
             "medium".to_string(),
             temp_dir.path().to_path_buf(),
+            temp_dir.path().to_path_buf(),
         );
 
         assert!(status.deepseek.configured);
@@ -273,6 +337,7 @@ mod tests {
             "deepseek-v4-flash".to_string(),
             "https://api.deepseek.com".to_string(),
             "medium".to_string(),
+            temp_dir.path().to_path_buf(),
             temp_dir.path().to_path_buf(),
         );
 
@@ -297,6 +362,7 @@ mod tests {
             "deepseek-v4-flash".to_string(),
             "https://api.deepseek.com".to_string(),
             "medium".to_string(),
+            temp_dir.path().to_path_buf(),
             temp_dir.path().to_path_buf(),
         );
 

@@ -17,13 +17,15 @@ import {
   type FormEvent,
   type MouseEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
-import { getKnowledgeBlockContext, openSourceFile } from "./lib/tauriClient";
+import { getKnowledgeBlockContext, openSourceFile, getAgentTone, setAgentTone } from "./lib/tauriClient";
+import { check } from "@tauri-apps/plugin-updater";
 import type {
   ChatMessage,
   ChatMessageSource,
@@ -247,6 +249,61 @@ function numberedSourceFragment(fragment: string, prefix: string) {
   return Number.parseInt(value, 10).toString();
 }
 
+interface ChatInputBoxProps {
+  hasActiveSpace: boolean;
+  loading: boolean;
+  onAsk: (question: string) => void;
+}
+
+function ChatInputBox({ hasActiveSpace, loading, onAsk }: ChatInputBoxProps) {
+  const [question, setQuestion] = useState("");
+  const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canAskAgent) return;
+    const submittedQuestion = question.trim();
+    setQuestion("");
+    onAsk(submittedQuestion);
+  }
+
+  return (
+    <form
+      aria-label="智能助手输入区"
+      className={styles.composer}
+      onSubmit={handleSubmit}
+    >
+      <div className={styles.composerInput}>
+        <textarea
+          aria-label="向智能助手提问"
+          className={styles.composerBox}
+          placeholder={hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"}
+          rows={3}
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              if (canAskAgent) {
+                // @ts-expect-error valid form submission simulation
+                handleSubmit(event);
+              }
+            }
+          }}
+        />
+        <button
+          className={styles.sendButton}
+          disabled={!canAskAgent}
+          type="submit"
+        >
+          <Icon aria-hidden icon={sendIcon} />
+          <span>发送</span>
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export default function App() {
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const settingsModalRef = useRef<HTMLElement | null>(null);
@@ -268,10 +325,12 @@ export default function App() {
   );
   const [openingSource, setOpeningSource] = useState(false);
   const [sourceOpenError, setSourceOpenError] = useState<string | null>(null);
-  const [question, setQuestion] = useState("");
   const [queuePollingUntil, setQueuePollingUntil] = useState(0);
   const [sourcesVisible, setSourcesVisible] = useState(true);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  const [agentTone, setAgentToneState] = useState<string>("默认");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "uptodate" | "error">("idle");
+  const [updateMessage, setUpdateMessage] = useState<string>("");
   const {
     snapshot,
     backupExport,
@@ -311,25 +370,39 @@ export default function App() {
   const scanQueueCount = activeSpace?.scanQueueCount ?? 0;
   const documentQueueCount = activeSpace?.documentQueueCount ?? 0;
   const ocrQueueCount = activeSpace?.ocrQueueCount ?? 0;
-  const hasQueuedScanJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "scan" && job.status === "queued",
-  );
-  const hasRunningScanJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "scan" && job.status === "running",
-  );
-  const hasQueuedDocumentJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "document" && job.status === "queued",
-  );
-  const hasRunningDocumentJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "document" && job.status === "running",
-  );
-  const hasQueuedOcrJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "ocr" && job.status === "queued",
-  );
-  const hasRunningOcrJob = snapshot.parseJobs.some(
-    (job) => job.jobType === "ocr" && job.status === "running",
-  );
-  const activeParseFileIds = new Set(
+  const {
+    hasQueuedScanJob,
+    hasRunningScanJob,
+    hasQueuedDocumentJob,
+    hasRunningDocumentJob,
+    hasQueuedOcrJob,
+    hasRunningOcrJob,
+  } = useMemo(() => {
+    let qScan = false, rScan = false;
+    let qDoc = false, rDoc = false;
+    let qOcr = false, rOcr = false;
+    for (const job of snapshot.parseJobs) {
+      if (job.jobType === "scan") {
+        if (job.status === "queued") qScan = true;
+        if (job.status === "running") rScan = true;
+      } else if (job.jobType === "document") {
+        if (job.status === "queued") qDoc = true;
+        if (job.status === "running") rDoc = true;
+      } else if (job.jobType === "ocr") {
+        if (job.status === "queued") qOcr = true;
+        if (job.status === "running") rOcr = true;
+      }
+    }
+    return {
+      hasQueuedScanJob: qScan,
+      hasRunningScanJob: rScan,
+      hasQueuedDocumentJob: qDoc,
+      hasRunningDocumentJob: rDoc,
+      hasQueuedOcrJob: qOcr,
+      hasRunningOcrJob: rOcr,
+    };
+  }, [snapshot.parseJobs]);
+  const activeParseFileIds = useMemo(() => new Set(
     snapshot.parseJobs
       .filter(
         (job) =>
@@ -337,10 +410,9 @@ export default function App() {
           Boolean(job.fileId),
       )
       .flatMap((job) => (job.fileId ? [job.fileId] : [])),
-  );
+  ), [snapshot.parseJobs]);
   const hasRunningParseJob =
     hasRunningScanJob || hasRunningDocumentJob || hasRunningOcrJob;
-  const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
   const selectedContextBlock =
     selectedSource && sourceContext && sourceContextIndex !== null
       ? (sourceContext.blocks[sourceContextIndex] ?? null)
@@ -404,6 +476,10 @@ export default function App() {
     if (!settingsOpen) {
       return;
     }
+
+    getAgentTone().then((tone) => {
+      if (tone) setAgentToneState(tone);
+    }).catch(console.error);
 
     settingsCloseButtonRef.current?.focus();
 
@@ -519,17 +595,6 @@ export default function App() {
     setQueuePollingUntil(Date.now() + 15000);
   }
 
-  function handleAskAgent(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!canAskAgent) {
-      return;
-    }
-
-    const submittedQuestion = question.trim();
-    setQuestion("");
-    void askAgentQuestion(submittedQuestion);
-  }
-
   async function handleOpenFocusedSource() {
     if (!activeSpace || !canOpenFocusedSource) {
       return;
@@ -574,6 +639,59 @@ export default function App() {
     }
 
     return sources.filter((source) => source.sourceKind === sourceFilter);
+  }
+
+  async function handleToneChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const tone = event.target.value;
+    setAgentToneState(tone);
+    try {
+      await setAgentTone(tone);
+    } catch (e) {
+      console.error("Failed to set tone", e);
+    }
+  }
+
+  async function handleCheckUpdate() {
+    setUpdateStatus("checking");
+    setUpdateMessage("正在检查更新...");
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus("available");
+        setUpdateMessage(`发现新版本 (v${update.version})，准备下载...`);
+        let downloaded = 0;
+        let contentLength = 0;
+        await update.downloadAndInstall((event) => {
+          switch (event.event) {
+            case "Started":
+              contentLength = event.data.contentLength || 0;
+              setUpdateStatus("downloading");
+              setUpdateMessage(`正在下载...`);
+              break;
+            case "Progress":
+              downloaded += event.data.chunkLength;
+              if (contentLength > 0) {
+                const percent = Math.round((downloaded / contentLength) * 100);
+                setUpdateMessage(`下载中 ${percent}%...`);
+              } else {
+                setUpdateMessage(`下载中 ${downloaded} bytes...`);
+              }
+              break;
+            case "Finished":
+              setUpdateStatus("uptodate");
+              setUpdateMessage("安装完成，请手动重启应用以应用更新。");
+              break;
+          }
+        });
+      } else {
+        setUpdateStatus("uptodate");
+        setUpdateMessage("当前已是最新版本");
+      }
+    } catch (e: any) {
+      console.error(e);
+      setUpdateStatus("error");
+      setUpdateMessage(`更新失败: ${e?.message || String(e)}`);
+    }
   }
 
   return (
@@ -1193,32 +1311,11 @@ export default function App() {
           ) : null}
         </section>
 
-        <form
-          aria-label="智能助手输入区"
-          className={styles.composer}
-          onSubmit={handleAskAgent}
-        >
-          <div className={styles.composerInput}>
-            <textarea
-              aria-label="向智能助手提问"
-              className={styles.composerBox}
-              placeholder={
-                hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"
-              }
-              rows={3}
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-            />
-            <button
-              className={styles.sendButton}
-              disabled={!canAskAgent}
-              type="submit"
-            >
-              <Icon aria-hidden icon={sendIcon} />
-              <span>发送</span>
-            </button>
-          </div>
-        </form>
+        <ChatInputBox
+          hasActiveSpace={hasActiveSpace}
+          loading={loading}
+          onAsk={(q) => void askAgentQuestion(q)}
+        />
       </aside>
 
       {settingsOpen ? (
@@ -1316,11 +1413,41 @@ export default function App() {
                     </div>
                     <span className={styles.settingValue}>{activeTab}</span>
                   </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>应用更新</strong>
+                      <span>{updateMessage || "检查是否有新版本可用"}</span>
+                    </div>
+                    <button
+                      className={styles.ghostButton}
+                      disabled={updateStatus === "checking" || updateStatus === "downloading"}
+                      onClick={() => void handleCheckUpdate()}
+                    >
+                      检查更新
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
               {activeSettingsSection === "runtime" ? (
                 <div className={styles.settingList}>
+                  <label className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>助手语气</strong>
+                      <span>大模型回答问题的口吻和风格</span>
+                    </div>
+                    <select
+                      aria-label="设置助手语气"
+                      className={styles.settingInlineSelect}
+                      value={agentTone}
+                      onChange={(event) => void handleToneChange(event)}
+                    >
+                      <option value="默认">默认</option>
+                      <option value="学术风">学术风</option>
+                      <option value="简明扼要">简明扼要</option>
+                      <option value="幽默风趣">幽默风趣</option>
+                    </select>
+                  </label>
                   <div className={styles.settingRow}>
                     <div className={styles.settingCopy}>
                       <strong>DeepSeek</strong>

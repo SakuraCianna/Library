@@ -10,6 +10,7 @@ mod scanner;
 mod state;
 pub mod storage;
 pub mod vector;
+mod vision;
 
 use state::AppState;
 use tauri::Manager;
@@ -17,6 +18,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -41,7 +43,9 @@ pub fn run() {
             commands::preflight_space_backup_restore,
             commands::restore_space_backup,
             commands::get_runtime_status,
-            commands::check_ocr_environment
+            commands::check_ocr_environment,
+            commands::get_agent_tone,
+            commands::set_agent_tone,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

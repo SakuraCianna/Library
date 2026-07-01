@@ -132,8 +132,7 @@ def run_parse(request: ParserRequest) -> dict[str, Any]:
             body = read_text_lossy(file_path)
             table_insights: list[dict[str, Any]] = []
         elif extension == ".pdf":
-            body, segments = read_pdf_text(file_path, request.relative_path)
-            table_insights = []
+            body, segments, table_insights = read_pdf_text(file_path, request.relative_path)
         elif extension == ".docx":
             body, segments = read_docx_analysis(file_path, request.relative_path)
             table_insights = []
@@ -159,25 +158,92 @@ def read_text_lossy(file_path: Path) -> str:
     return file_path.read_bytes().decode("utf-8", errors="replace")
 
 
-def read_pdf_text(file_path: Path, relative_path: str) -> tuple[str, list[dict[str, Any]]]:
-    try:
-        from pypdf import PdfReader
+def format_markdown_table(table: list[list[str | None]]) -> str:
+    if not table or not table[0]:
+        return ""
+    
+    cleaned_table = []
+    column_count = 0
+    for row in table:
+        cleaned_row = []
+        for cell in row:
+            if cell is None:
+                cleaned_row.append("")
+            else:
+                cleaned_row.append(str(cell).replace("\n", " ").replace("|", "\\|"))
+        column_count = max(column_count, len(cleaned_row))
+        cleaned_table.append(cleaned_row)
 
-        reader = PdfReader(file_path)
-        pages = [page.extract_text() or "" for page in reader.pages]
-        page_segments = page_text_segments(relative_path, pages)
+    if column_count == 0:
+        return ""
+
+    lines = []
+    header = cleaned_table[0]
+    header += [""] * (column_count - len(header))
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join(["---"] * column_count) + "|")
+    
+    for row in cleaned_table[1:]:
+        row += [""] * (column_count - len(row))
+        lines.append("| " + " | ".join(row) + " |")
+        
+    return "\n".join(lines)
+
+
+def read_pdf_text(file_path: Path, relative_path: str) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    file_name = display_file_name(relative_path)
+    try:
+        import pdfplumber
+
+        pages_text = []
+        table_insights = []
+        with pdfplumber.open(file_path) as pdf:
+            for page_idx, page in enumerate(pdf.pages, start=1):
+                width = page.width
+                height = page.height
+                
+                tables = page.extract_tables()
+                for table_idx, table in enumerate(tables, start=1):
+                    if not table or not table[0]:
+                        continue
+                    row_count = len(table)
+                    column_count = max(len(row) for row in table)
+                    header_row = [str(c).replace("\n", " ") for c in table[0] if c]
+                    header_summary = join_limited(header_row, "、", 12) if header_row else "未识别表头"
+                    
+                    markdown_table = format_markdown_table(table)
+                    if not markdown_table:
+                        continue
+                        
+                    table_insights.append({
+                        "title": f"{file_name} · 第 {page_idx} 页 表格 {table_idx}",
+                        "body": markdown_table,
+                        "summary": f"PDF 表格（第 {page_idx} 页）：{row_count} 行、{column_count} 列；表头：{header_summary}",
+                        "sourceLocator": f"{relative_path}#page-{page_idx:03}-table-{table_idx}"
+                    })
+
+                # Crop top 5% and bottom 5% to remove headers/footers
+                bbox = (0, height * 0.05, width, height * 0.95)
+                try:
+                    cropped_page = page.crop(bbox)
+                    text = cropped_page.extract_text()
+                except ValueError:
+                    text = page.extract_text()
+                pages_text.append(text or "")
+
+        page_segments = page_text_segments(relative_path, pages_text)
         text = "\n".join(segment["body"] for segment in page_segments)
         if normalize_text(text):
-            return text, page_segments
+            return text, page_segments, table_insights
     except Exception:
         pass
 
     content = file_path.read_bytes().decode("latin-1", errors="ignore")
     literal_text = extract_pdf_literal_strings(content)
     if len(literal_text.strip()) >= 4:
-        return literal_text, page_text_segments(relative_path, [literal_text])
+        return literal_text, page_text_segments(relative_path, [literal_text]), []
     readable_runs = extract_readable_runs(content)
-    return readable_runs, page_text_segments(relative_path, [readable_runs])
+    return readable_runs, page_text_segments(relative_path, [readable_runs]), []
 
 
 def page_text_segments(relative_path: str, pages: list[str]) -> list[dict[str, Any]]:

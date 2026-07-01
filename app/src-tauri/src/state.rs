@@ -172,6 +172,20 @@ impl AppState {
         }
     }
 
+    pub fn get_agent_tone(&self) -> Result<Option<String>, AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        store
+            .get_setting("agent_tone")
+            .map_err(|error| AppError::Storage(error.to_string()))
+    }
+
+    pub fn set_agent_tone(&self, tone: &str) -> Result<(), AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        store
+            .set_setting("agent_tone", tone)
+            .map_err(|error| AppError::Storage(error.to_string()))
+    }
+
     pub fn snapshot(&self) -> Result<WorkbenchSnapshot, AppError> {
         let store = self.store.lock().expect("sqlite store mutex poisoned");
         let spaces = store
@@ -588,6 +602,7 @@ impl AppState {
                         root_path,
                         &file_candidate,
                         resource_script_path.as_deref(),
+                        &self.app_data_dir,
                     )
                 },
                 &mut notify,
@@ -1177,8 +1192,9 @@ impl AppState {
                 .search_knowledge_blocks(&space_id, &question, 4)
                 .map_err(|error| AppError::Storage(format!("检索知识块失败：{error}")))?
         };
+        let tone = self.get_agent_tone().unwrap_or(None);
         self.push_chat_message(ChatRole::User, question.clone());
-        let answer = crate::agent::answer_question(&question, &hits).await;
+        let answer = crate::agent::answer_question(&question, &hits, tone).await;
         self.push_chat_message_with_sources(
             ChatRole::Assistant,
             answer,
@@ -1958,7 +1974,7 @@ fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn display_relative_file_name(relative_path: &str) -> String {
+pub fn display_relative_file_name(relative_path: &str) -> String {
     relative_path
         .rsplit(['\\', '/'])
         .next()

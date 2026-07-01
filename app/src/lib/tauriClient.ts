@@ -370,3 +370,20 @@ export async function restoreSpaceBackup(
     request: { path, confirmOverwrite },
   });
 }
+
+export async function getAgentTone(): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    return "浏览器预览默认";
+  }
+
+  return invoke<string | null>("get_agent_tone");
+}
+
+export async function setAgentTone(tone: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    console.log("浏览器预览：模拟设置语气", tone);
+    return;
+  }
+
+  return invoke<void>("set_agent_tone", { tone });
+}
