@@ -23,7 +23,8 @@ import {
 
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
-import { getKnowledgeBlockContext, openSourceFile } from "./lib/tauriClient";
+import { getKnowledgeBlockContext, openSourceFile, getAgentTone, setAgentTone } from "./lib/tauriClient";
+import { check } from "@tauri-apps/plugin-updater";
 import type {
   ChatMessage,
   ChatMessageSource,
@@ -272,6 +273,9 @@ export default function App() {
   const [queuePollingUntil, setQueuePollingUntil] = useState(0);
   const [sourcesVisible, setSourcesVisible] = useState(true);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  const [agentTone, setAgentToneState] = useState<string>("默认");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "uptodate" | "error">("idle");
+  const [updateMessage, setUpdateMessage] = useState<string>("");
   const {
     snapshot,
     backupExport,
@@ -404,6 +408,10 @@ export default function App() {
     if (!settingsOpen) {
       return;
     }
+
+    getAgentTone().then((tone) => {
+      if (tone) setAgentToneState(tone);
+    }).catch(console.error);
 
     settingsCloseButtonRef.current?.focus();
 
@@ -574,6 +582,59 @@ export default function App() {
     }
 
     return sources.filter((source) => source.sourceKind === sourceFilter);
+  }
+
+  async function handleToneChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const tone = event.target.value;
+    setAgentToneState(tone);
+    try {
+      await setAgentTone(tone);
+    } catch (e) {
+      console.error("Failed to set tone", e);
+    }
+  }
+
+  async function handleCheckUpdate() {
+    setUpdateStatus("checking");
+    setUpdateMessage("正在检查更新...");
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus("available");
+        setUpdateMessage(`发现新版本 (v${update.version})，准备下载...`);
+        let downloaded = 0;
+        let contentLength = 0;
+        await update.downloadAndInstall((event) => {
+          switch (event.event) {
+            case "Started":
+              contentLength = event.data.contentLength || 0;
+              setUpdateStatus("downloading");
+              setUpdateMessage(`正在下载...`);
+              break;
+            case "Progress":
+              downloaded += event.data.chunkLength;
+              if (contentLength > 0) {
+                const percent = Math.round((downloaded / contentLength) * 100);
+                setUpdateMessage(`下载中 ${percent}%...`);
+              } else {
+                setUpdateMessage(`下载中 ${downloaded} bytes...`);
+              }
+              break;
+            case "Finished":
+              setUpdateStatus("uptodate");
+              setUpdateMessage("安装完成，请手动重启应用以应用更新。");
+              break;
+          }
+        });
+      } else {
+        setUpdateStatus("uptodate");
+        setUpdateMessage("当前已是最新版本");
+      }
+    } catch (e: any) {
+      console.error(e);
+      setUpdateStatus("error");
+      setUpdateMessage(`更新失败: ${e?.message || String(e)}`);
+    }
   }
 
   return (
@@ -1316,11 +1377,41 @@ export default function App() {
                     </div>
                     <span className={styles.settingValue}>{activeTab}</span>
                   </div>
+                  <div className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>应用更新</strong>
+                      <span>{updateMessage || "检查是否有新版本可用"}</span>
+                    </div>
+                    <button
+                      className={styles.ghostButton}
+                      disabled={updateStatus === "checking" || updateStatus === "downloading"}
+                      onClick={() => void handleCheckUpdate()}
+                    >
+                      检查更新
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
               {activeSettingsSection === "runtime" ? (
                 <div className={styles.settingList}>
+                  <label className={styles.settingRow}>
+                    <div className={styles.settingCopy}>
+                      <strong>助手语气</strong>
+                      <span>大模型回答问题的口吻和风格</span>
+                    </div>
+                    <select
+                      aria-label="设置助手语气"
+                      className={styles.settingInlineSelect}
+                      value={agentTone}
+                      onChange={(event) => void handleToneChange(event)}
+                    >
+                      <option value="默认">默认</option>
+                      <option value="学术风">学术风</option>
+                      <option value="简明扼要">简明扼要</option>
+                      <option value="幽默风趣">幽默风趣</option>
+                    </select>
+                  </label>
                   <div className={styles.settingRow}>
                     <div className={styles.settingCopy}>
                       <strong>DeepSeek</strong>
