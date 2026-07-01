@@ -43,7 +43,9 @@ pub fn run() {
             commands::preflight_space_backup_restore,
             commands::restore_space_backup,
             commands::get_runtime_status,
-            commands::check_ocr_environment
+            commands::check_ocr_environment,
+            commands::get_agent_tone,
+            commands::set_agent_tone,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

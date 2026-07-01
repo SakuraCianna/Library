@@ -137,6 +137,31 @@ impl SqliteStore {
             }
         }
 
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );"
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        let mut statement = self.connection.prepare("SELECT value FROM user_settings WHERE key = ?")?;
+        let mut rows = statement.query([key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO user_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
         Ok(())
     }
 
