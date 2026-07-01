@@ -2847,6 +2847,94 @@ fn embedded_image_number_from_locator(source_locator: &str) -> Option<u32> {
 fn numbered_fragment(fragment: &str, prefix: &str) -> bool {
     numbered_fragment_value(fragment, prefix).is_some()
 }
+impl SqliteStore {
+    pub fn create_conversation(&self, space_id: &str, title: &str) -> rusqlite::Result<crate::models::Conversation> {
+        let id = Uuid::new_v4().to_string();
+        let now = OffsetDateTime::now_utc().to_string();
+        self.connection.execute(
+            "INSERT INTO conversations (id, space_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, space_id, title, now],
+        )?;
+        Ok(crate::models::Conversation {
+            id,
+            space_id: space_id.to_string(),
+            title: title.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn list_conversations(&self, space_id: &str) -> rusqlite::Result<Vec<crate::models::Conversation>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, created_at, updated_at FROM conversations WHERE space_id = ?1 AND deleted_at IS NULL ORDER BY updated_at DESC"
+        )?;
+        let rows = statement.query_map([space_id], |row| {
+            Ok(crate::models::Conversation {
+                id: row.get(0)?,
+                space_id: space_id.to_string(),
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })?;
+        let mut conversations = Vec::new();
+        for row in rows {
+            conversations.push(row?);
+        }
+        Ok(conversations)
+    }
+
+    pub fn add_message(&self, message: &crate::models::ChatMessage) -> rusqlite::Result<()> {
+        let sources_json = serde_json::to_string(&message.sources).unwrap_or_else(|_| "[]".to_string());
+        let role = match message.role {
+            crate::models::ChatRole::User => "user",
+            crate::models::ChatRole::Assistant => "assistant",
+            crate::models::ChatRole::System => "system",
+        };
+        self.self_connection_execute_add_message(message, &role, &sources_json)
+    }
+
+    fn self_connection_execute_add_message(&self, message: &crate::models::ChatMessage, role: &str, sources_json: &str) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, sources, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![message.id, message.conversation_id, role, message.content, sources_json, message.created_at],
+        )?;
+        self.connection.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![message.created_at, message.conversation_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_messages(&self, conversation_id: &str) -> rusqlite::Result<Vec<crate::models::ChatMessage>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, role, content, sources, created_at FROM messages WHERE conversation_id = ?1 AND deleted_at IS NULL ORDER BY created_at ASC"
+        )?;
+        let rows = statement.query_map([conversation_id], |row| {
+            let role_str: String = row.get(1)?;
+            let role = match role_str.as_str() {
+                "user" => crate::models::ChatRole::User,
+                "assistant" => crate::models::ChatRole::Assistant,
+                _ => crate::models::ChatRole::System,
+            };
+            let sources_str: String = row.get(3)?;
+            let sources: Vec<crate::models::ChatMessageSource> = serde_json::from_str(&sources_str).unwrap_or_default();
+            Ok(crate::models::ChatMessage {
+                id: row.get(0)?,
+                conversation_id: conversation_id.to_string(),
+                role,
+                content: row.get(2)?,
+                sources,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
+    }
+}
 
 fn numbered_fragment_value(fragment: &str, prefix: &str) -> Option<u32> {
     let value = fragment.strip_prefix(prefix)?;

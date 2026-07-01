@@ -126,6 +126,16 @@ pub struct TableInsightPreview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Conversation {
+    pub id: String,
+    pub space_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessageSource {
     pub id: String,
     pub title: String,
@@ -139,10 +149,12 @@ pub struct ChatMessageSource {
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: String,
+    pub conversation_id: String,
     pub role: ChatRole,
     pub content: String,
     #[serde(default)]
     pub sources: Vec<ChatMessageSource>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +221,7 @@ pub struct OcrEnvironmentCheck {
 pub struct WorkbenchSnapshot {
     pub spaces: Vec<KnowledgeSpace>,
     pub active_space_id: String,
+    pub active_conversation_id: Option<String>,
     pub active_scope: ChatScope,
     pub session_permission: PermissionMode,
     pub files: Vec<KnowledgeFile>,
@@ -682,4 +695,25 @@ mod tests {
             );
         }
     }
+}
+
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateConversationRequest {
+    pub space_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListConversationsRequest {
+    pub space_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchConversationRequest {
+    pub conversation_id: Option<String>,
 }

@@ -5,94 +5,40 @@ use crate::models::KnowledgeBlockSearchHit;
 
 const MAX_CONTEXT_CHARS: usize = 4_000;
 
-pub async fn answer_question(
-    question: &str,
-    hits: &[KnowledgeBlockSearchHit],
-    tone: Option<String>,
-) -> String {
-    let local_answer = build_local_answer(question, hits);
-    let Some(config) = crate::runtime::deepseek_config() else {
-        return local_answer;
-    };
-
-    match call_deepseek(&config, question, hits, tone.as_deref()).await {
-        Some(answer) => answer,
-        None => format!("{local_answer}\n\nDeepSeek 暂时不可用，已使用本地索引生成回答。"),
-    }
-}
-
-fn build_local_answer(question: &str, hits: &[KnowledgeBlockSearchHit]) -> String {
-    let normalized_question = question.trim();
-
-    if hits.is_empty() {
-        return format!(
-            "本地索引里暂时没有找到与“{}”直接相关的内容；没有足够本地证据时我不会编造答案。请先扫描并建索引/摘要，或换一个更具体的问题。",
-            normalized_question
-        );
-    }
-
-    let mut answer = format!(
-        "根据本地索引，关于“{}”可以先看这些内容：",
-        normalized_question
-    );
-
-    for (index, hit) in hits.iter().enumerate() {
-        answer.push_str(&format!(
-            "\n{}. [{}] {}：{}",
-            index + 1,
-            source_kind_label(&hit.source_kind),
-            hit.title,
-            hit.excerpt
-        ));
-    }
-
-    answer.push_str("\n\n来源：");
-    for hit in hits {
-        answer.push_str(&format!(
-            "\n- {}（{}）",
-            hit.source_file_name,
-            source_kind_label(&hit.source_kind)
-        ));
-    }
-
-    answer
-}
-
-async fn call_deepseek(
+pub async fn chat_completion_step(
     config: &crate::runtime::DeepSeekConfig,
-    question: &str,
-    hits: &[KnowledgeBlockSearchHit],
+    messages: &[ChatMessagePayload],
+    tools: Option<&[Tool]>,
     tone: Option<&str>,
-) -> Option<String> {
-    if hits.is_empty() {
-        return None;
-    }
-
-    let context = build_context(hits);
+) -> Option<ChatChoiceMessage> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .ok()?;
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
-    let tone_instruction = tone
-        .map(|t| format!(" 请保持{}的语气。", t))
-        .unwrap_or_default();
+    let mut messages = messages.to_vec();
+
+    // Ensure system prompt is present
+    if !messages.iter().any(|m| m.role == "system") {
+        let tone_instruction = tone
+            .map(|t| format!(" 请保持{}的语气。", t))
+            .unwrap_or_default();
+        messages.insert(0, ChatMessagePayload {
+            role: "system".to_string(),
+            content: Some(format!("你是本地优先桌面知识库助手。只能基于给定本地索引内容回答；回答要简洁，不要编造来源，并在末尾列出用到的来源编号和来源文件。如果需要搜索信息请使用提供的工具。{}", tone_instruction)),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
 
     let payload = ChatCompletionRequest {
         model: config.model.clone(),
-        messages: vec![
-            ChatMessagePayload {
-                role: "system".to_string(),
-                content: format!("你是本地优先桌面知识库助手。只能基于给定本地索引内容回答；回答要简洁，不要编造来源，并在末尾列出用到的来源编号和来源文件。{}", tone_instruction),
-            },
-            ChatMessagePayload {
-                role: "user".to_string(),
-                content: format!("问题：{question}\n\n本地索引内容：\n{context}"),
-            },
-        ],
+        messages,
         stream: false,
         temperature: 0.2,
+        tools: tools.map(|t| t.to_vec()),
     };
 
     let mut attempts = 0;
@@ -109,12 +55,7 @@ async fn call_deepseek(
         {
             if response.status().is_success() {
                 if let Ok(body) = response.json::<ChatCompletionResponse>().await {
-                    return body
-                        .choices
-                        .into_iter()
-                        .find_map(|choice| choice.message.content)
-                        .map(|content| content.trim().to_string())
-                        .filter(|content| !content.is_empty());
+                    return body.choices.into_iter().next().map(|c| c.message);
                 }
             }
         }
@@ -129,7 +70,7 @@ async fn call_deepseek(
     None
 }
 
-fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {
+pub fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {
     let mut context = String::new();
 
     for (index, hit) in hits.iter().enumerate() {
@@ -138,11 +79,10 @@ fn build_context(hits: &[KnowledgeBlockSearchHit]) -> String {
         }
 
         context.push_str(&format!(
-            "[来源 {}]\n来源类型：{}\n来源文件：{}\n来源定位：{}\n标题：{}\n内容：{}\n\n",
+            "[来源 {}]\n来源类型：{}\n来源文件：{}\n标题：{}\n内容：{}\n\n",
             index + 1,
             source_kind_label(&hit.source_kind),
             hit.source_file_name,
-            hit.source_locator,
             hit.title,
             hit.excerpt
         ));
@@ -161,32 +101,70 @@ fn source_kind_label(source_kind: &str) -> &'static str {
 }
 
 #[derive(Debug, Serialize)]
-struct ChatCompletionRequest {
-    model: String,
-    messages: Vec<ChatMessagePayload>,
-    stream: bool,
-    temperature: f32,
+pub struct ChatCompletionRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessagePayload>,
+    pub stream: bool,
+    pub temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
 }
 
-#[derive(Debug, Serialize)]
-struct ChatMessagePayload {
-    role: String,
-    content: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessagePayload {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ChatChoice>,
+pub struct ChatCompletionResponse {
+    pub choices: Vec<ChatChoice>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatChoice {
-    message: ChatChoiceMessage,
+pub struct ChatChoice {
+    pub message: ChatChoiceMessage,
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatChoiceMessage {
-    content: Option<String>,
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatChoiceMessage {
+    pub content: Option<String>,
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[cfg(test)]

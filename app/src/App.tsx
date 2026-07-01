@@ -12,6 +12,9 @@ import sendIcon from "@iconify-icons/lucide/send";
 import settingsIcon from "@iconify-icons/lucide/settings";
 import uploadIcon from "@iconify-icons/lucide/upload";
 import xIcon from "@iconify-icons/lucide/x";
+import { MarkdownMessage } from "./components/chat/MarkdownMessage";
+import { ConversationList } from "./components/sidebar/ConversationList";
+import { Select } from "./components/Select";
 import { Icon } from "@iconify/react";
 import {
   type FormEvent,
@@ -37,6 +40,7 @@ import type {
   ParseJobSummary,
   PermissionMode,
 } from "./types/workbench";
+import { SettingsModal } from "./components/SettingsModal";
 import styles from "./App.module.css";
 
 const permissionLabel: Record<PermissionMode, string> = {
@@ -251,13 +255,14 @@ function numberedSourceFragment(fragment: string, prefix: string) {
 
 interface ChatInputBoxProps {
   hasActiveSpace: boolean;
+  hasApiKey: boolean;
   loading: boolean;
   onAsk: (question: string) => void;
 }
 
-function ChatInputBox({ hasActiveSpace, loading, onAsk }: ChatInputBoxProps) {
+function ChatInputBox({ hasActiveSpace, hasApiKey, loading, onAsk }: ChatInputBoxProps) {
   const [question, setQuestion] = useState("");
-  const canAskAgent = hasActiveSpace && question.trim().length > 0 && !loading;
+  const canAskAgent = hasActiveSpace && hasApiKey && question.trim().length > 0 && !loading;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -266,6 +271,12 @@ function ChatInputBox({ hasActiveSpace, loading, onAsk }: ChatInputBoxProps) {
     setQuestion("");
     onAsk(submittedQuestion);
   }
+
+  const placeholder = !hasApiKey
+    ? "请先填API KEY"
+    : hasActiveSpace 
+    ? "询问当前文件夹"
+    : "先添加知识库文件夹";
 
   return (
     <form
@@ -277,7 +288,8 @@ function ChatInputBox({ hasActiveSpace, loading, onAsk }: ChatInputBoxProps) {
         <textarea
           aria-label="向智能助手提问"
           className={styles.composerBox}
-          placeholder={hasActiveSpace ? "询问当前文件夹" : "先添加知识库文件夹"}
+          disabled={!hasApiKey || (!hasActiveSpace)}
+          placeholder={placeholder}
           rows={3}
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
@@ -312,6 +324,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeSettingsSection, setActiveSettingsSection] =
     useState<SettingsSection>("general");
+  const [isApiSettingsModalOpen, setIsApiSettingsModalOpen] = useState(false);
   const [selectedSource, setSelectedSource] =
     useState<ChatMessageSource | null>(null);
   const [sourceContext, setSourceContext] =
@@ -359,6 +372,7 @@ export default function App() {
     ocrEnvironmentError,
     checkingOcrEnvironment,
     checkOcrEnvironment,
+    refreshRuntimeStatus,
   } = useRuntimeStatus();
   const activeSpace =
     snapshot.spaces.find((space) => space.id === snapshot.activeSpaceId) ??
@@ -641,8 +655,7 @@ export default function App() {
     return sources.filter((source) => source.sourceKind === sourceFilter);
   }
 
-  async function handleToneChange(event: React.ChangeEvent<HTMLSelectElement>) {
-    const tone = event.target.value;
+  async function handleToneChange(tone: string) {
     setAgentToneState(tone);
     try {
       await setAgentTone(tone);
@@ -743,6 +756,15 @@ export default function App() {
             )}
           </nav>
         </section>
+
+        <ConversationList
+          activeSpaceId={activeSpace?.id || null}
+          activeConversationId={snapshot.activeConversationId}
+          onConversationSwitched={async () => {
+            // After switching conversation, we need to refresh the snapshot.
+            await refreshSnapshot();
+          }}
+        />
 
         <section className={styles.defaultPermission} aria-label="默认权限">
           <div className={styles.defaultPermissionHeader}>
@@ -1210,7 +1232,13 @@ export default function App() {
         <section className={styles.messages} aria-label="助手会话">
           {snapshot.messages.map((message) => (
             <article className={messageClass(message)} key={message.id}>
-              <div className={styles.messageContent}>{message.content}</div>
+              <div className={styles.messageContent}>
+                {message.role === "user" ? (
+                  message.content
+                ) : (
+                  <MarkdownMessage content={message.content} />
+                )}
+              </div>
               {message.role === "assistant" && message.sources.length > 0 ? (
                 <div className={styles.messageSources} aria-label="回答来源">
                   <div className={styles.messageSourcesHeader}>
@@ -1313,6 +1341,7 @@ export default function App() {
 
         <ChatInputBox
           hasActiveSpace={hasActiveSpace}
+          hasApiKey={runtimeStatus?.deepseek.configured ?? false}
           loading={loading}
           onAsk={(q) => void askAgentQuestion(q)}
         />
@@ -1436,21 +1465,31 @@ export default function App() {
                       <strong>助手语气</strong>
                       <span>大模型回答问题的口吻和风格</span>
                     </div>
-                    <select
+                    <Select
                       aria-label="设置助手语气"
                       className={styles.settingInlineSelect}
                       value={agentTone}
-                      onChange={(event) => void handleToneChange(event)}
-                    >
-                      <option value="默认">默认</option>
-                      <option value="学术风">学术风</option>
-                      <option value="简明扼要">简明扼要</option>
-                      <option value="幽默风趣">幽默风趣</option>
-                    </select>
+                      onChange={handleToneChange}
+                      options={[
+                        { value: "默认", label: "默认" },
+                        { value: "学术风", label: "学术风" },
+                        { value: "简明扼要", label: "简明扼要" },
+                        { value: "幽默风趣", label: "幽默风趣" },
+                      ]}
+                    />
                   </label>
                   <div className={styles.settingRow}>
                     <div className={styles.settingCopy}>
-                      <strong>DeepSeek</strong>
+                      <div className="flex items-center space-x-2">
+                        <strong>DeepSeek</strong>
+                        <button
+                          className={styles.ghostButton}
+                          onClick={() => setIsApiSettingsModalOpen(true)}
+                          style={{ padding: "2px 8px", fontSize: "12px", minHeight: "unset" }}
+                        >
+                          编辑
+                        </button>
+                      </div>
                       <span>
                         {runtimeStatus?.deepseek.configured
                           ? `密钥 ${runtimeStatus.deepseek.keyHint}`
@@ -1603,6 +1642,15 @@ export default function App() {
           </section>
         </div>
       ) : null}
+      
+      <SettingsModal 
+        isOpen={isApiSettingsModalOpen} 
+        onClose={() => setIsApiSettingsModalOpen(false)} 
+        onSaved={() => {
+          setIsApiSettingsModalOpen(false);
+          void refreshRuntimeStatus();
+        }}
+      />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import type { WorkbenchSnapshot } from "../types/workbench";
 
 export const emptyWorkbench: WorkbenchSnapshot = {
   activeSpaceId: "",
+  activeConversationId: null,
   activeScope: "current_folder",
   sessionPermission: "readonly",
   spaces: [],
@@ -21,10 +22,12 @@ export const emptyWorkbench: WorkbenchSnapshot = {
   },
   messages: [
     {
-      id: "msg-empty",
+      id: "1",
+      conversationId: "default",
       role: "system",
-      content: "请点击新建选择一个真实文件夹。",
+      content: "这是一个基于 Tauri + React 的知识库应用。",
       sources: [],
+      createdAt: new Date().toISOString(),
     },
   ],
   pendingAction: null,

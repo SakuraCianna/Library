@@ -55,9 +55,11 @@ export interface ChatMessageSource {
 
 export interface ChatMessage {
   id: string;
+  conversationId: string;
   role: "user" | "assistant" | "system";
   content: string;
   sources: ChatMessageSource[];
+  createdAt: string;
 }
 
 export interface PendingAction {
@@ -147,6 +149,7 @@ export interface BackupRestoreResult extends BackupRestorePreflight {
 export interface WorkbenchSnapshot {
   spaces: KnowledgeSpace[];
   activeSpaceId: string;
+  activeConversationId: string | null;
   activeScope: ChatScope;
   sessionPermission: PermissionMode;
   files: KnowledgeFile[];
@@ -155,4 +158,25 @@ export interface WorkbenchSnapshot {
   tablePreview: TableInsightPreview;
   messages: ChatMessage[];
   pendingAction: PendingAction | null;
+}
+
+export interface Conversation {
+  id: string;
+  spaceId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SwitchConversationRequest {
+  conversationId: string | null;
+}
+
+export interface CreateConversationRequest {
+  spaceId: string;
+  title: string;
+}
+
+export interface ListConversationsRequest {
+  spaceId: string;
 }

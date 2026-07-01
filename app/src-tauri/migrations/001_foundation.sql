@@ -128,6 +128,26 @@ CREATE TABLE IF NOT EXISTS scan_runs (
   changed_count INTEGER NOT NULL DEFAULT 0,
   deleted_count INTEGER NOT NULL DEFAULT 0,
   failed_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  progress_current INTEGER NOT NULL DEFAULT 0,
+  progress_total INTEGER NOT NULL DEFAULT 0,
+  phase TEXT NOT NULL DEFAULT '等待执行',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scan_runs (
+  id TEXT NOT NULL PRIMARY KEY,
+  space_id TEXT NOT NULL REFERENCES knowledge_spaces(id),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+  added_count INTEGER NOT NULL DEFAULT 0,
+  changed_count INTEGER NOT NULL DEFAULT 0,
+  deleted_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
   message TEXT
 );
 
@@ -143,4 +163,23 @@ CREATE TABLE IF NOT EXISTS trash_entries (
   original_locator TEXT NOT NULL,
   deleted_at TEXT NOT NULL,
   restored_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT NOT NULL PRIMARY KEY,
+  space_id TEXT NOT NULL REFERENCES knowledge_spaces(id),
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT NOT NULL PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+  content TEXT NOT NULL,
+  sources TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  deleted_at TEXT
 );

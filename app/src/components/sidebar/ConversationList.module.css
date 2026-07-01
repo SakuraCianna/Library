@@ -1,0 +1,92 @@
+.conversationSection {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.5rem;
+}
+
+.sectionLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-color-muted, #666);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.newChatButton {
+  background: transparent;
+  border: none;
+  color: var(--text-color-muted, #666);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.newChatButton:hover {
+  background: var(--bg-color-hover, rgba(0, 0, 0, 0.05));
+  color: var(--text-color, #333);
+}
+
+.conversationList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.conversationItem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  background: transparent;
+  color: var(--text-color, #333);
+  cursor: pointer;
+  border-radius: 6px;
+  text-align: left;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.conversationItem:hover {
+  background: var(--bg-color-hover, rgba(0, 0, 0, 0.05));
+}
+
+.conversationItem.active {
+  background: var(--accent-color-transparent, rgba(0, 102, 204, 0.1));
+  color: var(--accent-color, #0066cc);
+  font-weight: 500;
+}
+
+.icon {
+  flex-shrink: 0;
+  font-size: 1rem;
+  opacity: 0.7;
+}
+
+.title {
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.emptyState {
+  font-size: 0.8rem;
+  color: var(--text-color-muted, #666);
+  padding: 1rem;
+  text-align: center;
+}

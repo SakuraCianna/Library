@@ -125,13 +125,13 @@ const answeredSnapshot: WorkbenchSnapshot = {
   messages: [
     {
       id: "msg-user-redis",
-      role: "user",
+      conversationId: "test", role: "user",
       content: "缓存穿透怎么处理？",
-      sources: [],
+      sources: [], createdAt: new Date().toISOString(),
     },
     {
       id: "msg-assistant-redis",
-      role: "assistant",
+      conversationId: "test", role: "assistant",
       content: "缓存穿透可以用空值缓存、布隆过滤器和参数校验处理。",
       sources: [
         {
@@ -142,7 +142,7 @@ const answeredSnapshot: WorkbenchSnapshot = {
           sourceLocator: "Redis面试.md#block-001",
           sourceKind: "original_file",
         },
-      ],
+      ], createdAt: new Date().toISOString(),
     },
   ],
 };
@@ -152,13 +152,13 @@ const answeredTableSnapshot: WorkbenchSnapshot = {
   messages: [
     {
       id: "msg-user-table",
-      role: "user",
+      conversationId: "test", role: "user",
       content: "2026-06 营收是多少？",
-      sources: [],
+      sources: [], createdAt: new Date().toISOString(),
     },
     {
       id: "msg-assistant-table",
-      role: "assistant",
+      conversationId: "test", role: "assistant",
       content:
         "根据本地索引，1. [表格洞察] 经营报表.xlsx · 工作表 1：样例 1：2026-06 | 120 | 70",
       sources: [
@@ -170,7 +170,7 @@ const answeredTableSnapshot: WorkbenchSnapshot = {
           sourceLocator: "经营报表.xlsx#sheet-001",
           sourceKind: "table",
         },
-      ],
+      ], createdAt: new Date().toISOString(),
     },
   ],
 };
@@ -180,13 +180,13 @@ const answeredMixedSourcesSnapshot: WorkbenchSnapshot = {
   messages: [
     {
       id: "msg-user-mixed",
-      role: "user",
+      conversationId: "test", role: "user",
       content: "营收和扫描版发票一起看",
-      sources: [],
+      sources: [], createdAt: new Date().toISOString(),
     },
     {
       id: "msg-assistant-mixed",
-      role: "assistant",
+      conversationId: "test", role: "assistant",
       content: "本地索引命中了文本、表格和 OCR 来源。",
       sources: [
         {
@@ -221,7 +221,7 @@ const answeredMixedSourcesSnapshot: WorkbenchSnapshot = {
           sourceLocator: "scan.pdf#ocr-block-001",
           sourceKind: "ocr",
         },
-      ],
+      ], createdAt: new Date().toISOString(),
     },
   ],
 };
@@ -325,13 +325,13 @@ describe("App", () => {
       messages: [
         {
           id: "msg-user-ocr-page",
-          role: "user",
+          conversationId: "test", role: "user",
           content: "扫描版发票金额在哪里？",
-          sources: [],
+          sources: [], createdAt: new Date().toISOString(),
         },
         {
           id: "msg-assistant-ocr-page",
-          role: "assistant",
+          conversationId: "test", role: "assistant",
           content: "扫描版发票金额在 OCR 第 1 页。",
           sources: [
             {
@@ -343,7 +343,7 @@ describe("App", () => {
               sourceLocator: "scan.pdf#ocr-page-001#block-001",
               sourceKind: "ocr",
             },
-          ],
+          ], createdAt: new Date().toISOString(),
         },
       ],
     };

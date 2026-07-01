@@ -46,6 +46,11 @@ pub fn run() {
             commands::check_ocr_environment,
             commands::get_agent_tone,
             commands::set_agent_tone,
+            commands::create_conversation,
+            commands::list_conversations,
+            commands::switch_conversation,
+            commands::get_user_settings,
+            commands::update_user_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

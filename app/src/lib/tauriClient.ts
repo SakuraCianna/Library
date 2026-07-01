@@ -90,12 +90,80 @@ function browserSnapshotForFolder(
     messages: [
       {
         id: "browser-preview-message",
+        conversationId: "mock",
         role: "system",
-        content: "浏览器预览无法扫描本地文件，请在桌面应用中运行。",
+        content: "你好，我是浏览器内的预览环境。在此环境下大部分功能受限，建议下载桌面端体验完整功能。",
         sources: [],
+        createdAt: new Date().toISOString(),
       },
     ],
   };
+}
+
+export async function createConversation(
+  spaceId: string,
+  title: string
+): Promise<import("../types/workbench").Conversation> {
+  if (!isTauri()) {
+    throw new Error("Cannot create conversation in browser mockup");
+  }
+  return invoke("create_conversation", {
+    request: { spaceId, title },
+  });
+}
+
+export async function listConversations(
+  spaceId: string
+): Promise<import("../types/workbench").Conversation[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  return invoke("list_conversations", {
+    request: { spaceId },
+  });
+}
+
+export async function switchConversation(
+  conversationId: string | null
+): Promise<WorkbenchSnapshot> {
+  if (!isTauri()) {
+    return emptyWorkbench;
+  }
+  return invoke("switch_conversation", {
+    request: { conversationId },
+  });
+}
+
+export interface UserSettings {
+  deepseek_api_key: string;
+  deepseek_model: string;
+  deepseek_base_url: string;
+}
+
+export async function getUserSettings(): Promise<UserSettings> {
+  if (!isTauri()) {
+    return {
+      deepseek_api_key: "",
+      deepseek_model: "deepseek-v4-flash",
+      deepseek_base_url: "https://api.deepseek.com",
+    };
+  }
+  return invoke("get_user_settings");
+}
+
+export interface UpdateUserSettingsPayload {
+  deepseek_api_key?: string;
+  deepseek_model?: string;
+  deepseek_base_url?: string;
+}
+
+export async function updateUserSettings(
+  settings: UpdateUserSettingsPayload
+): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  return invoke("update_user_settings", { settings });
 }
 
 export async function selectKnowledgeFolder(): Promise<string | null> {
@@ -268,16 +336,28 @@ export async function askAgent(
       activeSpaceId: spaceId,
       messages: [
         {
+          id: "1",
+          conversationId: "mock",
+          role: "system",
+          content: "Hello from mockup",
+          sources: [],
+          createdAt: new Date().toISOString(),
+        },
+        {
           id: "browser-question",
+          conversationId: "mock",
           role: "user",
           content: question,
           sources: [],
+          createdAt: new Date().toISOString(),
         },
         {
           id: "browser-answer",
+          conversationId: "mock",
           role: "assistant",
-          content: "浏览器预览无法读取本地索引，请在桌面应用中运行。",
+          content: "这是浏览器预览环境中的模拟回答...",
           sources: [],
+          createdAt: new Date().toISOString(),
         },
       ],
     };

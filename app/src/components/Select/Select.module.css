@@ -1,0 +1,100 @@
+.selectContainer {
+  position: relative;
+  display: inline-block;
+  min-width: 132px;
+}
+
+.selectTrigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-bg);
+  padding: 7px 12px;
+  color: var(--color-text);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  box-sizing: border-box;
+}
+
+.selectTrigger:hover:not(.disabled) {
+  border-color: var(--color-muted);
+}
+
+.selectTrigger.open {
+  border-color: var(--color-accent, #3b82f6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.selectTrigger.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.selectValue {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  text-align: left;
+}
+
+.chevron {
+  font-size: 16px;
+  color: var(--color-muted);
+  transition: transform 0.2s;
+  margin-left: 8px;
+}
+
+.selectTrigger.open .chevron {
+  transform: rotate(180deg);
+}
+
+.optionsList {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 100;
+  box-sizing: border-box;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.optionItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text);
+  transition: background-color 0.2s;
+}
+
+.optionItem:hover {
+  background-color: var(--color-hover, rgba(0,0,0,0.05));
+}
+
+.optionItem.selected {
+  background-color: var(--color-hover, rgba(0,0,0,0.05));
+  color: var(--color-accent, #3b82f6);
+  font-weight: 500;
+}
+
+.checkIcon {
+  font-size: 14px;
+  color: var(--color-accent, #3b82f6);
+}

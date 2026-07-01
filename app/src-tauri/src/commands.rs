@@ -9,7 +9,7 @@ use crate::models::{
     KnowledgeBlockContext, KnowledgeBlockContextRequest, OcrEnvironmentReport,
     OpenSourceFileRequest, PermissionRequest, PreflightSpaceBackupRestoreRequest,
     RestoreSpaceBackupRequest, RuntimeStatus, ScanKnowledgeSpaceRequest, StartOcrWorkerRequest,
-    WorkbenchSnapshot,
+    WorkbenchSnapshot, CreateConversationRequest, ListConversationsRequest, SwitchConversationRequest,
 };
 use crate::state::AppState;
 use tauri_plugin_opener::OpenerExt;
@@ -230,12 +230,34 @@ pub fn restore_space_backup(
 }
 
 #[tauri::command]
-pub fn get_runtime_status(app: tauri::AppHandle) -> Result<RuntimeStatus, ErrorResponse> {
+pub fn get_runtime_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<RuntimeStatus, ErrorResponse> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| ErrorResponse {
         message: format!("无法读取应用数据目录：{error}"),
     })?;
 
-    Ok(crate::runtime::runtime_status(&app_data_dir))
+    let mut status = crate::runtime::runtime_status(&app_data_dir);
+    if let Some(config) = state.get_deepseek_config() {
+        let is_configured = !config.api_key.trim().is_empty();
+        let key_hint = if is_configured {
+            let key = config.api_key.trim();
+            if key.len() > 8 {
+                format!("{}...{}", &key[..4], &key[key.len() - 4..])
+            } else {
+                "***".to_string()
+            }
+        } else {
+            "".to_string()
+        };
+        
+        status.deepseek = crate::models::DeepSeekRuntimeStatus {
+            model: config.model,
+            base_url: config.base_url,
+            configured: is_configured,
+            key_hint,
+        };
+    }
+
+    Ok(status)
 }
 
 #[tauri::command]
@@ -263,4 +285,84 @@ pub fn get_agent_tone(state: State<'_, AppState>) -> Result<Option<String>, Erro
 #[tauri::command]
 pub fn set_agent_tone(state: State<'_, AppState>, tone: String) -> Result<(), ErrorResponse> {
     state.set_agent_tone(&tone).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn switch_conversation(
+    state: State<'_, AppState>,
+    request: SwitchConversationRequest,
+) -> Result<WorkbenchSnapshot, ErrorResponse> {
+    state.switch_conversation(request.conversation_id);
+    state.snapshot().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn create_conversation(
+    state: State<'_, AppState>,
+    request: CreateConversationRequest,
+) -> Result<crate::models::Conversation, ErrorResponse> {
+    state.create_conversation(&request.space_id, &request.title).map_err(|e| ErrorResponse {
+        message: e.to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn list_conversations(
+    state: State<'_, AppState>,
+    request: ListConversationsRequest,
+) -> Result<Vec<crate::models::Conversation>, ErrorResponse> {
+    state.list_conversations(&request.space_id).map_err(|e| ErrorResponse {
+        message: format!("StorageError: {}", e),
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct UserSettings {
+    pub deepseek_api_key: String,
+    pub deepseek_model: String,
+    pub deepseek_base_url: String,
+}
+
+#[tauri::command]
+pub fn get_user_settings(
+    state: State<'_, AppState>,
+) -> Result<UserSettings, ErrorResponse> {
+    let config = state.get_deepseek_config();
+    if let Some(c) = config {
+        Ok(UserSettings {
+            deepseek_api_key: c.api_key,
+            deepseek_model: c.model,
+            deepseek_base_url: c.base_url,
+        })
+    } else {
+        Ok(UserSettings {
+            deepseek_api_key: "".to_string(),
+            deepseek_model: "deepseek-v4-flash".to_string(),
+            deepseek_base_url: "https://api.deepseek.com".to_string(),
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateUserSettingsPayload {
+    pub deepseek_api_key: Option<String>,
+    pub deepseek_model: Option<String>,
+    pub deepseek_base_url: Option<String>,
+}
+
+#[tauri::command]
+pub fn update_user_settings(
+    state: State<'_, AppState>,
+    settings: UpdateUserSettingsPayload,
+) -> Result<(), ErrorResponse> {
+    if let Some(key) = settings.deepseek_api_key {
+        state.set_setting("DEEPSEEK_API_KEY", &key).map_err(|e| ErrorResponse { message: e.to_string() })?;
+    }
+    if let Some(model) = settings.deepseek_model {
+        state.set_setting("DEEPSEEK_MODEL", &model).map_err(|e| ErrorResponse { message: e.to_string() })?;
+    }
+    if let Some(url) = settings.deepseek_base_url {
+        state.set_setting("DEEPSEEK_BASE_URL", &url).map_err(|e| ErrorResponse { message: e.to_string() })?;
+    }
+    Ok(())
 }

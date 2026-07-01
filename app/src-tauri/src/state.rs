@@ -29,7 +29,7 @@ pub struct AppState {
     active_space_id: Mutex<Option<String>>,
     active_scope: Mutex<ChatScope>,
     session_permission: Mutex<PermissionMode>,
-    messages: Mutex<Vec<ChatMessage>>,
+    active_conversation_id: Mutex<Option<String>>,
     active_scan_workers: Mutex<HashSet<String>>,
     active_document_workers: Mutex<HashSet<String>>,
     active_ocr_workers: Mutex<HashSet<String>>,
@@ -165,7 +165,7 @@ impl AppState {
             active_space_id: Mutex::new(None),
             active_scope: Mutex::new(ChatScope::CurrentFolder),
             session_permission: Mutex::new(PermissionMode::Readonly),
-            messages: Mutex::new(Vec::new()),
+            active_conversation_id: Mutex::new(None),
             active_scan_workers: Mutex::new(HashSet::new()),
             active_document_workers: Mutex::new(HashSet::new()),
             active_ocr_workers: Mutex::new(HashSet::new()),
@@ -220,16 +220,17 @@ impl AppState {
                 .map_err(|error| AppError::Storage(error.to_string()))?,
             None => Vec::new(),
         };
-        let messages = self
-            .messages
-            .lock()
-            .expect("messages mutex poisoned")
-            .clone();
+        let active_conversation_id = self.active_conversation_id.lock().unwrap().clone();
+        let messages = match &active_conversation_id {
+            Some(id) => store.list_messages(id).unwrap_or_default(),
+            None => Vec::new(),
+        };
 
         let session_permission = self.resolve_session_permission(active_space.as_ref());
         Ok(build_snapshot(
             spaces,
             active_space_id,
+            active_conversation_id.clone(),
             self.active_scope
                 .lock()
                 .expect("active scope mutex poisoned")
@@ -243,6 +244,19 @@ impl AppState {
         ))
     }
 
+    pub fn switch_conversation(&self, conversation_id: Option<String>) {
+        *self.active_conversation_id.lock().unwrap() = conversation_id;
+    }
+
+    pub fn create_conversation(&self, space_id: &str, title: &str) -> Result<crate::models::Conversation, AppError> {
+        let store_guard = self.store.lock().unwrap();
+        store_guard.create_conversation(space_id, title).map_err(|e| AppError::Storage(e.to_string()))
+    }
+
+    pub fn list_conversations(&self, space_id: &str) -> Result<Vec<crate::models::Conversation>, AppError> {
+        let store_guard = self.store.lock().unwrap();
+        store_guard.list_conversations(space_id).map_err(|e| AppError::Storage(e.to_string()))
+    }
     pub fn create_knowledge_space(
         &self,
         name: String,
@@ -1176,35 +1190,212 @@ impl AppState {
         }
     }
 
+    pub fn get_deepseek_config(&self) -> Option<crate::runtime::DeepSeekConfig> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        
+        let api_key = store.get_setting("DEEPSEEK_API_KEY").unwrap_or_default();
+        let model = store.get_setting("DEEPSEEK_MODEL").unwrap_or_default();
+        let base_url = store.get_setting("DEEPSEEK_BASE_URL").unwrap_or_default();
+
+        if let Some(key) = api_key {
+            if !key.trim().is_empty() {
+                let m = if let Some(m) = model {
+                    if m.trim().is_empty() { "deepseek-v4-flash".to_string() } else { m }
+                } else {
+                    "deepseek-v4-flash".to_string()
+                };
+
+                let b = if let Some(b) = base_url {
+                    if b.trim().is_empty() { "https://api.deepseek.com".to_string() } else { b }
+                } else {
+                    "https://api.deepseek.com".to_string()
+                };
+
+                return Some(crate::runtime::DeepSeekConfig {
+                    api_key: key,
+                    model: m,
+                    base_url: b,
+                });
+            }
+        }
+
+        crate::runtime::deepseek_config()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), AppError> {
+        let store = self.store.lock().expect("sqlite store mutex poisoned");
+        store.set_setting(key, value).map_err(|e| AppError::Storage(e.to_string()))
+    }
+
     pub async fn ask_agent(
         &self,
         space_id: String,
         question: String,
     ) -> Result<WorkbenchSnapshot, AppError> {
+        let config = match self.get_deepseek_config() {
+            Some(c) => c,
+            None => return Err(AppError::Storage("请先配置 DeepSeek API KEY".to_string())),
+        };
+
         let question = question.trim().to_string();
         if question.is_empty() {
             return Err(AppError::Storage("请输入问题".to_string()));
         }
 
-        let hits = {
-            let store = self.store.lock().expect("sqlite store mutex poisoned");
-            store
-                .search_knowledge_blocks(&space_id, &question, 4)
-                .map_err(|error| AppError::Storage(format!("检索知识块失败：{error}")))?
-        };
-        let tone = self.get_agent_tone().unwrap_or(None);
         self.push_chat_message(ChatRole::User, question.clone());
-        let answer = crate::agent::answer_question(&question, &hits, tone).await;
+
+        // 获取过去 10 条消息作为上下文
+        let mut history_payloads = vec![];
+        {
+            let store = self.store.lock().expect("sqlite store mutex poisoned");
+            let active_convo = self.active_conversation_id.lock().unwrap().clone();
+            if let Some(convo_id) = active_convo {
+                if let Ok(mut messages) = store.list_messages(&convo_id) {
+                    messages.reverse(); // Now chronologically ordered
+                    let skip = if messages.len() > 10 { messages.len() - 10 } else { 0 };
+                    for msg in messages.into_iter().skip(skip) {
+                        let role_str = match msg.role {
+                            ChatRole::User => "user",
+                            ChatRole::Assistant => "assistant",
+                            ChatRole::System => "system",
+                        };
+                        history_payloads.push(crate::agent::ChatMessagePayload {
+                            role: role_str.to_string(),
+                            content: Some(msg.content),
+                            name: None,
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 定义工具
+        let tools = vec![
+            crate::agent::Tool {
+                tool_type: "function".to_string(),
+                function: crate::agent::ToolFunction {
+                    name: "search_knowledge".to_string(),
+                    description: "搜索知识库内容。当需要解答用户问题且需要依赖外部知识、文件内容、特定信息时调用。".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "搜索关键词或问题"
+                            }
+                        },
+                        "required": ["query"]
+                    }),
+                }
+            },
+            crate::agent::Tool {
+                tool_type: "function".to_string(),
+                function: crate::agent::ToolFunction {
+                    name: "list_files".to_string(),
+                    description: "列出当前知识库中所有的文件列表。".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {}
+                    }),
+                }
+            }
+        ];
+
+        let tone = self.get_agent_tone().unwrap_or(None);
+        let mut loop_count = 0;
+        let max_loops = 5;
+        let mut final_answer = String::new();
+        let mut accumulated_hits = vec![];
+
+        while loop_count < max_loops {
+            loop_count += 1;
+            let response_msg = crate::agent::chat_completion_step(&config, &history_payloads, Some(&tools), tone.as_deref()).await;
+            
+            match response_msg {
+                Some(msg) => {
+                    history_payloads.push(crate::agent::ChatMessagePayload {
+                        role: "assistant".to_string(),
+                        content: msg.content.clone(),
+                        name: None,
+                        tool_calls: msg.tool_calls.clone(),
+                        tool_call_id: None,
+                    });
+
+                    if let Some(tool_calls) = msg.tool_calls {
+                        for call in tool_calls {
+                            let mut tool_result_content = String::new();
+                            
+                            if call.function.name == "search_knowledge" {
+                                if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
+                                    if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
+                                        let store = self.store.lock().expect("sqlite store poisoned");
+                                        if let Ok(hits) = store.search_knowledge_blocks(&space_id, q, 4) {
+                                            tool_result_content = crate::agent::build_context(&hits);
+                                            accumulated_hits.extend(hits);
+                                        } else {
+                                            tool_result_content = "搜索失败。".to_string();
+                                        }
+                                    } else {
+                                        tool_result_content = "缺少 query 参数。".to_string();
+                                    }
+                                } else {
+                                    tool_result_content = "无法解析参数。".to_string();
+                                }
+                            } else if call.function.name == "list_files" {
+                                let store = self.store.lock().expect("sqlite store poisoned");
+                                if let Ok(files) = store.list_files(&space_id) {
+                                    let mut s = String::new();
+                                    for f in files {
+                                        s.push_str(&format!("- {}\n", f.name));
+                                    }
+                                    if s.is_empty() {
+                                        tool_result_content = "知识库当前没有文件。".to_string();
+                                    } else {
+                                        tool_result_content = s;
+                                    }
+                                } else {
+                                    tool_result_content = "获取文件列表失败。".to_string();
+                                }
+                            } else {
+                                tool_result_content = format!("未知的工具：{}", call.function.name);
+                            }
+
+                            history_payloads.push(crate::agent::ChatMessagePayload {
+                                role: "tool".to_string(),
+                                content: Some(tool_result_content),
+                                name: Some(call.function.name),
+                                tool_calls: None,
+                                tool_call_id: Some(call.id),
+                            });
+                        }
+                    } else if let Some(content) = msg.content {
+                        final_answer = content;
+                        break;
+                    } else {
+                        final_answer = "模型返回了空消息。".to_string();
+                        break;
+                    }
+                }
+                None => {
+                    final_answer = "请求模型失败或超时。".to_string();
+                    break;
+                }
+            }
+        }
+
+        if final_answer.is_empty() {
+            final_answer = "达到了最大工具调用次数或未能生成有效回复。".to_string();
+        }
+
         self.push_chat_message_with_sources(
             ChatRole::Assistant,
-            answer,
-            chat_sources_from_hits(&hits),
+            final_answer,
+            chat_sources_from_hits(&accumulated_hits),
         );
-        *self
-            .active_space_id
-            .lock()
-            .expect("active space mutex poisoned") = Some(space_id);
 
+        *self.active_space_id.lock().unwrap() = Some(space_id);
         self.snapshot()
     }
 
@@ -1445,24 +1636,24 @@ impl AppState {
         content: String,
         sources: Vec<ChatMessageSource>,
     ) {
-        let mut messages = self.messages.lock().expect("messages mutex poisoned");
-        messages.push(ChatMessage {
+        let active_conversation_id = self.active_conversation_id.lock().unwrap().clone();
+        let Some(conversation_id) = active_conversation_id else { return; };
+        let store_guard = self.store.lock().unwrap();
+        let _ = store_guard.add_message(&ChatMessage {
             id: format!("msg-{}", uuid::Uuid::new_v4()),
+            conversation_id,
             role,
             content,
             sources,
+            created_at: time::OffsetDateTime::now_utc().to_string(),
         });
-
-        if messages.len() > 24 {
-            let overflow = messages.len() - 24;
-            messages.drain(0..overflow);
-        }
     }
 }
 
 fn build_snapshot(
     spaces: Vec<KnowledgeSpace>,
     active_space_id: String,
+    active_conversation_id: Option<String>,
     active_scope: ChatScope,
     session_permission: PermissionMode,
     files: Vec<crate::models::KnowledgeFile>,
@@ -1481,6 +1672,7 @@ fn build_snapshot(
     WorkbenchSnapshot {
         spaces,
         active_space_id,
+        active_conversation_id,
         active_scope,
         session_permission,
         files,
@@ -1523,6 +1715,7 @@ fn build_snapshot(
         messages: if messages.is_empty() {
             vec![ChatMessage {
                 id: "msg-system-ready".to_string(),
+                conversation_id: "".to_string(),
                 role: ChatRole::System,
                 content: if has_spaces {
                     "当前已使用本地 SQLite 读取真实知识库状态。".to_string()
@@ -1530,6 +1723,7 @@ fn build_snapshot(
                     "请点击新建选择一个真实文件夹。".to_string()
                 },
                 sources: Vec::new(),
+                created_at: time::OffsetDateTime::now_utc().to_string(),
             }]
         } else {
             messages
