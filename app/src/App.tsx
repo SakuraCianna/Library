@@ -29,6 +29,7 @@ import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useWorkbenchSnapshot } from "./hooks/useWorkbenchSnapshot";
 import { getKnowledgeBlockContext, openSourceFile, getAgentTone, setAgentTone } from "./lib/tauriClient";
 import { check } from "@tauri-apps/plugin-updater";
+import { getUserSettings, updateUserSettings } from "./lib/tauriClient";
 import type {
   ChatMessage,
   ChatMessageSource,
@@ -40,7 +41,6 @@ import type {
   ParseJobSummary,
   PermissionMode,
 } from "./types/workbench";
-import { SettingsModal } from "./components/SettingsModal";
 import styles from "./App.module.css";
 
 const permissionLabel: Record<PermissionMode, string> = {
@@ -324,7 +324,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeSettingsSection, setActiveSettingsSection] =
     useState<SettingsSection>("general");
-  const [isApiSettingsModalOpen, setIsApiSettingsModalOpen] = useState(false);
+  const [isEditingApi, setIsEditingApi] = useState(false);
+  const [apiSettingsForm, setApiSettingsForm] = useState({
+    apiKey: "",
+    model: "deepseek-v4-flash",
+    baseUrl: "https://api.deepseek.com",
+  });
+  const [apiSaving, setApiSaving] = useState(false);
   const [selectedSource, setSelectedSource] =
     useState<ChatMessageSource | null>(null);
   const [sourceContext, setSourceContext] =
@@ -496,7 +502,42 @@ export default function App() {
     }).catch(console.error);
 
     settingsCloseButtonRef.current?.focus();
+  }, [settingsOpen]);
 
+  const handleEditApiClick = async () => {
+    try {
+      const settings = await getUserSettings();
+      setApiSettingsForm({
+        apiKey: settings.deepseek_api_key || "",
+        model: settings.deepseek_model || "deepseek-v4-flash",
+        baseUrl: settings.deepseek_base_url || "https://api.deepseek.com",
+      });
+      setIsEditingApi(true);
+    } catch (e) {
+      console.error("Failed to load settings:", e);
+    }
+  };
+
+  const handleSaveApiSettings = async () => {
+    setApiSaving(true);
+    try {
+      await updateUserSettings({
+        deepseek_api_key: apiSettingsForm.apiKey,
+        deepseek_model: apiSettingsForm.model,
+        deepseek_base_url: apiSettingsForm.baseUrl,
+      });
+      setIsEditingApi(false);
+      void refreshRuntimeStatus();
+      setApiSettingsForm({ ...apiSettingsForm, apiKey: "" }); // explicitly clear it from react state after saving for privacy
+    } catch (e) {
+      console.error("Failed to save settings:", e);
+      alert("保存失败：" + String(e));
+    } finally {
+      setApiSaving(false);
+    }
+  };
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         closeSettings();
@@ -1478,27 +1519,95 @@ export default function App() {
                       ]}
                     />
                   </label>
-                  <div className={styles.settingRow}>
-                    <div className={styles.settingCopy}>
-                      <div className="flex items-center space-x-2">
-                        <strong>DeepSeek</strong>
+                  <div className={styles.settingRow} style={{ flexDirection: "column", alignItems: "stretch", gap: "12px", background: "var(--color-surface-muted)", padding: "12px", borderRadius: "8px", border: "1px solid #e3e8f1" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div className={styles.settingCopy}>
+                        <strong>DeepSeek API</strong>
+                        <span>配置你的 API Key、模型和 Base URL</span>
+                      </div>
+                      {!isEditingApi && (
                         <button
                           className={styles.ghostButton}
-                          onClick={() => setIsApiSettingsModalOpen(true)}
-                          style={{ padding: "2px 8px", fontSize: "12px", minHeight: "unset" }}
+                          onClick={() => void handleEditApiClick()}
+                          style={{ padding: "4px 12px", fontSize: "13px" }}
                         >
                           编辑
                         </button>
-                      </div>
-                      <span>
-                        {runtimeStatus?.deepseek.configured
-                          ? `密钥 ${runtimeStatus.deepseek.keyHint}`
-                          : "密钥未配置"}
-                      </span>
+                      )}
                     </div>
-                    <span className={styles.settingValue}>
-                      {runtimeStatus?.deepseek.model ?? "deepseek-v4-flash"}
-                    </span>
+                    
+                    {isEditingApi ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "16px", paddingTop: "8px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                          <label style={{ fontSize: "14px", fontWeight: 500, color: "var(--color-text)" }}>API Key</label>
+                          <input
+                            type="password"
+                            value={apiSettingsForm.apiKey}
+                            onChange={(e) => setApiSettingsForm({...apiSettingsForm, apiKey: e.target.value})}
+                            style={{ padding: "8px 12px", border: "1px solid #c8d1df", borderRadius: "6px", color: "var(--color-text)", background: "var(--color-surface)", outline: "none" }}
+                            placeholder="sk-..."
+                          />
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                          <label style={{ fontSize: "14px", fontWeight: 500, color: "var(--color-text)" }}>选择模型</label>
+                          <select
+                            value={apiSettingsForm.model}
+                            onChange={(e) => setApiSettingsForm({...apiSettingsForm, model: e.target.value})}
+                            style={{ padding: "8px 12px", border: "1px solid #c8d1df", borderRadius: "6px", color: "var(--color-text)", background: "var(--color-surface)", outline: "none" }}
+                          >
+                            <option value="deepseek-v4-flash">deepseek-v4-flash (推荐)</option>
+                            <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+                          </select>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                          <label style={{ fontSize: "14px", fontWeight: 500, color: "var(--color-text)" }}>Base URL</label>
+                          <input
+                            type="text"
+                            value={apiSettingsForm.baseUrl}
+                            onChange={(e) => setApiSettingsForm({...apiSettingsForm, baseUrl: e.target.value})}
+                            style={{ padding: "8px 12px", border: "1px solid #c8d1df", borderRadius: "6px", color: "var(--color-text)", background: "var(--color-surface)", outline: "none" }}
+                            placeholder="https://api.deepseek.com"
+                          />
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", paddingTop: "8px", borderTop: "1px solid #e3e8f1" }}>
+                          <button
+                            onClick={() => setIsEditingApi(false)}
+                            style={{ padding: "6px 16px", fontSize: "14px", color: "var(--color-text)", border: "1px solid #c8d1df", background: "transparent", borderRadius: "6px", cursor: "pointer" }}
+                            disabled={apiSaving}
+                          >
+                            取消
+                          </button>
+                          <button
+                            onClick={() => void handleSaveApiSettings()}
+                            style={{ padding: "6px 16px", fontSize: "14px", color: "#fff", background: "#2563eb", border: "none", borderRadius: "6px", cursor: "pointer" }}
+                            disabled={apiSaving}
+                          >
+                            {apiSaving ? "保存中..." : "保存"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", paddingTop: "8px" }}>
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <span style={{ fontSize: "12px", color: "var(--color-muted)" }}>API Key</span>
+                          <span style={{ fontSize: "14px", fontFamily: "monospace", color: "var(--color-text)" }}>
+                            {runtimeStatus?.deepseek.configured ? `sk-••••${runtimeStatus.deepseek.keyHint}` : "未配置"}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <span style={{ fontSize: "12px", color: "var(--color-muted)" }}>模型</span>
+                          <span style={{ fontSize: "14px", fontFamily: "monospace", color: "var(--color-text)" }}>
+                            {runtimeStatus?.deepseek.model ?? "未配置"}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gridColumn: "span 2" }}>
+                          <span style={{ fontSize: "12px", color: "var(--color-muted)" }}>Base URL</span>
+                          <span style={{ fontSize: "14px", fontFamily: "monospace", color: "var(--color-text)" }}>
+                            {runtimeStatus?.deepseek.baseUrl ?? "https://api.deepseek.com"}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div className={styles.settingRow}>
                     <div className={styles.settingCopy}>
@@ -1642,15 +1751,6 @@ export default function App() {
           </section>
         </div>
       ) : null}
-      
-      <SettingsModal 
-        isOpen={isApiSettingsModalOpen} 
-        onClose={() => setIsApiSettingsModalOpen(false)} 
-        onSaved={() => {
-          setIsApiSettingsModalOpen(false);
-          void refreshRuntimeStatus();
-        }}
-      />
     </div>
   );
 }
