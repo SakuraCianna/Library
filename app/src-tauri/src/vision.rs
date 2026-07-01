@@ -1,8 +1,8 @@
+use std::env;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use std::env;
 
 use crate::error::AppError;
 use crate::models::{VisionSidecarRequest, VisionSidecarResult};
@@ -149,9 +149,9 @@ fn parse_vision_sidecar_stdout(stdout: &str) -> Result<VisionSidecarResult, AppE
     })?;
 
     if envelope.ok {
-        envelope.result.ok_or_else(|| {
-            AppError::Filesystem("Vision sidecar 报告成功但未提供结果".to_string())
-        })
+        envelope
+            .result
+            .ok_or_else(|| AppError::Filesystem("Vision sidecar 报告成功但未提供结果".to_string()))
     } else {
         let message = envelope
             .error
@@ -186,14 +186,20 @@ fn join_output_reader(
 
 fn resolve_vision_sidecar_script(resource_path: Option<&Path>) -> Result<PathBuf, AppError> {
     if let Some(path) = resource_path {
-        let target = path.join("sidecars").join("vision").join("vision_sidecar.py");
+        let target = path
+            .join("sidecars")
+            .join("vision")
+            .join("vision_sidecar.py");
         if target.is_file() {
             return Ok(target);
         }
     }
-    
+
     if let Ok(project_root) = discover_project_root() {
-        let target = project_root.join("sidecars").join("vision").join("vision_sidecar.py");
+        let target = project_root
+            .join("sidecars")
+            .join("vision")
+            .join("vision_sidecar.py");
         if target.is_file() {
             return Ok(target);
         }
@@ -205,9 +211,9 @@ fn resolve_vision_sidecar_script(resource_path: Option<&Path>) -> Result<PathBuf
 }
 
 fn discover_project_root() -> Result<PathBuf, AppError> {
-    let current_dir = env::current_dir()
-        .map_err(|e| AppError::Filesystem(format!("无法获取当前目录：{e}")))?;
-    
+    let current_dir =
+        env::current_dir().map_err(|e| AppError::Filesystem(format!("无法获取当前目录：{e}")))?;
+
     for ancestor in current_dir.ancestors() {
         let cargo_toml = ancestor.join("Cargo.toml");
         if cargo_toml.is_file() {
@@ -218,7 +224,7 @@ fn discover_project_root() -> Result<PathBuf, AppError> {
             }
         }
     }
-    
+
     Ok(current_dir)
 }
 
@@ -233,7 +239,7 @@ fn discover_python_executable(project_root: Option<&Path>) -> PathBuf {
             return venv_python;
         }
     }
-    
+
     PathBuf::from("python")
 }
 

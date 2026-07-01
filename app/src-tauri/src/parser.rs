@@ -108,7 +108,10 @@ pub fn parse_file_with_sidecar(
             prompt: "".to_string(),
         };
 
-        if !crate::runtime::runtime_status(app_data_dir).vision.configured {
+        if !crate::runtime::runtime_status(app_data_dir)
+            .vision
+            .configured
+        {
             let file_name = crate::state::display_relative_file_name(&candidate.relative_path);
             return Ok(ParsedDocument {
                 title: file_name.clone(),
@@ -120,12 +123,11 @@ pub fn parse_file_with_sidecar(
             });
         }
 
-        let result = crate::vision::run_vision_sidecar_cancellable(
-            &request,
-            resource_script_path,
-            || false,
-        )?;
-        
+        let result =
+            crate::vision::run_vision_sidecar_cancellable(&request, resource_script_path, || {
+                false
+            })?;
+
         let file_name = crate::state::display_relative_file_name(&candidate.relative_path);
         return Ok(ParsedDocument {
             title: file_name,
@@ -157,7 +159,10 @@ pub fn parse_file_with_sidecar(
         PARSER_SIDECAR_TIMEOUT,
     )?;
 
-    if crate::runtime::runtime_status(app_data_dir).vision.configured {
+    if crate::runtime::runtime_status(app_data_dir)
+        .vision
+        .configured
+    {
         let vision_config = crate::runtime::vision_config(app_data_dir);
         let model_dir = vision_config.model_dir.to_string_lossy().to_string();
 
@@ -165,33 +170,46 @@ pub fn parse_file_with_sidecar(
             if let Some(evidence) = &segment.evidence {
                 if evidence.kind.as_deref() == Some("embedded_image") {
                     let source_locator = &segment.source_locator;
-                        if let Some(image_number) = crate::ocr::embedded_image_number_from_locator(source_locator) {
-                            if let Ok(image_target) = crate::ocr::docx_embedded_image_target(&file_path, image_number) {
-                                let extension = std::path::Path::new(&image_target)
-                                    .extension()
-                                    .and_then(|e| e.to_str())
-                                    .unwrap_or("png")
-                                    .to_ascii_lowercase();
+                    if let Some(image_number) =
+                        crate::ocr::embedded_image_number_from_locator(source_locator)
+                    {
+                        if let Ok(image_target) =
+                            crate::ocr::docx_embedded_image_target(&file_path, image_number)
+                        {
+                            let extension = std::path::Path::new(&image_target)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("png")
+                                .to_ascii_lowercase();
 
-                                if crate::ocr::is_ocr_supported_docx_image_extension(&extension) {
-                                    if let Ok(temp_dir) = crate::ocr::OcrSidecarTempDir::create() {
-                                        let extension_str = extension.as_str();
-                                        let image_path = temp_dir.path().join(format!("embedded-image-{image_number:03}.{extension_str}"));
-                                        if crate::ocr::extract_docx_image_to_path(&file_path, &image_target, &image_path).is_ok() {
-                                            let request = crate::models::VisionSidecarRequest {
-                                                file_path: image_path.to_string_lossy().to_string(),
-                                                model_dir: model_dir.clone(),
-                                                prompt: "".to_string(),
-                                            };
-                                            if let Ok(result) = crate::vision::run_vision_sidecar_cancellable(
+                            if crate::ocr::is_ocr_supported_docx_image_extension(&extension) {
+                                if let Ok(temp_dir) = crate::ocr::OcrSidecarTempDir::create() {
+                                    let extension_str = extension.as_str();
+                                    let image_path = temp_dir.path().join(format!(
+                                        "embedded-image-{image_number:03}.{extension_str}"
+                                    ));
+                                    if crate::ocr::extract_docx_image_to_path(
+                                        &file_path,
+                                        &image_target,
+                                        &image_path,
+                                    )
+                                    .is_ok()
+                                    {
+                                        let request = crate::models::VisionSidecarRequest {
+                                            file_path: image_path.to_string_lossy().to_string(),
+                                            model_dir: model_dir.clone(),
+                                            prompt: "".to_string(),
+                                        };
+                                        if let Ok(result) =
+                                            crate::vision::run_vision_sidecar_cancellable(
                                                 &request,
                                                 resource_script_path,
                                                 || false,
-                                            ) {
-                                                if !result.caption.is_empty() {
-                                                    segment.body.push_str("\n\n[图片描述] ");
-                                                    segment.body.push_str(&result.caption);
-                                                }
+                                            )
+                                        {
+                                            if !result.caption.is_empty() {
+                                                segment.body.push_str("\n\n[图片描述] ");
+                                                segment.body.push_str(&result.caption);
                                             }
                                         }
                                     }
@@ -202,6 +220,7 @@ pub fn parse_file_with_sidecar(
                 }
             }
         }
+    }
 
     Ok(document)
 }

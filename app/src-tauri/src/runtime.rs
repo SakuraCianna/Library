@@ -38,7 +38,14 @@ pub fn runtime_status(app_data_dir: &Path) -> RuntimeStatus {
     let ocr = ocr_config_from_values(app_data_dir, &local_env);
     let vision = vision_config_from_values(app_data_dir, &local_env);
 
-    build_runtime_status(api_key.as_deref(), model, base_url, ocr.tier, ocr.model_dir, vision.model_dir)
+    build_runtime_status(
+        api_key.as_deref(),
+        model,
+        base_url,
+        ocr.tier,
+        ocr.model_dir,
+        vision.model_dir,
+    )
 }
 
 pub fn deepseek_config() -> Option<DeepSeekConfig> {
@@ -77,7 +84,10 @@ pub fn vision_config(app_data_dir: &Path) -> VisionConfig {
     vision_config_from_values(app_data_dir, &local_env)
 }
 
-fn vision_config_from_values(app_data_dir: &Path, local_env: &HashMap<String, String>) -> VisionConfig {
+fn vision_config_from_values(
+    app_data_dir: &Path,
+    local_env: &HashMap<String, String>,
+) -> VisionConfig {
     let model_dir = config_value("VISION_MODEL_DIR", local_env)
         .map(PathBuf::from)
         .unwrap_or_else(|| default_vision_model_dir(app_data_dir));
@@ -178,7 +188,10 @@ fn default_vision_model_dir(app_data_dir: &Path) -> PathBuf {
         }
     }
 
-    app_data_dir.join("models").join("vision").join("moondream2")
+    app_data_dir
+        .join("models")
+        .join("vision")
+        .join("moondream2")
 }
 
 fn config_value(key: &str, local_env: &HashMap<String, String>) -> Option<String> {

@@ -85,7 +85,10 @@ jobs:
 
       - name: Build Tauri Windows bundle
         working-directory: app
-        run: npm run tauri build -- --no-sign --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --bundles nsis
 
       - name: Stage Windows release artifact
         id: release-metadata
@@ -131,9 +134,9 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path $windowsRoot | Out-Null
 
-          $bundleFiles = Get-ChildItem -LiteralPath $nsisBundleRoot -Recurse -File
+          $bundleFiles = Get-ChildItem -LiteralPath $bundleRootPath -Recurse -File
           if (-not $bundleFiles) {
-            throw "没有找到可上传的 NSIS 构建产物"
+            throw "没有找到可上传的构建产物"
           }
 
           foreach ($file in $bundleFiles) {
@@ -152,7 +155,7 @@ jobs:
             "commit=$env:GITHUB_SHA",
             "runId=$env:GITHUB_RUN_ID",
             "runNumber=$env:GITHUB_RUN_NUMBER",
-            "unsigned=true",
+            "unsigned=false",
             "bundleTargets=nsis",
             "bundleRoot=windows",
             "retentionDays=$env:RELEASE_ARTIFACT_RETENTION_DAYS"
